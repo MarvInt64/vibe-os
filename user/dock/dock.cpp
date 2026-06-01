@@ -25,8 +25,8 @@ int main() {
     uint32_t mode = (uint32_t)__sc2(SYS_DISPLAY_MODE, 0, 0);
     int screen_w = (int)((mode >> 16) & 0xffffu);
     int screen_h = (int)(mode & 0xffffu);
-    int width = 344;
-    int height = 84;
+    int width = 372;
+    int height = 92;
     int x;
     int y;
 
@@ -44,11 +44,11 @@ int main() {
         x, y);
     vui_set_clear_color(win, VUI_COLOR_TRANSPARENT);
 
-    vui_widget *surface = vui_card(win, 0, 0, width, height, "");
+    vui_widget *surface = vui_pill(win, 0, 0, width, height);
     vui_set_color(surface, 0x00263a54u);   /* dock glass bar (medium slate, per reference) */
 
-    vui_widget *row = vui_hbox(win, 20, 14, width - 40, height - 28);
-    vui_set_gap(row, 22);
+    vui_widget *row = vui_hbox(win, 30, 18, width - 60, height - 36);
+    vui_set_gap(row, 24);
     vui_set_padding(row, 2);
 
     for (unsigned i = 0; i < sizeof(kEntries) / sizeof(kEntries[0]); ++i) {

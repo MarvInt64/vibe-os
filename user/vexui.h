@@ -112,6 +112,8 @@ vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels,
 vui_widget *vui_bar(vui_window *w, int x, int y, int width, int height, int max);
 /* Decorative mini bar-graph (sparkline) for metric cards. */
 vui_widget *vui_sparkline(vui_window *w, int x, int y, int width, int height);
+/* Large rounded pill surface (e.g. the dock bar). */
+vui_widget *vui_pill(vui_window *w, int x, int y, int width, int height);
 
 /* ---- Configure widgets ---- */
 void vui_on_click(vui_widget *b, vui_callback cb);

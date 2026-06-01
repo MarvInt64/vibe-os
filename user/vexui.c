@@ -80,7 +80,8 @@ enum { W_PANEL, W_LABEL, W_BUTTON, W_BAR, W_VBOX, W_HBOX,
        W_INPUT,
        W_BADGE,
        W_TABS,
-       W_SPARK
+       W_SPARK,
+       W_PILL
 };
 
 static const vui_theme g_default_theme = {
@@ -254,6 +255,28 @@ static void rect(struct vui_window *w, int x, int y, int wid, int hgt, vui_u32 c
 static void put(struct vui_window *w,int x,int y,vui_u32 c){ if(x<0||y<0||x>=w->width||y>=w->height)return; g_canvas[y*w->width+x]=c; }
 static void line_h(struct vui_window *w, int x, int y, int wid, vui_u32 c) { rect(w, x, y, wid, 1, c); }
 static void line_v(struct vui_window *w, int x, int y, int hgt, vui_u32 c) { rect(w, x, y, 1, hgt, c); }
+static int isqrt_i(int v){ int r=0; while((r+1)*(r+1)<=v) ++r; return r; }
+/* Filled rounded rectangle (pill). Corner pixels outside the radius are left at
+ * the window's clear color so a frameless transparent window shows the desktop
+ * through them. Draws a 1px border in `border`. */
+static void fill_round_rect(struct vui_window *w,int x,int y,int wid,int hgt,int r,vui_u32 fill,vui_u32 border){
+    int iy;
+    if (wid<=0||hgt<=0) return;
+    if (r<0) r=0;
+    if (r>hgt/2) r=hgt/2;
+    if (r>wid/2) r=wid/2;
+    for (iy=0; iy<hgt; ++iy){
+        int dy=0, inset=0, x0, x1, py=y+iy;
+        if (iy<r) dy=r-iy; else if (iy>=hgt-r) dy=iy-(hgt-r)+1;
+        if (dy>0){ int ch=isqrt_i(r*r-dy*dy); inset=r-ch; }
+        x0=x+inset; x1=x+wid-inset;
+        rect(w, x0, py, x1-x0, 1, fill);
+        put(w, x0, py, border);
+        put(w, x1-1, py, border);
+    }
+    line_h(w, x+r, y, wid-2*r, border);
+    line_h(w, x+r, y+hgt-1, wid-2*r, border);
+}
 static void glass_box(struct vui_window *w, int x, int y, int wid, int hgt, vui_u32 fill, int strong) {
     vui_u32 top = strong ? g_theme.border_hi : mix(g_theme.border_hi, fill, 1u, 2u);
     vui_u32 edge = strong ? g_theme.border_hi : g_theme.border;
@@ -404,6 +427,12 @@ vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels,
     if (!wd) return 0;
     wd->x=x; wd->y=y; wd->w=width; wd->h=28; scopy(wd->text, labels?labels:"", sizeof(wd->text));
     wd->value=active; init_margins(wd); w->dirty=1; return wd;
+}
+vui_widget *vui_pill(vui_window *w, int x, int y, int width, int height) {
+    vui_widget *wd = new_widget(w, W_PILL);
+    if (!wd) return 0;
+    wd->x=x; wd->y=y; wd->w=width; wd->h=height; wd->color=g_theme.surface;
+    init_margins(wd); w->dirty=1; return wd;
 }
 vui_widget *vui_sparkline(vui_window *w, int x, int y, int width, int height) {
     vui_widget *wd = new_widget(w, W_SPARK);
@@ -996,6 +1025,14 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
             text(w, sx + (sw - slen(label) * 8) / 2, wd->y + 6, label,
                  seg == wd->value ? g_theme.text : g_theme.text_dim);
         }
+        break; }
+    case W_PILL: {
+        /* Large rounded pill — the dock bar surface. Radius is generous so the
+         * bar reads as a stadium/pill (per the reference), with a faint border. */
+        uint32_t fill = wd->color ? wd->color : g_theme.surface;
+        uint32_t bd = mix(fill, 0x00cfe2f5u, 1u, 3u);
+        int r = wd->h / 2 - 6; if (r > 28) r = 28; if (r < 8) r = 8;
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, r, fill, bd);
         break; }
     case W_SPARK: {
         /* Decorative mini bar-graph (a "tiny graph" per the design spec). */
