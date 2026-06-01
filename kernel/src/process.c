@@ -1377,12 +1377,23 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
     if (number == SYS_WINDOW_PRESENT) {
         /* rdi = win id, rsi = pixel buffer (XRGB), rdx = w, r10 = h. */
         struct desktop_state *d = desktop_active();
+        int present_result;
         if (d == 0) {
             frame->rax = (uint64_t)(-SYSCALL_EPERM);
             return 0;
         }
-        frame->rax = (uint64_t)(int64_t)desktop_app_present(d, process->pid, (int)frame->rdi,
+        present_result = desktop_app_present(d, process->pid, (int)frame->rdi,
             (const uint32_t *)(uintptr_t)frame->rsi, (int)frame->rdx, (int)frame->r10);
+        frame->rax = (uint64_t)(int64_t)present_result;
+        if (present_result == 0) {
+            process->context = *frame;
+            process->context.rax = 0;
+            process->wake_tick = timer_tick_count() + 1u;
+            process->state = PROCESS_STATE_SLEEPING;
+            g_kernel_resume_result = PROCESS_RUN_YIELDED;
+            g_current_process = 0;
+            return 1;
+        }
         return 0;
     }
 
