@@ -105,6 +105,8 @@ int vos_window_create_ex(const struct vos_window_options *options);
 int vos_window_present(int id, const uint32_t *pixels, int w, int h);
 /* Set the desktop wallpaper from an XRGB buffer (0x00RRGGBB), scaled to screen. */
 int vos_set_wallpaper(const uint32_t *pixels, int w, int h);
+/* Present only a damaged sub-rect (in content space) of the full canvas. */
+int vos_window_present_rect(int id, const uint32_t *pixels, int w, int h, int dx, int dy, int dw, int dh);
 /* Copy this process's spawn argument (if any) into buf; returns its length. */
 int vos_getarg(char *buf, int size);
 int vos_event_poll(int id, struct vos_event *out);         /* 1 = got event, 0 = empty */

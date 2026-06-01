@@ -46,6 +46,12 @@ int vos_window_present(int id, const uint32_t *pixels, int w, int h) {
 int vos_set_wallpaper(const uint32_t *pixels, int w, int h) {
     return (int)__sc3(SYS_SET_WALLPAPER, (uint64_t)(size_t)pixels, (uint64_t)w, (uint64_t)h);
 }
+int vos_window_present_rect(int id, const uint32_t *pixels, int w, int h, int dx, int dy, int dw, int dh) {
+    return (int)__sc6(SYS_WINDOW_PRESENT_RECT, (uint64_t)id, (uint64_t)(size_t)pixels,
+                      (uint64_t)w, (uint64_t)h,
+                      (uint64_t)(((dx & 0xffff) << 16) | (dy & 0xffff)),
+                      (uint64_t)(((dw & 0xffff) << 16) | (dh & 0xffff)));
+}
 int vos_getarg(char *buf, int size) {
     return (int)__sc2(SYS_GETARG, (uint64_t)(size_t)buf, (uint64_t)size);
 }

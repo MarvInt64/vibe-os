@@ -176,6 +176,10 @@ int desktop_app_create_ex(struct desktop_state *desktop, uint32_t pid, const str
  * window content and mark it dirty. Called while the app's address space is
  * active so src is directly readable. Returns 0 on success. */
 int desktop_app_present(struct desktop_state *desktop, uint32_t pid, int win_id, const uint32_t *src, int src_w, int src_h);
+/* Present only a sub-rectangle (in content space) of the app's canvas. */
+int desktop_app_present_rect(struct desktop_state *desktop, uint32_t pid, int win_id,
+                             const uint32_t *src, int src_w, int src_h,
+                             int dx, int dy, int dw, int dh);
 
 /* Replace the desktop backdrop with a wallpaper image. src is an XRGB pixel
  * buffer (0x00RRGGBB) of src_w x src_h, scaled to fill the screen. Returns 0 on

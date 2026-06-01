@@ -51,7 +51,11 @@ enum syscall_number {
 	SYS_SET_WALLPAPER = 36,
 	/* Set the focused-window top-bar menu bar.
 	 * rdi = win id, rsi = struct winsys_menubar_item* (user), rdx = count. */
-	SYS_WINDOW_SET_MENUBAR = 37
+	SYS_WINDOW_SET_MENUBAR = 37,
+	/* Present only a damaged sub-rectangle of the window's canvas.
+	 * rdi = win id, rsi = pixels, rdx = full w, r10 = full h,
+	 * r8 = (dx<<16)|dy, r9 = (dw<<16)|dh. */
+	SYS_WINDOW_PRESENT_RECT = 38
 };
 
 enum syscall_error {

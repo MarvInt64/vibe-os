@@ -996,6 +996,22 @@ static void window_toggle_maximize(struct desktop_state *desktop, int index) {
 
 static void draw_shadow_block(struct framebuffer *fb, int x, int y, int width, int height);
 
+/* Blit a 1-bpp bitmap (one uint16_t per row, MSB = leftmost of `width`). */
+static void draw_bitmap(struct framebuffer *fb, int x, int y, const uint16_t *rows, int n, int width, uint32_t c) {
+    int r, col;
+    for (r = 0; r < n; ++r) {
+        uint16_t b = rows[r];
+        for (col = 0; col < width; ++col)
+            if ((b >> (width - 1 - col)) & 1u) fb_fill_rect(fb, x + col, y + r, 1, 1, c);
+    }
+}
+
+/* Power symbol: an open ring with a stem at the top (12x12, 1bpp). */
+static const uint16_t s_power_glyph[12] = {
+    0x060, 0x060, 0x168, 0x264, 0x402, 0x402,
+    0x801, 0x402, 0x402, 0x204, 0x198, 0x0F0
+};
+
 int desktop_set_wallpaper(struct desktop_state *desktop, const uint32_t *src, int src_w, int src_h) {
     int sw, sh, x, y;
 
@@ -1281,16 +1297,7 @@ static void render_background_surface(struct desktop_state *desktop) {
     sx += 7 * 8 + 16;
     fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
     sx += 14;
-static const uint8_t s_power_glyph[15] = {
-    0b00011100, 0b00100000,
-    0b00100010, 0b00100000,
-    0b01000001, 0b00100000,
-    0b01000001, 0b00100000,
-    0b01000001, 0b00100000,
-    0b01000001, 0b00100000,
-    0b00100010, 0b00000000,
-    0b00011100, 0b00000000,
-};
+    draw_bitmap(fb, sx, 15, s_power_glyph, 12, 12, g_chrome_theme.text_dim);
 
     for (order = 0; order < desktop->launcher_count; ++order) {
         struct desktop_icon icon = launcher_icon_at(desktop, order);
@@ -2267,16 +2274,24 @@ int desktop_app_create(struct desktop_state *desktop, uint32_t pid, const char *
     return desktop_app_create_ex(desktop, pid, &options);
 }
 
-int desktop_app_present(struct desktop_state *desktop, uint32_t pid, int win_id, const uint32_t *src, int src_w, int src_h) {
-    int slot;
-    int win_idx;
-    int row;
-    int copy_w;
-    int copy_h;
+static void app_content_origin(struct desktop_state *desktop, int win_idx, int *cx, int *cy) {
+    struct window_state *wn = &desktop->windows[win_idx];
+    if (window_frameless(wn)) { *cx = 0; *cy = 0; }
+    else { *cx = large_ui(desktop) ? 22 : 16; *cy = large_ui(desktop) ? 58 : 48; }
+}
+
+/* Present a sub-rectangle [dx,dy,dw,dh] (in the app's content space) from the
+ * app's full canvas `src`. dw<=0 means "the whole content area" (full present).
+ * Partial presents copy only the damaged region into content_storage and poke
+ * it straight into the already-rendered window surface, marking only that small
+ * screen rect dirty — so a periodic updater (task manager) no longer forces a
+ * full-window recomposite every tick. */
+int desktop_app_present_rect(struct desktop_state *desktop, uint32_t pid, int win_id,
+                             const uint32_t *src, int src_w, int src_h,
+                             int dx, int dy, int dw, int dh) {
+    int slot, win_idx, row, cw, ch, cx, cy;
 
     if (src == 0) return -1;
-
-    /* Accept win_id as the window index, or fall back to PID lookup. */
     if (is_user_app_slot(win_id)) {
         slot = slot_index(win_id);
         if (slot < 0 || slot >= MAX_USER_APPS) return -1;
@@ -2288,20 +2303,60 @@ int desktop_app_present(struct desktop_state *desktop, uint32_t pid, int win_id,
         win_idx = WINDOW_APP_FIRST + slot;
     }
 
-    copy_w = src_w < desktop->user_apps[slot].content_width ? src_w : desktop->user_apps[slot].content_width;
-    copy_h = src_h < desktop->user_apps[slot].content_height ? src_h : desktop->user_apps[slot].content_height;
-    if (copy_w > (int)WINDOW_APP_CONTENT_MAX_WIDTH) copy_w = (int)WINDOW_APP_CONTENT_MAX_WIDTH;
-    if (copy_h > (int)WINDOW_APP_CONTENT_MAX_HEIGHT) copy_h = (int)WINDOW_APP_CONTENT_MAX_HEIGHT;
+    cw = src_w < desktop->user_apps[slot].content_width ? src_w : desktop->user_apps[slot].content_width;
+    ch = src_h < desktop->user_apps[slot].content_height ? src_h : desktop->user_apps[slot].content_height;
+    if (cw > (int)WINDOW_APP_CONTENT_MAX_WIDTH) cw = (int)WINDOW_APP_CONTENT_MAX_WIDTH;
+    if (ch > (int)WINDOW_APP_CONTENT_MAX_HEIGHT) ch = (int)WINDOW_APP_CONTENT_MAX_HEIGHT;
 
-    for (row = 0; row < copy_h; ++row) {
-        uint32_t *dst = &desktop->user_apps[slot].content_storage[(size_t)row * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH];
-        const uint32_t *s = &src[(size_t)row * (size_t)src_w];
-        memcpy(dst, s, (size_t)copy_w * sizeof(uint32_t));
+    /* Full present when no (valid) damage rect was supplied. */
+    int full = (dw <= 0 || dh <= 0);
+    if (full) { dx = 0; dy = 0; dw = cw; dh = ch; }
+    /* Clamp the damage rect into the content area. */
+    if (dx < 0) { dw += dx; dx = 0; }
+    if (dy < 0) { dh += dy; dy = 0; }
+    if (dx + dw > cw) dw = cw - dx;
+    if (dy + dh > ch) dh = ch - dy;
+    if (dw <= 0 || dh <= 0) return 0;
+
+    /* Copy the damaged rows into the persistent content buffer. */
+    for (row = 0; row < dh; ++row) {
+        uint32_t *dst = &desktop->user_apps[slot].content_storage[(size_t)(dy + row) * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH + (size_t)dx];
+        const uint32_t *s = &src[(size_t)(dy + row) * (size_t)src_w + (size_t)dx];
+        memcpy(dst, s, (size_t)dw * sizeof(uint32_t));
     }
 
-    mark_window_dirty(desktop, win_idx);
-    mark_dirty_rect(desktop, window_rect(&desktop->windows[win_idx]));
+    /* If a full surface render is already pending, let it pick the content up;
+     * a full present also goes the simple route (render whole surface). */
+    if (full || desktop->window_dirty[win_idx]) {
+        mark_window_dirty(desktop, win_idx);
+        mark_dirty_rect(desktop, window_rect(&desktop->windows[win_idx]));
+        return 0;
+    }
+
+    /* Partial: poke just the damaged sub-rect into the (already-rendered) window
+     * surface and mark only that screen region dirty. */
+    app_content_origin(desktop, win_idx, &cx, &cy);
+    {
+        struct framebuffer *fb = &desktop->window_fbs[win_idx];
+        int fx = cx + dx, fy = cy + dy, n = dw, r;
+        if (fx + n > (int)fb->width) n = (int)fb->width - fx;
+        for (r = 0; r < dh && fx >= 0 && n > 0; ++r) {
+            int py = fy + r;
+            if (py < 0 || py >= (int)fb->height) continue;
+            uint32_t *dst = (uint32_t *)((uint8_t *)fb->base + (size_t)py * fb->pitch) + fx;
+            const uint32_t *s = &desktop->user_apps[slot].content_storage[(size_t)(dy + r) * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH + (size_t)dx];
+            memcpy(dst, s, (size_t)n * sizeof(uint32_t));
+        }
+    }
+    {
+        struct window_state *wn = &desktop->windows[win_idx];
+        mark_dirty_rect(desktop, rect_from_bounds(wn->x + cx + dx, wn->y + cy + dy, dw, dh));
+    }
     return 0;
+}
+
+int desktop_app_present(struct desktop_state *desktop, uint32_t pid, int win_id, const uint32_t *src, int src_w, int src_h) {
+    return desktop_app_present_rect(desktop, pid, win_id, src, src_w, src_h, 0, 0, 0, 0);
 }
 
 int desktop_app_poll_event(struct desktop_state *desktop, uint32_t pid, int win_id, struct winsys_event *out) {

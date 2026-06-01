@@ -27,6 +27,7 @@ typedef unsigned char uint8_t;
 #define SYS_PROCESS_KILL 29
 #define SYS_WINDOW_SET_MENU 30
 #define SYS_WINDOW_CREATE_EX 35
+#define SYS_WINDOW_PRESENT_RECT 38
 
 struct winsys_event { uint32_t type; int32_t x; int32_t y; uint32_t buttons; uint32_t key; };
 #define EV_MOUSE_MOVE 1
@@ -62,6 +63,16 @@ static inline ssize_t sc3(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2) {
 }
 static inline ssize_t sc4(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
     ssize_t r; __asm__ volatile("mov %5,%%r10; int $0x80" : "=a"(r) : "a"(n),"D"(a0),"S"(a1),"d"(a2),"r"(a3) : "rcx","r8","r9","r10","r11","memory"); return r;
+}
+static inline ssize_t sc6(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    ssize_t r;
+    register uint64_t r10 __asm__("r10") = a3;
+    register uint64_t r8  __asm__("r8")  = a4;
+    register uint64_t r9  __asm__("r9")  = a5;
+    __asm__ volatile("int $0x80" : "=a"(r)
+        : "a"(n),"D"(a0),"S"(a1),"d"(a2),"r"(r10),"r"(r8),"r"(r9)
+        : "rcx","r11","memory");
+    return r;
 }
 static void do_yield(void){ __asm__ volatile("int $0x80"::"a"((uint64_t)SYS_YIELD):"rcx","r11","memory"); }
 /* Sleep for `ticks` scheduler ticks — paces the UI loop so it doesn't busy-spin
@@ -158,6 +169,20 @@ struct vui_window {
 
 static struct vui_window g_win;
 static uint32_t g_canvas[VUI_MAX_W * VUI_MAX_H];
+
+/* Damage tracking for partial presents: the union of widget rects that changed
+ * since the last paint. g_dmg_full forces a whole-window present (used for
+ * structural changes: resize, menus, layout). */
+static int g_dmg_full = 1;
+static int g_dmg_x0, g_dmg_y0, g_dmg_x1, g_dmg_y1;
+static void dmg_reset(void){ g_dmg_full = 0; g_dmg_x0 = g_dmg_y0 = 1<<29; g_dmg_x1 = g_dmg_y1 = -(1<<29); }
+static void dmg_full(void){ g_dmg_full = 1; }
+static void dmg_add(int x, int y, int w, int h){
+    if (x < g_dmg_x0) g_dmg_x0 = x;
+    if (y < g_dmg_y0) g_dmg_y0 = y;
+    if (x + w > g_dmg_x1) g_dmg_x1 = x + w;
+    if (y + h > g_dmg_y1) g_dmg_y1 = y + h;
+}
 
 const vui_theme *vui_theme_default(void) { return &g_default_theme; }
 void vui_set_theme(const vui_theme *theme) {
@@ -475,10 +500,12 @@ void vui_set_text(vui_widget *wd, const char *t){
     /* Dirty-on-change: skip the repaint entirely when the text is unchanged, so
      * periodic refreshers (e.g. the task manager) don't re-present every tick. */
     if(sequal(wd->text, t?t:"")) return;
+    dmg_add(wd->x, wd->y, wd->w, wd->h);   /* old extent */
     scopy(wd->text,t,sizeof(wd->text));
     if(wd->type==W_BUTTON && !(wd->anchors & VUI_ANCHOR_RIGHT)) wd->w=slen(wd->text)*8+24;
     if(wd->type==W_LABEL) wd->w=slen(wd->text)*8;
     if(wd->type==W_BADGE) wd->w=slen(wd->text)*8+18;
+    dmg_add(wd->x, wd->y, wd->w, wd->h);   /* new extent */
     g_win.dirty=1;
 }
 void vui_set_int(vui_widget *wd, int v){
@@ -491,11 +518,11 @@ void vui_set_int(vui_widget *wd, int v){
     vui_set_text(wd,b);
 }
 int vui_get_int(vui_widget *wd){ return wd ? wd->value : 0; }
-void vui_set_value(vui_widget *wd, int v){ if(!wd||wd->value==v)return; wd->value=v; g_win.dirty=1; }
-void vui_set_color(vui_widget *wd, vui_u32 c){ if(!wd||wd->color==c)return; wd->color=c; g_win.dirty=1; }
+void vui_set_value(vui_widget *wd, int v){ if(!wd||wd->value==v)return; wd->value=v; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
+void vui_set_color(vui_widget *wd, vui_u32 c){ if(!wd||wd->color==c)return; wd->color=c; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
 void vui_set_user(vui_widget *wd, void *u){ if(wd) wd->user=u; }
 void *vui_get_user(vui_widget *wd){ return wd?wd->user:0; }
-void vui_set_visible(vui_widget *wd, int visible){ uint8_t v=(uint8_t)(visible?1:0); if(!wd||wd->visible==v)return; wd->visible=v; g_win.dirty=1; }
+void vui_set_visible(vui_widget *wd, int visible){ uint8_t v=(uint8_t)(visible?1:0); if(!wd||wd->visible==v)return; wd->visible=v; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
 void vui_set_bounds(vui_widget *wd, int x, int y, int width, int height){
     if(!wd)return;
     wd->x=x; wd->y=y; wd->w=width; wd->h=height;
@@ -1158,7 +1185,22 @@ static void repaint(struct vui_window *w) {
     for (i = 0; i < w->widget_count; ++i) draw_widget(w, &w->widgets[i]);
     /* Pass 2: dropdown overlay so it always appears on top. */
     draw_dropdown(w);
-    sc4(SYS_WINDOW_PRESENT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas, (uint64_t)w->width, (uint64_t)w->height);
+    /* Present only the damaged region when we have a valid partial rect; the
+     * whole canvas is always redrawn (cheap, local), but pushing just the
+     * changed sub-rect to the compositor avoids a full-window recomposite. */
+    if (g_dmg_full || g_dmg_x1 <= g_dmg_x0 || g_dmg_y1 <= g_dmg_y0) {
+        sc4(SYS_WINDOW_PRESENT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas, (uint64_t)w->width, (uint64_t)w->height);
+    } else {
+        int x0 = g_dmg_x0 < 0 ? 0 : g_dmg_x0;
+        int y0 = g_dmg_y0 < 0 ? 0 : g_dmg_y0;
+        int x1 = g_dmg_x1 > w->width ? w->width : g_dmg_x1;
+        int y1 = g_dmg_y1 > w->height ? w->height : g_dmg_y1;
+        sc6(SYS_WINDOW_PRESENT_RECT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas,
+            (uint64_t)w->width, (uint64_t)w->height,
+            (uint64_t)(((x0 & 0xffff) << 16) | (y0 & 0xffff)),
+            (uint64_t)((((x1 - x0) & 0xffff) << 16) | ((y1 - y0) & 0xffff)));
+    }
+    dmg_reset();
 }
 
 static int inside(struct vui_widget *wd, int x, int y) {
@@ -1240,7 +1282,7 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
                 int nw=ev.x, nh=ev.y;
                 if(nw<1)nw=1; if(nh<1)nh=1;
                 if(nw>VUI_MAX_W)nw=VUI_MAX_W; if(nh>VUI_MAX_H)nh=VUI_MAX_H;
-                w->width=nw; w->height=nh; w->dirty=1;
+                w->width=nw; w->height=nh; w->dirty=1; dmg_full();
                 if(w->on_resize) w->on_resize(w,nw,nh);
             }
         }
@@ -1251,7 +1293,7 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
             struct vui_widget *m = &w->widgets[i];
             if (m->type != W_MENU) continue;
             uint8_t hov = (uint8_t)inside(m, w->mouse_x, w->mouse_y);
-            if (hov != m->hover) { m->hover = hov; w->dirty = 1; }
+            if (hov != m->hover) { m->hover = hov; w->dirty = 1; dmg_full(); }
         }
         /* Update hover for W_MENUITEM entries when their dropdown is open. */
         if (w->active_menu_idx >= 0) {
@@ -1260,7 +1302,7 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
                 if (it->type != W_MENUITEM || it->parent_idx != w->active_menu_idx
                     || it->separator) continue;
                 uint8_t hov = (uint8_t)inside(it, w->mouse_x, w->mouse_y);
-                if (hov != it->hover) { it->hover = hov; w->dirty = 1; }
+                if (hov != it->hover) { it->hover = hov; w->dirty = 1; dmg_full(); }
             }
         }
 
@@ -1314,7 +1356,7 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
             uint8_t hov = (uint8_t)(w->active_menu_idx < 0 &&
                                     inside(wd, w->mouse_x, w->mouse_y));
             uint8_t prs = (uint8_t)(hov && w->mouse_down);
-            if (hov != wd->hover || prs != wd->pressed) { wd->hover=hov; wd->pressed=prs; w->dirty=1; }
+            if (hov != wd->hover || prs != wd->pressed) { wd->hover=hov; wd->pressed=prs; w->dirty=1; dmg_add(wd->x, wd->y, wd->w + 24, wd->h + 8); }
             if (click_x >= 0 && inside(wd, click_x, click_y)) {
                 if (wd->type == W_TABS) {
                     int n = tab_count(wd->text);
@@ -1323,13 +1365,20 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
                         int tab = rel / (wd->w / n ? wd->w / n : 1);
                         if (tab < 0) tab = 0;
                         if (tab >= n) tab = n - 1;
-                        if (tab != wd->value) { wd->value = tab; w->dirty = 1; }
+                        if (tab != wd->value) { wd->value = tab; w->dirty = 1; dmg_add(wd->x, wd->y, wd->w, wd->h); }
                     }
                 }
                 if (wd->on_click) wd->on_click(wd);
             }
         }
 
+        /* While a dropdown overlay is open (or was, the frame it closes), force
+         * a full present so the overlay is drawn/erased cleanly. */
+        {
+            static int prev_menu = -1;
+            if (w->active_menu_idx >= 0 || prev_menu >= 0) dmg_full();
+            prev_menu = w->active_menu_idx;
+        }
         if (w->dirty) { repaint(w); w->dirty = 0; }
         /* Pace the loop at the scheduler tick instead of busy-yielding: input
          * stays responsive (~1 tick latency) while idle frames cost nothing. */

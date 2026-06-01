@@ -1397,16 +1397,25 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         return 0;
     }
 
-    if (number == SYS_WINDOW_PRESENT) {
-        /* rdi = win id, rsi = pixel buffer (XRGB), rdx = w, r10 = h. */
+    if (number == SYS_WINDOW_PRESENT || number == SYS_WINDOW_PRESENT_RECT) {
+        /* rdi = win id, rsi = pixel buffer (XRGB), rdx = w, r10 = h.
+         * PRESENT_RECT also: r8 = (dx<<16)|dy, r9 = (dw<<16)|dh. */
         struct desktop_state *d = desktop_active();
         int present_result;
+        int dx = 0, dy = 0, dw = 0, dh = 0;
         if (d == 0) {
             frame->rax = (uint64_t)(-SYSCALL_EPERM);
             return 0;
         }
-        present_result = desktop_app_present(d, process->pid, (int)frame->rdi,
-            (const uint32_t *)(uintptr_t)frame->rsi, (int)frame->rdx, (int)frame->r10);
+        if (number == SYS_WINDOW_PRESENT_RECT) {
+            dx = (int)((frame->r8 >> 16) & 0xffffu);
+            dy = (int)(frame->r8 & 0xffffu);
+            dw = (int)((frame->r9 >> 16) & 0xffffu);
+            dh = (int)(frame->r9 & 0xffffu);
+        }
+        present_result = desktop_app_present_rect(d, process->pid, (int)frame->rdi,
+            (const uint32_t *)(uintptr_t)frame->rsi, (int)frame->rdx, (int)frame->r10,
+            dx, dy, dw, dh);
         frame->rax = (uint64_t)(int64_t)present_result;
         if (present_result == 0) {
             process->context = *frame;
