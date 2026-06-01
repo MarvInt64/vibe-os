@@ -129,64 +129,163 @@ static int tls_low_write(void *ctx, const unsigned char *buf, size_t len) {
     return (n <= 0) ? -1 : n;
 }
 
-int net_https_get(uint32_t dst_ip, uint16_t port, const char *host_header,
-                  const char *path, const char *user_agent,
-                  char *out, int out_cap, int timeout_ms) {
-    unsigned char seed[64];
-    int total = 0;
+/* ---- Connection pool (HTTPS keep-alive) -------------------------------- *
+ * A single TLS connection is kept open between requests to the same host so
+ * follow-up fetches (e.g. all the images on a page) skip the expensive TLS
+ * handshake. Safe because net_lock serializes every HTTPS request, so only one
+ * runs at a time and there is exactly one TLS context. */
+static int      g_tls_open;
+static uint32_t g_tls_ip;
+static uint16_t g_tls_port;
+static char     g_tls_host[256];
 
-    if (out == 0 || out_cap <= 0) {
-        return -1;
+static int str_eq(const char *a, const char *b) {
+    while (*a && *b) { if (*a != *b) return 0; ++a; ++b; }
+    return *a == *b;
+}
+
+/* Tear down the pooled TLS connection (TLS close-notify + TCP FIN). */
+static void tls_teardown(void) {
+    if (g_tls_open) {
+        br_sslio_close(&g_ioc);
+        g_tls_open = 0;
     }
-    if (tcp_open(dst_ip, port, timeout_ms) != 0) {
+    tcp_close();
+}
+
+/* Open a fresh TLS connection and perform the handshake. Returns 0 or <0. */
+static int tls_connect(uint32_t ip, uint16_t port, const char *host, int timeout_ms) {
+    unsigned char seed[64];
+    size_t i;
+
+    if (tcp_open(ip, port, timeout_ms) != 0) {
         return -2;
     }
-
     /* init_full wires up all cipher suites + hashes; we then replace the trust
      * validator with our accept-all engine. */
     br_ssl_client_init_full(&g_sc, &g_xc_min, 0, 0);
     g_ax.vtable = &AX_VTABLE;
     br_ssl_engine_set_x509(&g_sc.eng, &g_ax.vtable);
     br_ssl_engine_set_buffer(&g_sc.eng, g_iobuf, sizeof g_iobuf, 1);
-
     kgetrandom(seed, sizeof seed);
     br_ssl_engine_inject_entropy(&g_sc.eng, seed, sizeof seed);
-
-    if (!br_ssl_client_reset(&g_sc, host_header, 0)) {
+    if (!br_ssl_client_reset(&g_sc, host, 0)) {
         tcp_close();
         return -3;
     }
     br_sslio_init(&g_ioc, &g_sc.eng, tls_low_read, 0, tls_low_write, 0);
 
-    /* Send the HTTP/1.0 request. The User-Agent is whatever the calling app
-     * supplied; HTTPS connections are not pooled here, so request close. */
+    g_tls_open = 1;
+    g_tls_ip = ip;
+    g_tls_port = port;
+    for (i = 0; i + 1 < sizeof(g_tls_host) && host[i]; ++i) g_tls_host[i] = host[i];
+    g_tls_host[(host) ? i : 0] = '\0';
+    return 0;
+}
+
+/* Send one keep-alive request over the (already-handshaked) connection and read
+ * the response into out, framed by Content-Length so we know the end without
+ * the peer closing. Sets *want_close if the response/headers preclude pooling.
+ * Returns bytes read, or <0 on a send/handshake error. */
+static int tls_request(const char *host_header, const char *path,
+                       const char *user_agent, char *out, int out_cap,
+                       int *want_close) {
+    int total = 0, hdr_end = -1, body_off = -1;
+    long content_len = -1;
+    *want_close = 0;
+
     br_sslio_write_all(&g_ioc, "GET ", 4);
     br_sslio_write_all(&g_ioc, path, strlen(path));
-    br_sslio_write_all(&g_ioc, " HTTP/1.0\r\nHost: ", 17);
+    br_sslio_write_all(&g_ioc, " HTTP/1.1\r\nHost: ", 17);
     br_sslio_write_all(&g_ioc, host_header, strlen(host_header));
     if (user_agent && user_agent[0]) {
         br_sslio_write_all(&g_ioc, "\r\nUser-Agent: ", 14);
         br_sslio_write_all(&g_ioc, user_agent, strlen(user_agent));
     }
-    br_sslio_write_all(&g_ioc, "\r\nConnection: close\r\n\r\n", 23);
+    br_sslio_write_all(&g_ioc, "\r\nConnection: keep-alive\r\n\r\n", 28);
     if (br_sslio_flush(&g_ioc) != 0) {
-        tcp_close();
-        return -4;
+        return -4;   /* connection unusable (e.g. server closed a pooled conn) */
     }
 
-    /* Read the response until close / error / buffer full. */
     for (;;) {
-        int rl = br_sslio_read(&g_ioc, (unsigned char *)out + total, (size_t)(out_cap - total));
-        if (rl <= 0) {
-            break;
-        }
+        int rl = br_sslio_read(&g_ioc, (unsigned char *)out + total,
+                               (size_t)(out_cap - total));
+        if (rl <= 0) { *want_close = 1; break; }   /* peer closed or error */
         total += rl;
-        if (total >= out_cap) {
-            break;
+
+        /* Once the header block is in, parse framing. */
+        if (hdr_end < 0) {
+            int i;
+            for (i = 0; i + 3 < total; ++i) {
+                if (out[i]=='\r'&&out[i+1]=='\n'&&out[i+2]=='\r'&&out[i+3]=='\n') {
+                    hdr_end = i; body_off = i + 4; break;
+                }
+            }
+            if (hdr_end >= 0) {
+                /* Content-Length (case-insensitive scan of the header block). */
+                int j;
+                for (j = 0; j < hdr_end; ++j) {
+                    const char *h = out + j;
+                    const char *n = "content-length:";
+                    int k = 0;
+                    while (n[k]) { char a=h[k]; if(a>='A'&&a<='Z')a+=32; if(a!=n[k])break; ++k; }
+                    if (!n[k]) {
+                        int p = j + 15; long v = 0; int have = 0;
+                        while (p < hdr_end && (out[p]==' '||out[p]=='\t')) ++p;
+                        while (p < hdr_end && out[p]>='0'&&out[p]<='9') { v=v*10+(out[p]-'0'); ++p; have=1; }
+                        if (have) content_len = v;
+                        break;
+                    }
+                }
+                /* chunked or no length → cannot frame for keep-alive. */
+                if (content_len < 0) *want_close = 1;
+            }
         }
+
+        if (content_len >= 0 && body_off >= 0 &&
+            (long)(total - body_off) >= content_len) {
+            break;   /* full response received; leave connection open */
+        }
+        if (total >= out_cap) { *want_close = 1; break; }
     }
-    br_sslio_close(&g_ioc);
-    tcp_close();
+    return total;
+}
+
+int net_https_get(uint32_t dst_ip, uint16_t port, const char *host_header,
+                  const char *path, const char *user_agent,
+                  char *out, int out_cap, int timeout_ms) {
+    int total;
+    int want_close = 0;
+    int reuse;
+
+    if (out == 0 || out_cap <= 0) {
+        return -1;
+    }
+
+    /* Reuse a pooled connection to the same host if it is still alive. */
+    reuse = (g_tls_open && g_tls_ip == dst_ip && g_tls_port == port &&
+             str_eq(g_tls_host, host_header) && tcp_stream_alive());
+
+    if (!reuse) {
+        int r;
+        if (g_tls_open) tls_teardown();
+        r = tls_connect(dst_ip, port, host_header, timeout_ms);
+        if (r != 0) return r;
+    }
+
+    total = tls_request(host_header, path, user_agent, out, out_cap, &want_close);
+
+    /* A reused connection that the server had silently dropped fails at the
+     * first write/read: retry once on a fresh connection. */
+    if (reuse && total <= 0) {
+        tls_teardown();
+        if (tls_connect(dst_ip, port, host_header, timeout_ms) != 0) return -2;
+        total = tls_request(host_header, path, user_agent, out, out_cap, &want_close);
+    }
+
+    if (want_close || total <= 0) {
+        tls_teardown();
+    }   /* else: keep the connection pooled for the next same-host request */
 
     if (total == 0 && br_ssl_engine_last_error(&g_sc.eng) != 0) {
         serial_write("NET_TLS: handshake/read failed, err=");

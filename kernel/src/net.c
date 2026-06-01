@@ -1160,6 +1160,14 @@ void tcp_close(void) {
     g_stream_conn = 0;
 }
 
+/* True if the TLS stream connection is still open and usable for another
+ * request (used by net_tls.c to decide whether to reuse a pooled connection).
+ * net_poll() first so a server-side FIN that just arrived is reflected. */
+int tcp_stream_alive(void) {
+    net_poll();
+    return g_stream_conn != 0 && g_stream_conn->state == TCP_ESTABLISHED;
+}
+
 int net_parse_ipv4(const char *text, uint32_t *out_ip) {
     uint32_t parts[4] = {0, 0, 0, 0};
     int idx = 0;

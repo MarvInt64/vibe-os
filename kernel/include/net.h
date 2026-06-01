@@ -58,6 +58,7 @@ int tcp_open(uint32_t dst_ip, uint16_t port, int timeout_ms);   /* 0 ok, <0 erro
 int tcp_stream_send(const uint8_t *data, int len);              /* bytes sent, <0 error */
 int tcp_stream_recv(uint8_t *buf, int len, int timeout_ms);     /* >0 bytes, 0 EOF, <0 timeout */
 void tcp_close(void);
+int tcp_stream_alive(void);   /* 1 if the stream connection is still ESTABLISHED */
 
 /* Blocking HTTPS GET over TLS (BearSSL) to dst_ip:port. Same contract as
  * net_http_get. NOTE: v1 does NOT validate certificates (accept-all) — it is

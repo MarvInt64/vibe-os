@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <atomic>
 #include <thread>
+#include <mutex>
 #include "vibeos.h"
 #include "weblayout.h"
 #include "dom.h"
@@ -75,6 +76,16 @@ private:
     char  pending_url_[1024] = {};      /* URL handed to the worker to load     */
     std::thread worker_;                /* the in-flight network worker, if any */
 
+    /* Progressive rendering: the worker re-lays-out the page as each image
+     * arrives and raises images_dirty_; the UI thread repaints. layout_mutex_
+     * guards layout_ and the image cache against the concurrent re-layout. */
+    std::mutex        layout_mutex_;
+    std::atomic<bool> images_dirty_{false};
+    /* Set once the page text is laid out; the UI then renders content even
+     * while the worker keeps fetching images (state stays Fetching for the
+     * whole load, which keeps navigation single-worker and race-free). */
+    std::atomic<bool> text_ready_{false};
+
     /* Current page base (for resolving relative URLs). */
     bool cur_secure_   = false;
     char cur_host_[256] = {};
@@ -119,6 +130,7 @@ private:
     void navigate(const char *url);   /* hand off to the worker thread */
     void load_url(const char *url);   /* inner: resolves scheme, follows redirects */
     void fetch_worker();              /* runs on the worker thread: load pending_url_ */
+    void load_images();               /* worker thread: fetch images, re-layout each */
     void poll_fetch();                /* UI thread: react to worker completion */
     void layout_current();
     void resolve_href(const char *href, char *out, int cap) const;

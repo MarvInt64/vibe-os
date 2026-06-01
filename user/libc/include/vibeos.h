@@ -49,6 +49,7 @@ struct vos_http_req {
     char *out;
     int cap;
     const char *user_agent;   /* User-Agent header value (0 to omit) */
+    int timeout_ms;           /* request timeout (0 = kernel default) */
 };
 /* Resolve a hostname to an IPv4 address (host byte order). 0 on success. */
 int vos_resolve(const char *host, uint32_t *ip_out);

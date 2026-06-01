@@ -680,6 +680,7 @@ struct http_req {
     char *out;
     int cap;
     const char *user_agent;
+    int timeout_ms;
 };
 
 static char g_http_buf[8192];
@@ -733,6 +734,7 @@ static void cmd_curl(const char *url) {
     req.out = g_http_buf;
     req.cap = (int)sizeof(g_http_buf) - 1;
     req.user_agent = "VibeOS github.com/MarvInt64/vibe-os";
+    req.timeout_ms = 0;   /* kernel default */
 
     n = (int)syscall1(SYS_NET_HTTP_GET, (uint64_t)(size_t)&req);
     if (n <= 0) {
