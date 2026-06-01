@@ -281,50 +281,52 @@ static void text(struct vui_window *w,int x,int y,const char *s,vui_u32 c){
 static void line_diag(struct vui_window *w,int x,int y,int len,int dx,int dy,vui_u32 c){
     int i; for(i=0;i<len;++i){ put(w,x+i*dx,y+i*dy,c); put(w,x+i*dx+1,y+i*dy,c); }
 }
-/* Small monochrome line-art icons for dock tiles (id from vui_set_value). */
+/* Large monochrome outline icons (2px stroke) for the dock, matching the
+ * reference: thin line-art glyphs that sit directly on the dock bar. */
 static void tile_icon(struct vui_window *w,int cx,int cy,int id,vui_u32 c){
     switch(id){
     case 1: { /* globe / web */
-        int s=9;
-        line_h(w, cx-s+2, cy-s,   2*s-3, c);
-        line_h(w, cx-s+2, cy+s,   2*s-3, c);
-        line_v(w, cx-s,   cy-s+2, 2*s-3, c);
-        line_v(w, cx+s,   cy-s+2, 2*s-3, c);
-        line_h(w, cx-s, cy, 2*s+1, c);   /* equator */
-        line_v(w, cx, cy-s, 2*s+1, c);   /* meridian */
+        int s=14;
+        rect(w, cx-s+3, cy-s,   2*s-6, 2, c);   /* top    */
+        rect(w, cx-s+3, cy+s-1, 2*s-6, 2, c);   /* bottom */
+        rect(w, cx-s,   cy-s+3, 2, 2*s-6, c);   /* left   */
+        rect(w, cx+s-1, cy-s+3, 2, 2*s-6, c);   /* right  */
+        rect(w, cx-s,   cy-1,   2*s, 2, c);     /* equator  */
+        rect(w, cx-1,   cy-s,   2, 2*s, c);     /* meridian */
         break; }
-    case 2: { /* monitor with an activity line (task manager) */
-        int s = 9;
-        line_h(w, cx-s,   cy-s+1, 2*s,     c);   /* screen top    */
-        line_h(w, cx-s,   cy+s-3, 2*s,     c);   /* screen bottom */
-        line_v(w, cx-s,   cy-s+1, 2*s-4,   c);   /* screen left   */
-        line_v(w, cx+s-1, cy-s+1, 2*s-4,   c);   /* screen right  */
-        line_v(w, cx,     cy+s-3, 3,       c);   /* stand neck    */
-        line_h(w, cx-4,   cy+s,   9,       c);   /* stand base    */
-        line_diag(w, cx-6, cy+2, 4, 1, -1, c);   /* chart line    */
-        line_diag(w, cx-2, cy-1, 3, 1,  1, c);
-        line_diag(w, cx+1, cy+1, 5, 1, -1, c);
+    case 2: { /* monitor with an activity chart */
+        int s=14;
+        rect(w, cx-s,   cy-s+1, 2*s, 2, c);     /* screen top    */
+        rect(w, cx-s,   cy+s-6, 2*s, 2, c);     /* screen bottom */
+        rect(w, cx-s,   cy-s+1, 2, 2*s-7, c);   /* screen left   */
+        rect(w, cx+s-2, cy-s+1, 2, 2*s-7, c);   /* screen right  */
+        rect(w, cx-2,   cy+s-5, 4, 4, c);       /* stand neck    */
+        rect(w, cx-8,   cy+s,   16, 2, c);      /* stand base    */
+        line_diag(w, cx-9, cy+4, 6, 1, -1, c);  /* chart zigzag  */
+        line_diag(w, cx-3, cy-2, 4, 1,  1, c);
+        line_diag(w, cx+1, cy+2, 7, 1, -1, c);
         break; }
     case 3: { /* apps grid 2x2 */
-        int q=6;
-        rect(w, cx-q-1, cy-q-1, q, q, c);
-        rect(w, cx+1,   cy-q-1, q, q, c);
-        rect(w, cx-q-1, cy+1,   q, q, c);
-        rect(w, cx+1,   cy+1,   q, q, c);
+        int q=10;
+        rect(w, cx-q-2, cy-q-2, q, q, c);
+        rect(w, cx+2,   cy-q-2, q, q, c);
+        rect(w, cx-q-2, cy+2,   q, q, c);
+        rect(w, cx+2,   cy+2,   q, q, c);
         break; }
-    case 4: { /* code </> */
-        line_diag(w, cx-3, cy, 6, -1, -1, c);
-        line_diag(w, cx-3, cy, 6, -1,  1, c);
-        line_diag(w, cx+4, cy, 6,  1, -1, c);
-        line_diag(w, cx+4, cy, 6,  1,  1, c);
+    case 4: { /* code  <>  */
+        line_diag(w, cx-9, cy, 9, 1, -1, c);    /* "<" upper arm */
+        line_diag(w, cx-9, cy, 9, 1,  1, c);    /* "<" lower arm */
+        line_diag(w, cx+10, cy, 9, -1, -1, c);  /* ">" upper arm */
+        line_diag(w, cx+10, cy, 9, -1,  1, c);  /* ">" lower arm */
         break; }
     case 5: { /* folder */
-        line_h(w, cx-9, cy-5, 8, c);
-        line_v(w, cx-1, cy-7, 3, c);
-        line_h(w, cx-9, cy+6, 19, c);
-        line_v(w, cx-9, cy-5, 11, c);
-        line_v(w, cx+9, cy-3, 9, c);
-        line_h(w, cx-1, cy-7, 11, c);
+        int s=14;
+        rect(w, cx-s,   cy-6, 2, 16, c);        /* left  */
+        rect(w, cx+s,   cy-2, 2, 12, c);        /* right */
+        rect(w, cx-s,   cy+9, 2*s+2, 2, c);     /* bottom */
+        rect(w, cx-s,   cy-6, 9, 2, c);         /* back-top */
+        rect(w, cx-s+8, cy-9, 2, 4, c);
+        rect(w, cx-s+8, cy-9, s+2, 2, c);       /* front-top */
         break; }
     default: break;
     }
@@ -918,23 +920,15 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         text(w, tx, ty, wd->text, VUI_TEXT);
         break; }
     case W_TILE: {
-        /* Dock icon tile (per the design spec): a subtle rounded square with a
-         * faint border and an outline glyph; hover/active shift to a restrained
-         * blue and an accent indicator line appears below the tile. */
+        /* Dock icon: a large thin outline glyph sitting directly on the dock bar
+         * (no tile box), matching the reference. Hover/active brightens the glyph
+         * and shows a short accent indicator line below it; faint vertical
+         * separators sit in the gaps between icons. */
         uint32_t accent = wd->color ? wd->color : g_theme.accent;
         int cx = wd->x + wd->w / 2;
         int cy = wd->y + wd->h / 2 - 2;
         int active = (wd->hover || wd->pressed);
-        uint32_t tbg = active ? mix(g_theme.surface, accent, 1u, 6u)
-                              : mix(g_theme.surface, 0x00ffffffu, 1u, 24u);
-        uint32_t tbd = active ? mix(g_theme.surface, accent, 1u, 2u)
-                              : mix(g_theme.surface, 0x00cfe2f5u, 1u, 3u);
-        uint32_t ic  = active ? g_theme.text : g_theme.text_dim;
-        rect(w, wd->x, wd->y, wd->w, wd->h, tbg);
-        rect(w, wd->x + 1, wd->y, wd->w - 2, 1, tbd);
-        rect(w, wd->x + 1, wd->y + wd->h - 1, wd->w - 2, 1, tbd);
-        rect(w, wd->x, wd->y + 1, 1, wd->h - 2, tbd);
-        rect(w, wd->x + wd->w - 1, wd->y + 1, 1, wd->h - 2, tbd);
+        uint32_t ic = active ? g_theme.text : g_theme.text_dim;
         if (wd->value > 0) {
             tile_icon(w, cx, cy, wd->value, ic);
         } else {
@@ -944,7 +938,10 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
             if (tx < wd->x + 6) tx = wd->x + 6;
             text(w, tx, ty, wd->text, ic);
         }
-        if (active) rect(w, cx - 8, wd->y + wd->h + 3, 16, 2, accent);
+        /* Faint vertical separator in the gap to the right of the icon. */
+        rect(w, wd->x + wd->w + 11, wd->y + 4, 1, wd->h - 8,
+             mix(g_theme.surface, 0x00cfe2f5u, 1u, 6u));
+        if (active) rect(w, cx - 9, wd->y + wd->h + 4, 18, 2, accent);
         break; }
     case W_INPUT: {
         int tx = wd->x + 28;
