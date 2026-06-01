@@ -81,7 +81,8 @@ enum { W_PANEL, W_LABEL, W_BUTTON, W_BAR, W_VBOX, W_HBOX,
        W_BADGE,
        W_TABS,
        W_SPARK,
-       W_PILL
+       W_PILL,
+       W_PILLBTN
 };
 
 static const vui_theme g_default_theme = {
@@ -259,31 +260,31 @@ static int isqrt_i(int v){ int r=0; while((r+1)*(r+1)<=v) ++r; return r; }
 /* Filled rounded rectangle (pill). Corner pixels outside the radius are left at
  * the window's clear color so a frameless transparent window shows the desktop
  * through them. Draws a 1px border in `border`. */
-static void fill_round_rect(struct vui_window *w,int x,int y,int wid,int hgt,int r,vui_u32 fill,vui_u32 border){
+/* Solid rounded-rect fill (no border). Corner pixels outside the radius are
+ * left untouched (caller's background shows through there). */
+static void rrect_fill(struct vui_window *w,int x,int y,int wid,int hgt,int r,vui_u32 c){
     int iy;
     if (wid<=0||hgt<=0) return;
     if (r<0) r=0;
     if (r>hgt/2) r=hgt/2;
     if (r>wid/2) r=wid/2;
-    /* Fill interior row by row; corner rows are inset by the circle profile.
-     * Each corner row also gets a 2px border stroke at its fill boundary so the
-     * rounded edge reads as a defined outline rather than a raw fill staircase
-     * (which jaggies badly against a high-contrast window behind it). */
     for (iy=0; iy<hgt; ++iy){
         int dy=0, inset=0, py=y+iy;
         if (iy<r) dy=r-iy; else if (iy>=hgt-r) dy=iy-(hgt-r)+1;
         if (dy>0){ int ch=isqrt_i(r*r-dy*dy); inset=r-ch; }
-        rect(w, x+inset, py, wid-2*inset, 1, fill);
-        if (dy>0){
-            rect(w, x+inset,       py, 2, 1, border);
-            rect(w, x+wid-inset-2, py, 2, 1, border);
-        }
+        rect(w, x+inset, py, wid-2*inset, 1, c);
     }
-    /* Border on the straight edges. */
-    line_h(w, x+r, y,         wid-2*r, border);
-    line_h(w, x+r, y+hgt-1,   wid-2*r, border);
-    line_v(w, x,         y+r, hgt-2*r, border);
-    line_v(w, x+wid-1,   y+r, hgt-2*r, border);
+}
+/* Rounded rect with a clean 1px border tracing the whole shape (arcs included):
+ * paint the border-coloured shape, then an inset fill-coloured shape on top. */
+static void fill_round_rect(struct vui_window *w,int x,int y,int wid,int hgt,int r,vui_u32 fill,vui_u32 border){
+    if (border != fill) {
+        int ri = r - 1; if (ri < 0) ri = 0;
+        rrect_fill(w, x, y, wid, hgt, r, border);
+        rrect_fill(w, x+1, y+1, wid-2, hgt-2, ri, fill);
+    } else {
+        rrect_fill(w, x, y, wid, hgt, r, fill);
+    }
 }
 static void glass_box(struct vui_window *w, int x, int y, int wid, int hgt, vui_u32 fill, int strong) {
     vui_u32 top = strong ? g_theme.border_hi : mix(g_theme.border_hi, fill, 1u, 2u);
@@ -435,6 +436,13 @@ vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels,
     if (!wd) return 0;
     wd->x=x; wd->y=y; wd->w=width; wd->h=28; scopy(wd->text, labels?labels:"", sizeof(wd->text));
     wd->value=active; init_margins(wd); w->dirty=1; return wd;
+}
+vui_widget *vui_pill_button(vui_window *w, int x, int y, const char *t) {
+    vui_widget *wd = new_widget(w, W_PILLBTN);
+    if (!wd) return 0;
+    wd->x=x; wd->y=y; scopy(wd->text, t?t:"", sizeof(wd->text));
+    wd->w = slen(wd->text)*8 + 28; wd->h = 32; wd->color = 0;
+    init_margins(wd); w->dirty=1; return wd;
 }
 vui_widget *vui_pill(vui_window *w, int x, int y, int width, int height) {
     vui_widget *wd = new_widget(w, W_PILL);
@@ -938,23 +946,35 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         text(w, wd->x, wd->y, wd->text, wd->color);
         break;
     case W_BUTTON: {
-        uint32_t accent = wd->color ? wd->color : VUI_ACCENT;
-        uint32_t fill = wd->pressed ? mix(accent, 0x00161d2bu, 3u, 5u) :
-                        (wd->hover ? mix(accent, 0x001f2942u, 1u, 4u) : 0x002a354du);
-        uint32_t top = wd->pressed ? mix(fill, 0x00000000u, 1u, 4u) : mix(fill, 0x00ffffffu, 1u, 5u);
-        uint32_t border = wd->hover || wd->pressed ? mix(accent, 0x00ffffffu, 1u, 4u) : 0x003e4d69u;
+        /* Restrained rounded button (themed): subtle surface fill, thin border
+         * that turns accent on hover/press; no gradient or accent bar. */
+        uint32_t accent = wd->color ? wd->color : g_theme.accent;
+        uint32_t fill = wd->pressed ? mix(g_theme.surface, accent, 1u, 3u)
+                       : (wd->hover ? mix(g_theme.surface, accent, 1u, 5u) : g_theme.surface_hi);
+        /* Faint accent outline even at rest (subtle blue for normal buttons, a
+         * restrained red for danger-coloured buttons like KILL). */
+        uint32_t bd = (wd->hover || wd->pressed) ? mix(g_theme.surface, accent, 1u, 2u)
+                                                 : mix(g_theme.border, accent, 1u, 3u);
+        uint32_t tcol = (wd->hover || wd->pressed) ? g_theme.text
+                                                   : mix(g_theme.text_dim, accent, 1u, 2u);
         int tx = wd->x + (wd->w - (slen(wd->text) * 8)) / 2;
         int ty = wd->y + (wd->h - 16) / 2;
-
-        rect(w, wd->x + 2, wd->y + wd->h, wd->w - 4, 1, 0x000d1320u);
-        rect(w, wd->x, wd->y, wd->w, wd->h, fill);
-        rect(w, wd->x, wd->y, wd->w, 1, top);
-        rect(w, wd->x, wd->y+wd->h-1, wd->w, 1, 0x00101826u);
-        rect(w, wd->x, wd->y, 1, wd->h, border);
-        rect(w, wd->x+wd->w-1, wd->y, 1, wd->h, border);
-        rect(w, wd->x + 3, wd->y + 4, 3, wd->h - 8, accent);
-        if (wd->hover && !wd->pressed) rect(w, wd->x + 7, wd->y + 3, wd->w - 10, 1, mix(accent, 0x00ffffffu, 1u, 3u));
-        text(w, tx, ty, wd->text, VUI_TEXT);
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, 7, fill, bd);
+        text(w, tx, ty, wd->text, tcol);
+        break; }
+    case W_PILLBTN: {
+        /* Fully-rounded pill button (tags: Docs/Releases/Status …). Faint glass
+         * fill at rest; accent-tinted on hover. */
+        uint32_t accent = wd->color ? wd->color : g_theme.accent;
+        int r = wd->h / 2;
+        uint32_t fill = (wd->hover || wd->pressed) ? mix(g_theme.surface, accent, 1u, 5u)
+                                                    : mix(g_theme.surface, 0x00ffffffu, 1u, 16u);
+        uint32_t bd = (wd->hover || wd->pressed) ? mix(g_theme.surface, accent, 1u, 2u)
+                                                  : mix(g_theme.surface, 0x00cfe2f5u, 1u, 5u);
+        int tx = wd->x + (wd->w - (slen(wd->text) * 8)) / 2;
+        int ty = wd->y + (wd->h - 16) / 2;
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, r, fill, bd);
+        text(w, tx, ty, wd->text, (wd->hover || wd->pressed) ? g_theme.text : g_theme.text_dim);
         break; }
     case W_TILE: {
         /* Dock icon: a thin-outlined rounded-square tile (transparent interior)
@@ -993,8 +1013,12 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         if (active) rect(w, cx - 7, ty + th + 3, 14, 2, accent);
         break; }
     case W_INPUT: {
+        /* Rounded dark input field (all text/search fields). Subtle border that
+         * turns to an accent focus ring on hover; dimmed placeholder text. */
         int tx = wd->x + 28;
-        glass_box(w, wd->x, wd->y, wd->w, wd->h, 0x00111b2au, wd->hover);
+        uint32_t ibg = mix(g_theme.bg, 0x00000000u, 1u, 3u);    /* darker than bg */
+        uint32_t bd  = wd->hover ? mix(g_theme.surface, g_theme.accent, 1u, 2u) : g_theme.border;
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, 8, ibg, bd);
         /* small magnifier */
         line_h(w, wd->x + 12, wd->y + 8, 5, g_theme.text_dim);
         line_h(w, wd->x + 12, wd->y + 13, 5, g_theme.text_dim);
@@ -1005,33 +1029,37 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         text(w, tx, wd->y + 5, wd->text, g_theme.text_dim);
         break; }
     case W_BADGE: {
-        uint32_t fill = mix(wd->color ? wd->color : g_theme.accent, g_theme.surface, 1u, 4u);
-        glass_box(w, wd->x, wd->y, wd->w, wd->h, fill, 1);
-        text(w, wd->x + 9, wd->y + 2, wd->text, g_theme.text);
+        /* Status pill: faint colour wash + matching border and text. The variant
+         * colour comes from wd->color (ok = secure, danger = danger, else neutral). */
+        uint32_t c = wd->color ? wd->color : g_theme.text_dim;
+        uint32_t fill = mix(g_theme.surface, c, 1u, 10u);
+        uint32_t bd   = mix(g_theme.surface, c, 1u, 4u);
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, 6, fill, bd);
+        text(w, wd->x + 9, wd->y + 2, wd->text, mix(c, g_theme.text, 1u, 2u));
         break; }
     case W_TABS: {
         int seg = 0, seg_start = 0, i = 0;
         int count = 1, per;
         while (wd->text[i]) { if (wd->text[i] == '|') count++; i++; }
         per = count > 0 ? wd->w / count : wd->w;
-        glass_box(w, wd->x, wd->y, wd->w, wd->h, 0x00131d2cu, 0);
+        /* Flat tab row (themed): a baseline divider, muted labels, and a rounded
+         * accent underline beneath the active tab — no filled segment block. */
+        line_h(w, wd->x, wd->y + wd->h - 1, wd->w, g_theme.border);
         for (seg = 0; seg < count; ++seg) {
             char label[24];
             int li = 0;
             int sx = wd->x + seg * per;
             int sw = (seg == count - 1) ? (wd->w - seg * per) : per;
+            int active = (seg == wd->value);
             while (wd->text[seg_start] == '|') seg_start++;
             while (wd->text[seg_start] && wd->text[seg_start] != '|' && li + 1 < (int)sizeof(label))
                 label[li++] = wd->text[seg_start++];
             label[li] = 0;
-            if (seg == wd->value) {
-                rect(w, sx + 2, wd->y + 2, sw - 4, wd->h - 4, g_theme.surface_hi);
-                line_h(w, sx + 8, wd->y + wd->h - 2, sw - 16, g_theme.accent);
-            } else if (seg > 0) {
-                line_v(w, sx, wd->y + 6, wd->h - 12, g_theme.border);
-            }
             text(w, sx + (sw - slen(label) * 8) / 2, wd->y + 6, label,
-                 seg == wd->value ? g_theme.text : g_theme.text_dim);
+                 active ? g_theme.text : g_theme.text_dim);
+            if (active)
+                fill_round_rect(w, sx + 10, wd->y + wd->h - 2, sw - 20, 2, 1,
+                                g_theme.accent, g_theme.accent);
         }
         break; }
     case W_PILL: {
@@ -1059,10 +1087,17 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         }
         break; }
     case W_BAR: {
-        int fillw; int v=wd->value; if(v<0)v=0; if(v>wd->max)v=wd->max;
-        fillw=(wd->w-2)*v/wd->max;
-        glass_box(w, wd->x, wd->y, wd->w, wd->h, 0x00141b28u, 0);
-        rect(w, wd->x+1, wd->y+1, fillw, wd->h-2, wd->color);
+        /* Rounded progress bar (themed): faint track + accent fill (lightened
+         * toward the right for a subtle gradient). */
+        int v=wd->value; if(v<0)v=0; if(v>wd->max)v=wd->max;
+        int r = wd->h/2;
+        uint32_t accent = wd->color ? wd->color : g_theme.accent;
+        uint32_t track = mix(g_theme.surface, 0x00ffffffu, 1u, 8u);
+        int fillw = wd->w * v / wd->max;
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, r, track, track);
+        if (fillw >= 2*r)
+            fill_round_rect(w, wd->x, wd->y, fillw, wd->h, r,
+                            mix(accent, g_theme.surface, 1u, 4u), accent);
         break; }
     }
 }
@@ -1266,7 +1301,7 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
         /* ---- Widget hover / click (only when no menu is consuming input) -- */
         for (i = 0; i < w->widget_count; ++i) {
             struct vui_widget *wd = &w->widgets[i];
-            if (wd->type != W_BUTTON && wd->type != W_TILE && wd->type != W_TABS && wd->type != W_INPUT) continue;
+            if (wd->type != W_BUTTON && wd->type != W_PILLBTN && wd->type != W_TILE && wd->type != W_TABS && wd->type != W_INPUT) continue;
             uint8_t hov = (uint8_t)(w->active_menu_idx < 0 &&
                                     inside(wd, w->mouse_x, w->mouse_y));
             uint8_t prs = (uint8_t)(hov && w->mouse_down);

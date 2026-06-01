@@ -106,6 +106,8 @@ vui_widget *vui_panel(vui_window *w, int x, int y, int width, int height, const 
 vui_widget *vui_card(vui_window *w, int x, int y, int width, int height, const char *title);
 vui_widget *vui_label(vui_window *w, int x, int y, const char *text);
 vui_widget *vui_button(vui_window *w, int x, int y, const char *text);
+/* Fully-rounded pill button (tags / quick actions). */
+vui_widget *vui_pill_button(vui_window *w, int x, int y, const char *text);
 vui_widget *vui_tile_button(vui_window *w, int x, int y, const char *text);
 vui_widget *vui_input(vui_window *w, int x, int y, int width, const char *placeholder);
 vui_widget *vui_badge(vui_window *w, int x, int y, const char *text);

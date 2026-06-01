@@ -27,9 +27,6 @@ static int g_wm_active = 0;
 static uint32_t g_shell_dock_pid = 0;
 static uint64_t g_shell_dock_next_launch_tick = 0;
 static uint8_t g_desktop_scene_started = 0;
-static uint8_t g_scene_stage = 0;        /* 0 = spawn wallpaper, 1 = wait then apps */
-static uint32_t g_wallpaper_pid = 0;
-static uint64_t g_scene_deadline = 0;
 
 /* Exposed to the syscall layer so userspace GUI apps can reach the compositor. */
 struct desktop_state *desktop_active(void) {
@@ -79,8 +76,8 @@ static void cli_write_kernel_text(const char *text) {
 
 /* Desired desktop resolution; changeable at runtime via the `display` tool.
  * Clamped to the statically-allocated backbuffer max (1920x1080). */
-static uint32_t g_req_width = 1512u;
-static uint32_t g_req_height = 982u;
+static uint32_t g_req_width = 1024u;
+static uint32_t g_req_height = 768u;
 static volatile int g_resolution_change_requested = 0;
 
 void kernel_cxx_init(void);
@@ -151,30 +148,13 @@ static void ensure_shell_dock_running(void) {
 }
 
 static void start_desktop_scene_apps(void) {
-    /* Two-stage start (polled once per frame): first load the wallpaper so the
-     * backdrop is in place, then bring up the app windows. Without this the
-     * heavy app loads win the scheduler and the wallpaper only appears well
-     * after the windows. A timeout keeps the apps from being held hostage if
-     * the wallpaper setter ever stalls. */
+    /* On desktop start, only set the wallpaper. The dock is brought up by
+     * ensure_shell_dock_running(); user apps (browser, task manager, …) are
+     * launched on demand from the dock, not auto-started with the OS. */
     if (g_desktop_scene_started || !g_wm_active) {
         return;
     }
-
-    if (g_scene_stage == 0) {
-        int pid = process_spawn_path("/bin/wallpaper", 0, 0);
-        g_wallpaper_pid = pid > 0 ? (uint32_t)pid : 0;
-        g_scene_deadline = timer_tick_count() + timer_frequency_hz() * 6u;
-        g_scene_stage = 1;
-        return;
-    }
-
-    if (g_wallpaper_pid != 0 && process_pid_alive(g_wallpaper_pid) &&
-        timer_tick_count() < g_scene_deadline) {
-        return;   /* let the wallpaper paint first (bounded wait) */
-    }
-
-    (void)process_spawn_path("/bin/browser", 0, 0);
-    (void)process_spawn_path("/bin/taskmgr", 0, 0);
+    (void)process_spawn_path("/bin/wallpaper", 0, 0);
     g_desktop_scene_started = 1;
 }
 

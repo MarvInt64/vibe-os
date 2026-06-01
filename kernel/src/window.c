@@ -996,15 +996,6 @@ static void window_toggle_maximize(struct desktop_state *desktop, int index) {
 
 static void draw_shadow_block(struct framebuffer *fb, int x, int y, int width, int height);
 
-/* A faint diagonal light streak for the desktop backdrop (opaque, but only a
- * touch lighter than the background — evokes the reference's soft topo glow). */
-static void draw_glow_streak(struct framebuffer *fb, int x0, int y0, int len, int thick, uint32_t c) {
-    int i;
-    for (i = 0; i < len; ++i) {
-        fb_fill_rect(fb, x0 + i, y0 + (i * 5) / 8, 1, thick, c);
-    }
-}
-
 int desktop_set_wallpaper(struct desktop_state *desktop, const uint32_t *src, int src_w, int src_h) {
     int sw, sh, x, y;
 
@@ -1245,27 +1236,12 @@ static void render_background_surface(struct desktop_state *desktop) {
         memcpy(fb->base, desktop->wallpaper_storage,
                (size_t)w * (size_t)desktop->screen_height * sizeof(uint32_t));
     } else {
-        /* Brighter, calmer procedural backdrop: lighter at the top, gently
-         * deeper at the bottom — no near-black band. */
-        draw_gradient_background(fb, mix_color(g_chrome_theme.bg, g_chrome_theme.surface, 1u, 4u),
-                                 mix_color(g_chrome_theme.bg, 0x00000000u, 1u, 8u));
-
-        /* Soft diagonal glow streaks (very subtle) for depth, upper-left → centre. */
-        {
-            uint32_t glow = mix_color(g_chrome_theme.bg, g_chrome_theme.surface_hi, 1u, 2u);
-            int span = w * 2 / 3;
-            draw_glow_streak(fb, -40, 70, span, 60, glow);
-            draw_glow_streak(fb, -40, 150, span, 30, glow);
-            draw_glow_streak(fb, w / 6, 60, span / 2, 24, glow);
-        }
-
-        /* Faint grid (fainter and wider than before). */
-        for (x = 0; x < w; x += 56) {
-            fb_fill_rect(fb, x, 54, 1, (int)desktop->screen_height - 54, mix_color(g_chrome_theme.surface, g_chrome_theme.bg, 1u, 7u));
-        }
-        for (y = 54; y < (int)desktop->screen_height; y += 56) {
-            fb_fill_rect(fb, 0, y, w, 1, mix_color(g_chrome_theme.surface, g_chrome_theme.bg, 1u, 8u));
-        }
+        /* No wallpaper set: a plain, calm theme-blue backdrop (a gentle vertical
+         * gradient within the theme palette) — no procedural grid/glow, so boot
+         * shows a clean solid desktop until a wallpaper image is applied. */
+        draw_gradient_background(fb, mix_color(g_chrome_theme.bg, g_chrome_theme.surface, 1u, 5u),
+                                 g_chrome_theme.bg);
+        (void)x; (void)y;
     }
 
     /* ---- Top bar: thin, dense; V-logo + brand left, indicators right. ---- */
