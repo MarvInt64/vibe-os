@@ -15,6 +15,14 @@ int  vos_spawn(const char *path);
 int  vos_spawn_arg(const char *path, const char *arg);
 void vos_yield(void);
 
+/* ---- threads ----
+ * Threads share the caller's address space. fn runs as fn(arg) on a freshly
+ * allocated stack (stack_size bytes, <=0 => 64 KB default). Returns a thread
+ * id (>0) or -1. Join blocks until the thread finishes and returns its exit
+ * code. A thread function may simply return — the runtime exits it cleanly. */
+int  vos_thread_create(void (*fn)(void *), void *arg, int stack_size);
+int  vos_thread_join(int tid);
+
 /* ---- kernel event journal ---- */
 enum { VOS_LOG_INFO = 0, VOS_LOG_WARN = 1, VOS_LOG_ERROR = 2, VOS_LOG_FAULT = 3, VOS_LOG_APP = 4 };
 struct vos_journal_entry {

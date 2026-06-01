@@ -1,6 +1,22 @@
 /* umalloc — first-fit free-list allocator over a static arena. See umalloc.h. */
 #include "umalloc.h"
 
+/* ---- Thread safety -------------------------------------------------------
+ * Multiple threads (e.g. a browser UI thread and a network worker) share one
+ * address space and therefore one heap. A yielding spinlock serialises every
+ * allocator entry point so the free list never corrupts under preemption.
+ * urealloc is built on the *_nolock helpers to avoid re-entering the lock. */
+extern void vos_yield(void);
+static volatile unsigned char g_alloc_lock;
+
+static void alloc_lock(void) {
+    while (__atomic_test_and_set(&g_alloc_lock, __ATOMIC_ACQUIRE))
+        vos_yield();
+}
+static void alloc_unlock(void) {
+    __atomic_clear(&g_alloc_lock, __ATOMIC_RELEASE);
+}
+
 #define UMALLOC_ARENA_BYTES (16u * 1024u * 1024u)  /* 16 MB */
 #define UMALLOC_ALIGN 16u
 
@@ -72,7 +88,7 @@ static void coalesce_forward(struct block *b) {
     }
 }
 
-void *umalloc(umsize_t size) {
+static void *umalloc_nolock(umsize_t size) {
     struct block *b;
     umsize_t need;
 
@@ -95,7 +111,7 @@ void *umalloc(umsize_t size) {
     return 0; /* out of arena */
 }
 
-void ufree(void *ptr) {
+static void ufree_nolock(void *ptr) {
     struct block *b;
     if (ptr == 0) {
         return;
@@ -113,16 +129,16 @@ void ufree(void *ptr) {
     }
 }
 
-void *urealloc(void *ptr, umsize_t size) {
+static void *urealloc_nolock(void *ptr, umsize_t size) {
     struct block *b;
     umsize_t need;
     void *np;
 
     if (ptr == 0) {
-        return umalloc(size);
+        return umalloc_nolock(size);
     }
     if (size == 0) {
-        ufree(ptr);
+        ufree_nolock(ptr);
         return 0;
     }
     b = block_of(ptr);
@@ -142,7 +158,7 @@ void *urealloc(void *ptr, umsize_t size) {
         return payload_of(b);
     }
     /* Fall back to allocate-copy-free. */
-    np = umalloc(size);
+    np = umalloc_nolock(size);
     if (np == 0) {
         return 0;
     }
@@ -154,8 +170,29 @@ void *urealloc(void *ptr, umsize_t size) {
             dst[i] = src[i];
         }
     }
-    ufree(ptr);
+    ufree_nolock(ptr);
     return np;
+}
+
+/* ---- Public, lock-guarded entry points -------------------------------- */
+void *umalloc(umsize_t size) {
+    void *p;
+    alloc_lock();
+    p = umalloc_nolock(size);
+    alloc_unlock();
+    return p;
+}
+void ufree(void *ptr) {
+    alloc_lock();
+    ufree_nolock(ptr);
+    alloc_unlock();
+}
+void *urealloc(void *ptr, umsize_t size) {
+    void *p;
+    alloc_lock();
+    p = urealloc_nolock(ptr, size);
+    alloc_unlock();
+    return p;
 }
 
 umsize_t umalloc_used(void) { return g_used; }

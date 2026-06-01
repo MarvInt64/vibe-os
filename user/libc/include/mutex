@@ -1,0 +1,73 @@
+#pragma once
+
+/* <mutex> — freestanding subset for VibeOS C++.
+ *
+ * std::mutex is a yielding spinlock: a waiter spins on an atomic flag and
+ * cooperatively yields the CPU (vos_yield) between attempts so the lock holder
+ * — and the rest of the system — keeps running. Suitable for short critical
+ * sections guarding shared state between a UI thread and a worker thread.
+ *
+ * Provides std::mutex, std::lock_guard, std::unique_lock (subset). */
+
+#include <atomic>
+
+extern "C" void vos_yield(void);
+
+namespace std {
+
+class mutex {
+public:
+    constexpr mutex() noexcept = default;
+    mutex(const mutex &) = delete;
+    mutex &operator=(const mutex &) = delete;
+
+    void lock() noexcept {
+        /* Spin until we win the flag; yield each failed round so the holder
+         * (which may have been preempted) can run. */
+        while (flag_.test_and_set(memory_order_acquire))
+            vos_yield();
+    }
+    bool try_lock() noexcept {
+        return !flag_.test_and_set(memory_order_acquire);
+    }
+    void unlock() noexcept {
+        flag_.clear(memory_order_release);
+    }
+
+private:
+    atomic_flag flag_;   /* default-initialised to clear (value = 0) */
+};
+
+/* Scoped lock: acquires on construction, releases on scope exit. */
+template <typename Mutex>
+class lock_guard {
+public:
+    explicit lock_guard(Mutex &m) : m_(m) { m_.lock(); }
+    ~lock_guard() { m_.unlock(); }
+    lock_guard(const lock_guard &) = delete;
+    lock_guard &operator=(const lock_guard &) = delete;
+private:
+    Mutex &m_;
+};
+
+/* Movable lock with deferred/manual control (subset of std::unique_lock). */
+template <typename Mutex>
+class unique_lock {
+public:
+    unique_lock() noexcept : m_(nullptr), owns_(false) {}
+    explicit unique_lock(Mutex &m) : m_(&m), owns_(true) { m_->lock(); }
+    ~unique_lock() { if (owns_ && m_) m_->unlock(); }
+
+    unique_lock(const unique_lock &) = delete;
+    unique_lock &operator=(const unique_lock &) = delete;
+
+    void lock()   { if (m_ && !owns_) { m_->lock();   owns_ = true; } }
+    void unlock() { if (m_ &&  owns_) { m_->unlock(); owns_ = false; } }
+    bool owns_lock() const noexcept { return owns_; }
+
+private:
+    Mutex *m_;
+    bool   owns_;
+};
+
+} /* namespace std */

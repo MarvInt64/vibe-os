@@ -12,10 +12,18 @@
  * can control every pixel of the page rendering directly. */
 
 #include <cstdint>
+#include <atomic>
+#include <thread>
 #include "vibeos.h"
 #include "weblayout.h"
 #include "dom.h"
 #include "layout_engine.h"
+
+/* Fetch lifecycle, driven by the network worker thread and observed by the UI
+ * thread. The atomic is the synchronisation barrier: the worker releases Ready
+ * after it finishes touching html_buf_/layout_; the UI acquires it before it
+ * reads them for rendering, so there is no data race on the page content. */
+enum class FetchState : int { Idle = 0, Fetching = 1, Ready = 2, Failed = 3 };
 
 /* Maximum canvas dimensions (must match the window server's VUI_MAX_W/H). */
 static constexpr int BROW_MAX_W = 900;
@@ -57,10 +65,15 @@ private:
     char url_[1024]    = {};
     int  url_len_      = 0;
     bool editing_      = true;
-    [[maybe_unused]] bool loading_ = false; /* reserved for async-fetch indicator */
 
     char status_[128]  = {};
     char page_title_[128] = {};  /* extracted <title> for display */
+
+    /* ---- threaded fetch ------------------------------------------------- */
+    std::atomic<int> fetch_state_{(int)FetchState::Idle};
+    int   progress_phase_ = 0;          /* marquee animation position (UI only) */
+    char  pending_url_[1024] = {};      /* URL handed to the worker to load     */
+    std::thread worker_;                /* the in-flight network worker, if any */
 
     /* Current page base (for resolving relative URLs). */
     bool cur_secure_   = false;
@@ -103,8 +116,10 @@ private:
 
     /* ---- helpers: navigation ------------------------------------------- */
     void push_history(const char *url);
-    void navigate(const char *url);   /* fetch + layout + render */
+    void navigate(const char *url);   /* hand off to the worker thread */
     void load_url(const char *url);   /* inner: resolves scheme, follows redirects */
+    void fetch_worker();              /* runs on the worker thread: load pending_url_ */
+    void poll_fetch();                /* UI thread: react to worker completion */
     void layout_current();
     void resolve_href(const char *href, char *out, int cap) const;
     void clamp_scroll();

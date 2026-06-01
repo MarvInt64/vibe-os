@@ -156,6 +156,10 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/hello.elf $(LIBC_CRT0) build/user/hello.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/hello.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/hello.elf /bin/hello
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -c user/threadtest.cpp -o build/user/threadtest.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/threadtest.elf $(LIBC_CRT0) build/user/threadtest.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/threadtest.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/threadtest.elf /bin/threadtest
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -c user/cpptest.cpp -o build/user/cpptest.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/cpptest.elf $(LIBC_CRT0) build/user/cpptest.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/cpptest.elf

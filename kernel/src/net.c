@@ -1,8 +1,50 @@
 #include "net.h"
 #include "e1000.h"
+#include "process.h"
 #include "serial.h"
 #include "string.h"
 #include "timer.h"
+
+/* ---- Cooperative waiting -------------------------------------------------
+ * The network stack blocks for DNS/ARP/TCP. Instead of busy-spinning (which
+ * froze the whole desktop during a page load), the wait loops yield the CPU
+ * back to the scheduler via process_yield_blocking(): the process is parked on
+ * its kernel stack, the main loop keeps polling the NIC and running the
+ * desktop + other processes, and we resume here to re-check our condition.
+ * With no process context (early boot) we fall back to an inline busy spin. */
+static void net_wait_yield(void) {
+    if (process_has_current()) {
+        process_yield_blocking();
+    } else {
+        __asm__ volatile("pause");
+    }
+}
+
+/* ---- Single-connection serialization -------------------------------------
+ * There is exactly one TCP/DNS connection slot (g_tcp). The old fully-blocking
+ * model serialized network syscalls implicitly because each ran to completion.
+ * Now that waits yield, two processes could interleave and corrupt g_tcp, so a
+ * simple lock restores serialization. It self-heals if the owner dies while
+ * parked (e.g. the process was killed mid-request). */
+static volatile int      g_net_locked;
+static volatile uint32_t g_net_owner_pid;
+
+void net_lock(void) {
+    while (g_net_locked) {
+        if (g_net_owner_pid != 0 && !process_pid_alive(g_net_owner_pid)) {
+            break; /* owner vanished: steal the lock */
+        }
+        net_poll();
+        net_wait_yield();
+    }
+    g_net_locked = 1;
+    g_net_owner_pid = process_current_pid();
+}
+
+void net_unlock(void) {
+    g_net_owner_pid = 0;
+    g_net_locked = 0;
+}
 
 /* QEMU user-mode networking defaults. */
 #define NET_IP        0x0A000210u /* 10.0.2.16 (avoid SLIRP DHCP .15) */
@@ -209,7 +251,7 @@ static const uint8_t *resolve_mac(uint32_t dst_ip, int timeout_ms) {
             if (mac) {
                 return mac;
             }
-            __asm__ volatile("pause");
+            net_wait_yield();
         }
     }
     return 0;
@@ -596,7 +638,7 @@ int net_ping(uint32_t dst_ip, int count, int timeout_ms, int *rtt_ms_out) {
                 ++replies;
                 break;
             }
-            __asm__ volatile("pause");
+            net_wait_yield();
         }
     }
 
@@ -713,7 +755,7 @@ int net_resolve(const char *hostname, uint32_t *out_ip, int timeout_ms) {
             *out_ip = g_dns_result_ip;
             return 1;
         }
-        __asm__ volatile("pause");
+        net_wait_yield();
     }
     return 0;
 }
@@ -730,7 +772,7 @@ static int tcp_wait_state(int want_min_state, int timeout_ms) {
         if (g_tcp.state >= want_min_state) {
             return 1;
         }
-        __asm__ volatile("pause");
+        net_wait_yield();
     }
     return 0;
 }
@@ -798,7 +840,7 @@ int net_http_get(uint32_t dst_ip, uint16_t port, const char *host_header,
         if (g_tcp.state == TCP_DONE || g_tcp.rx_len >= g_tcp.rx_cap) {
             break;
         }
-        __asm__ volatile("pause");
+        net_wait_yield();
     }
 
     return g_tcp.rx_len;
@@ -881,7 +923,7 @@ int tcp_stream_recv(uint8_t *buf, int len, int timeout_ms) {
         if (timer_tick_count() >= deadline || spins-- == 0) {
             return -1;  /* timeout */
         }
-        __asm__ volatile("pause");
+        net_wait_yield();
     }
 }
 

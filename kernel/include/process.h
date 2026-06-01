@@ -8,7 +8,11 @@
 
 struct tty;
 
-#define PROCESS_MAX_COUNT 4
+/* Max concurrent processes/threads. Threads share their parent's address space
+ * but still occupy a slot here, so this also bounds total threads. 8 leaves
+ * room for sh + a couple of GUI apps + each app's worker threads. Each slot
+ * costs ~1.1 MB (1 MB user stack + 16 KB kernel stack + page tables). */
+#define PROCESS_MAX_COUNT 8
 #define PROCESS_USER_BASE 0x20000000u
 #define PROCESS_USER_TEMPLATE_BASE PROCESS_USER_BASE
 #define PROCESS_USER_REGION_BYTES 0x02000000u
@@ -37,7 +41,10 @@ enum process_state {
 enum process_run_result {
     PROCESS_RUN_NONE = 0,
     PROCESS_RUN_YIELDED = 1,
-    PROCESS_RUN_EXITED = 2
+    PROCESS_RUN_EXITED = 2,
+    /* The process suspended itself mid-syscall (blocking I/O). Its kernel
+     * stack is parked; the scheduler will resume it on a later round. */
+    PROCESS_RUN_BLOCKED = 3
 };
 
 struct process_snapshot {
@@ -50,6 +57,11 @@ struct process_snapshot {
     uint8_t state;
     uint8_t loaded;
     char name[32];
+    /* Appended fields (keep in sync with vui_process_info in user/vexui.h).
+     * mem_bytes  = physical RAM backing the process (image+BSS+heap + stacks).
+     * thread_count = number of threads sharing this address space (>=1). */
+    uint64_t mem_bytes;
+    uint32_t thread_count;
 };
 
 /* kind 0 = embedded vfs_file pointer, kind 1 = path-based (user/ext2) */
@@ -87,6 +99,17 @@ struct process {
     struct fd_table fd_table;
     struct syscall_context syscalls;
     struct interrupt_frame context;
+    /* Top of this process's private kernel stack, loaded into TSS.rsp0 before
+     * the process runs so its syscalls/traps don't share one global stack. */
+    uintptr_t kernel_stack_top;
+    /* When the process is suspended in the middle of a blocking syscall, this
+     * holds its parked kernel stack pointer (0 = not parked). The scheduler
+     * resumes it via process_resume_blocked instead of a fresh user entry. */
+    uintptr_t kresume_rsp;
+    /* Thread flag: 1 if this is a thread sharing another process's address
+     * space (user_page_tables + image are borrowed, not owned). On exit the
+     * shared image must NOT be freed — only the owning process frees it. */
+    uint8_t is_thread;
     char cwd[256];
     char spawn_arg[64];
     char name[32];
@@ -101,6 +124,17 @@ int process_spawn_embedded_elf(const uint8_t *image, size_t image_size, const st
 int process_spawn_path(const char *path, const struct fd_ops *stdio_ops, void *stdio_object);
 int process_run_ready_slice(void);
 int timer_handle_interrupt(struct interrupt_frame *frame);
+
+/* Called from inside a blocking kernel operation (e.g. the network wait loops)
+ * to suspend the current process and let the scheduler run the desktop and
+ * other processes. Returns when the process is rescheduled; the caller then
+ * re-checks its wait condition. No-op (returns immediately) if there is no
+ * current process — callers should fall back to a busy poll in that case. */
+void process_yield_blocking(void);
+
+/* True when a process is currently running (i.e. we are inside a syscall on a
+ * process's kernel stack), so process_yield_blocking() is usable. */
+int process_has_current(void);
 uint32_t process_loaded_count(void);
 uint32_t process_ready_count(void);
 uint32_t process_running_count(void);
@@ -109,6 +143,8 @@ uint32_t process_snapshot_count(void);
 int process_get_snapshot(uint32_t slot, struct process_snapshot *snapshot);
 int process_kill(uint32_t pid);
 int process_pid_alive(uint32_t pid);
+/* PID of the process currently running (inside a syscall), or 0 if none. */
+uint32_t process_current_pid(void);
 int process_handle_user_fault(uint64_t vector, uint64_t rip, uint64_t cr2, uint64_t error_code);
 void process_wake_tty_reader(struct tty *tty);
 int process_take_window_manager_request(void);

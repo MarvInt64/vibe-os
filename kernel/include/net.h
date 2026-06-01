@@ -21,6 +21,13 @@ void net_init(void);
  * ICMP echo replies/requests). Called from the kernel main loop. */
 void net_poll(void);
 
+/* Serialize access to the single TCP/DNS connection across processes. A waiter
+ * yields the CPU (desktop + other processes keep running) until the lock is
+ * free. Wrap a whole request (resolve / http / https / ping) in a matching
+ * net_lock()/net_unlock() pair. Self-heals if the owner process is killed. */
+void net_lock(void);
+void net_unlock(void);
+
 /* Fill out with the current interface configuration. */
 void net_get_info(struct net_info *out);
 

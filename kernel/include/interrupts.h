@@ -36,4 +36,14 @@ void interrupts_init(void);
 void interrupt_restore_user_context(const struct interrupt_frame *frame);
 int process_run_slice(const struct interrupt_frame *frame);
 
+/* Set the TSS ring-0 stack pointer to the running process's kernel stack top. */
+void interrupt_set_kernel_stack(uintptr_t rsp0_top);
+
+/* Cooperative kernel-thread park/resume (implemented in interrupt_stubs.S).
+ * process_block_current parks the running process's kernel stack into
+ * *save_rsp and returns control to the scheduler; process_resume_blocked
+ * continues a previously parked process. */
+void process_block_current(uintptr_t *save_rsp);
+int  process_resume_blocked(uintptr_t parked_rsp);
+
 #endif

@@ -55,3 +55,57 @@ unsigned long vos_journal_total(void) {
 int vos_journal_read(unsigned long seq, struct vos_journal_entry *out) {
     return (int)__sc2(SYS_JOURNAL_READ, (uint64_t)seq, (uint64_t)(size_t)out);
 }
+
+/* ---- Threads -------------------------------------------------------------
+ * A thread shares the caller's address space. The kernel needs an entry point,
+ * a stack (allocated here from the shared user heap), and an argument.
+ *
+ * The kernel jumps straight to the entry with rsp at the stack top and no
+ * return address, so a thread function must never `ret`. Every thread is
+ * therefore routed through thread_trampoline, which calls the user function
+ * and then _exit()s the thread. The per-thread control block + stack are
+ * heap-allocated and intentionally leaked on plain exit (workers here are
+ * long-lived; a joined thread could reclaim them later). */
+
+extern void *malloc(unsigned long);   /* from stdlib */
+
+struct vos_thread_tcb {
+    void (*fn)(void *);
+    void  *arg;
+};
+
+static void thread_trampoline(void *raw) {
+    struct vos_thread_tcb *tcb = (struct vos_thread_tcb *)raw;
+    void (*fn)(void *) = tcb->fn;
+    void *arg          = tcb->arg;
+    fn(arg);
+    _exit(0);   /* thread done — kernel reaps this slot */
+}
+
+int vos_thread_create(void (*fn)(void *), void *arg, int stack_size) {
+    if (fn == 0) { errno = EINVAL; return -1; }
+    if (stack_size <= 0) stack_size = 64 * 1024;
+
+    unsigned char *stack = (unsigned char *)malloc((unsigned long)stack_size);
+    struct vos_thread_tcb *tcb =
+        (struct vos_thread_tcb *)malloc(sizeof(struct vos_thread_tcb));
+    if (!stack || !tcb) { errno = ENOMEM; return -1; }
+    tcb->fn = fn;
+    tcb->arg = arg;
+
+    /* 16-byte aligned stack top (kernel applies the -8 SysV ABI adjustment). */
+    unsigned long top = (unsigned long)(stack + stack_size) & ~(unsigned long)0xF;
+
+    long tid = __sc3(SYS_THREAD_CREATE,
+                     (uint64_t)(size_t)thread_trampoline,
+                     (uint64_t)top,
+                     (uint64_t)(size_t)tcb);
+    return (int)ck(tid);
+}
+
+int vos_thread_join(int tid) {
+    int status = 0;
+    long r = __sc2(SYS_WAITPID, (uint64_t)tid, (uint64_t)(size_t)&status);
+    if (r < 0) { errno = (int)-r; return -1; }
+    return status;
+}

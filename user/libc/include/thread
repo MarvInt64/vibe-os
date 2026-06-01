@@ -1,0 +1,79 @@
+#pragma once
+
+/* <thread> — freestanding subset for VibeOS C++.
+ *
+ * std::thread wraps the kernel threading primitive (vos_thread_create /
+ * vos_thread_join). A thread shares the creating process's address space, so
+ * captured state (e.g. a lambda capturing `this`) is directly shared with the
+ * other threads — no marshalling needed.
+ *
+ * The callable (function pointer or capturing lambda) is heap-allocated and
+ * type-erased through a per-type trampoline, then deleted when the thread
+ * body returns. This mirrors the standard std::thread storage model in a
+ * minimal, exception-free form (multi-argument invoke is omitted — capture in
+ * a lambda instead). */
+
+#include <utility>
+
+extern "C" int  vos_thread_create(void (*fn)(void *), void *arg, int stack_size);
+extern "C" int  vos_thread_join(int tid);
+extern "C" void vos_yield(void);
+
+namespace std {
+
+class thread {
+public:
+    using id = int;
+
+    thread() noexcept : tid_(0) {}
+
+    /* Construct from any callable; runs it on a new thread immediately. */
+    template <typename F>
+    explicit thread(F f) {
+        /* Heap-copy the callable so it outlives this constructor; the
+         * trampoline owns and frees it. */
+        F *state = new F(std::move(f));
+        tid_ = vos_thread_create(&trampoline<F>, state, 0);
+        if (tid_ < 0) { delete state; tid_ = 0; }
+    }
+
+    thread(const thread &) = delete;
+    thread &operator=(const thread &) = delete;
+
+    thread(thread &&other) noexcept : tid_(other.tid_) { other.tid_ = 0; }
+    thread &operator=(thread &&other) noexcept {
+        if (this != &other) {
+            /* Standard says terminate if joinable; we just drop it (no
+             * exceptions in this environment) — caller must join first. */
+            tid_ = other.tid_;
+            other.tid_ = 0;
+        }
+        return *this;
+    }
+
+    ~thread() { /* a joinable thread left unjoined simply detaches */ }
+
+    bool joinable() const noexcept { return tid_ > 0; }
+    id   get_id()   const noexcept { return tid_; }
+
+    void join() {
+        if (tid_ > 0) { vos_thread_join(tid_); tid_ = 0; }
+    }
+    void detach() noexcept { tid_ = 0; }
+
+private:
+    template <typename F>
+    static void trampoline(void *p) {
+        F *state = static_cast<F *>(p);
+        (*state)();
+        delete state;
+    }
+
+    int tid_;
+};
+
+namespace this_thread {
+    inline void yield() noexcept { vos_yield(); }
+}
+
+} /* namespace std */

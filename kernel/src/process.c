@@ -29,6 +29,12 @@ static uint8_t g_window_manager_requested;
 static uint8_t g_user_stacks[PROCESS_MAX_COUNT][PROCESS_USER_STACK_SIZE] __attribute__((aligned(4096)));
 static uint64_t g_user_page_tables[PROCESS_MAX_COUNT][PROCESS_USER_PAGE_TABLE_COUNT][512] __attribute__((aligned(4096)));
 
+/* Per-process ring-0 kernel stacks. Each process handles its syscalls/traps on
+ * its own stack (TSS.rsp0 is repointed before the process runs) so a process
+ * suspended mid-syscall keeps its kernel frames intact while others run. */
+#define PROCESS_KERNEL_STACK_SIZE 16384u
+static uint8_t g_kernel_stacks[PROCESS_MAX_COUNT][PROCESS_KERNEL_STACK_SIZE] __attribute__((aligned(16)));
+
 static const struct fd_ops PROCESS_STDIO_FD_OPS;
 static const struct fd_ops PROCESS_VFS_FD_OPS;
 
@@ -228,9 +234,13 @@ static void process_reap(struct process *process) {
     process->user_stack_top = 0;
     process->user_virtual_base = 0;
     process->code_size = 0;
-    if (process->user_image_allocation != 0) {
+    /* Threads borrow the owning process's image + page tables; only the owner
+     * frees them. Freeing here would pull the address space out from under the
+     * still-running parent (and its other threads). */
+    if (!process->is_thread && process->user_image_allocation != 0) {
         kfree(process->user_image_allocation);
     }
+    process->is_thread = 0;
     process->user_image_allocation = 0;
     process->user_image_pages = 0;
     process->user_image_capacity = 0;
@@ -307,6 +317,9 @@ static void process_wake_waiter(struct process *child) {
 }
 
 static void process_setup_context(struct process *process) {
+    /* A freshly set-up process is never mid-syscall: clear any stale parked
+     * kernel stack left over from a previous tenant of this slot. */
+    process->kresume_rsp = 0;
     process->context.rax = 0;
     process->context.rbx = 0;
     process->context.rcx = 0;
@@ -632,15 +645,20 @@ static int process_load_image_slot(struct process *process, uint32_t slot, const
     return 1;
 }
 
+/* A process is runnable if it is freshly READY, or if it parked itself in a
+ * blocking syscall (kresume_rsp != 0) and is now eligible to re-check its wait
+ * condition. Round-robin from the cursor keeps things fair. */
 static struct process *process_pick_next_ready(void) {
     uint32_t attempt;
 
     for (attempt = 0; attempt < PROCESS_MAX_COUNT; ++attempt) {
         uint32_t slot = (g_scheduler_cursor + attempt) % PROCESS_MAX_COUNT;
+        struct process *p = &g_processes[slot];
 
-        if (g_processes[slot].state == PROCESS_STATE_READY) {
+        if (p->state == PROCESS_STATE_READY ||
+            (p->state == PROCESS_STATE_WAITING_IO && p->kresume_rsp != 0)) {
             g_scheduler_cursor = (slot + 1u) % PROCESS_MAX_COUNT;
-            return &g_processes[slot];
+            return p;
         }
     }
 
@@ -679,6 +697,11 @@ void process_init(void) {
         g_processes[i].pending_read_fd = -1;
         g_processes[i].pending_read_buffer = 0;
         g_processes[i].pending_read_count = 0;
+        /* 16-byte aligned top of this process's private kernel stack. */
+        g_processes[i].kernel_stack_top =
+            (uintptr_t)(g_kernel_stacks[i] + PROCESS_KERNEL_STACK_SIZE);
+        g_processes[i].kresume_rsp = 0;
+        g_processes[i].is_thread = 0;
         process_reset_vfs_handles(&g_processes[i]);
         g_processes[i].cwd[0] = '/';
         g_processes[i].cwd[1] = '\0';
@@ -828,6 +851,83 @@ int process_spawn_path(const char *path, const struct fd_ops *stdio_ops, void *s
         kfree(buf);
         return result;
     }
+}
+
+/* Create a thread that shares `parent`'s address space (page tables + image).
+ * The thread runs `entry(arg)` on `stack_top`, a stack the caller already owns
+ * inside the shared address space (typically malloc'd from the user heap), so
+ * no new kernel mapping is required. Returns the thread's tid (pid) or <0.
+ *
+ * Design note (SMP-ready): a thread is a full scheduler entity with its own
+ * register context and kernel stack; only the address space is shared. When
+ * VibeOS later gains multiple CPUs, two threads of one process can run on
+ * different cores unchanged — the per-CPU work is in the scheduler/g_current,
+ * not here. */
+static int process_create_thread(struct process *parent, uintptr_t entry,
+                                 uintptr_t stack_top, uint64_t arg) {
+    struct process *thread;
+    int slot;
+
+    if (parent == 0 || entry == 0 || stack_top == 0) {
+        return -SYSCALL_EINVAL;
+    }
+
+    slot = process_find_free_slot();
+    if (slot < 0) {
+        return -SYSCALL_EINVAL;   /* out of process/thread slots */
+    }
+    thread = &g_processes[slot];
+
+    /* Share the parent's address space: same page tables, same virtual base,
+     * same image allocation (borrowed — see is_thread handling in reap). */
+    thread->user_page_tables       = parent->user_page_tables;
+    thread->user_virtual_base      = parent->user_virtual_base;
+    thread->user_image_allocation  = parent->user_image_allocation;
+    thread->user_image_pages       = parent->user_image_pages;
+    thread->user_image_capacity    = parent->user_image_capacity;
+    thread->code_size              = parent->code_size;
+    thread->is_thread              = 1;
+
+    /* Independent execution context: entry point, caller-provided stack, arg. */
+    thread->entry          = entry;
+    thread->user_stack_top = stack_top;
+    process_setup_context(thread);          /* sets rip=entry, rsp from stack_top */
+    thread->context.rdi    = arg;           /* first argument to entry(arg)        */
+
+    /* Own kernel stack for this slot (set once in process_init, kept across
+     * reaps); re-assert it defensively. */
+    thread->kernel_stack_top =
+        (uintptr_t)(g_kernel_stacks[slot] + PROCESS_KERNEL_STACK_SIZE);
+    thread->kresume_rsp = 0;
+
+    /* Identity + scheduling state. */
+    thread->pid             = ++g_next_pid;
+    thread->parent_pid      = parent->pid;
+    thread->wait_target_pid = 0;
+    thread->loaded          = 1;
+    thread->state           = PROCESS_STATE_READY;
+    thread->exit_code       = 0;
+    thread->runtime_ticks   = 0;
+    thread->switch_count    = 0;
+    thread->preempt_count   = 0;
+    thread->wake_tick       = 0;
+    thread->pending_read_fd = -1;
+    thread->pending_read_buffer = 0;
+    thread->pending_read_count  = 0;
+    process_reset_vfs_handles(thread);
+
+    /* Threads share the parent's working dir and inherit its open files. */
+    {
+        size_t k;
+        for (k = 0; k + 1 < sizeof(thread->cwd) && parent->cwd[k]; ++k)
+            thread->cwd[k] = parent->cwd[k];
+        thread->cwd[k] = '\0';
+    }
+    thread->spawn_arg[0] = '\0';
+    process_copy_fd_table(&thread->fd_table, &parent->fd_table);
+    process_set_name(thread, parent->name);
+
+    return (int)thread->pid;
 }
 
 static int process_spawn_named_from_parent(struct process *parent, const char *name) {
@@ -1009,12 +1109,53 @@ int process_run_ready_slice(void) {
     process->state = PROCESS_STATE_RUNNING;
     ++process->switch_count;
     paging_activate_user_table(process->user_virtual_base, process->user_page_tables, PROCESS_USER_PAGE_TABLE_COUNT);
-    g_kernel_resume_result = PROCESS_RUN_NONE;
+
+    /* Traps from this process land on its own kernel stack. */
+    interrupt_set_kernel_stack(process->kernel_stack_top);
 
     fpu_restore(process->fpu_state);          /* load this process's SSE state */
-    result = process_run_slice(&process->context);
+
+    if (process->kresume_rsp != 0) {
+        /* The process is parked in the middle of a blocking syscall: continue
+         * it on its own kernel stack rather than re-entering user mode. */
+        uintptr_t parked = process->kresume_rsp;
+        process->kresume_rsp = 0;
+        g_kernel_resume_result = PROCESS_RUN_NONE;
+        result = process_resume_blocked(parked);
+    } else {
+        /* Fresh time slice: iretq into user mode at the saved context. */
+        g_kernel_resume_result = PROCESS_RUN_NONE;
+        result = process_run_slice(&process->context);
+    }
     fpu_save(process->fpu_state);             /* save whatever it left behind */
     return result;
+}
+
+/* Suspend the running process from inside a blocking kernel operation, letting
+ * the scheduler run the desktop and other processes, then resume here once the
+ * process is rescheduled. The caller (e.g. a network wait loop) re-checks its
+ * condition after this returns. Safe to call only while a process is current. */
+void process_yield_blocking(void) {
+    struct process *process = g_current_process;
+    if (process == 0) {
+        return;   /* no process context: caller must fall back to a busy poll */
+    }
+    process->state = PROCESS_STATE_WAITING_IO;
+    g_kernel_resume_result = PROCESS_RUN_BLOCKED;
+    /* Park our kernel stack and switch to the scheduler. Returns here when the
+     * scheduler resumes us via process_run_ready_slice / process_resume_blocked. */
+    process_block_current(&process->kresume_rsp);
+    /* Resumed: the scheduler already restored RUNNING state and our page
+     * tables / FPU. Re-assert current for any code that reads it. */
+    g_current_process = process;
+}
+
+int process_has_current(void) {
+    return g_current_process != 0;
+}
+
+uint32_t process_current_pid(void) {
+    return g_current_process ? g_current_process->pid : 0u;
 }
 
 int syscall_handle_interrupt(struct interrupt_frame *frame) {
@@ -1076,6 +1217,14 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         }
 
         frame->rax = (uint64_t)child_pid;
+        return 0;
+    }
+
+    if (number == SYS_THREAD_CREATE) {
+        /* rdi = entry fn (user ptr), rsi = stack top (user ptr), rdx = arg. */
+        int tid = process_create_thread(process, (uintptr_t)frame->rdi,
+                                        (uintptr_t)frame->rsi, frame->rdx);
+        frame->rax = (uint64_t)(int64_t)tid;
         return 0;
     }
 
@@ -1300,7 +1449,9 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             frame->rax = (uint64_t)(-SYSCALL_EINVAL);
             return 0;
         }
+        net_lock();
         frame->rax = (uint64_t)(int64_t)net_http_get(r->ip, r->port, host, path, r->out, r->cap, 5000);
+        net_unlock();
         return 0;
     }
 
@@ -1327,7 +1478,9 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             frame->rax = (uint64_t)(-SYSCALL_EINVAL);
             return 0;
         }
+        net_lock();
         frame->rax = (uint64_t)(int64_t)net_https_get(r->ip, r->port, host, path, r->out, r->cap, 15000);
+        net_unlock();
         return 0;
     }
 
@@ -1372,12 +1525,14 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             frame->rax = (uint64_t)(-SYSCALL_EINVAL);
             return 0;
         }
+        net_lock();
         if (net_resolve(host, &ip, 3000)) {
             *out = ip;
             frame->rax = 0;
         } else {
             frame->rax = (uint64_t)(-SYSCALL_ENOENT);
         }
+        net_unlock();
         return 0;
     }
 
@@ -1393,7 +1548,9 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 
         if (count <= 0) count = 1;
         if (timeout_ms <= 0) timeout_ms = 1000;
+        net_lock();
         replies = net_ping(dst, count, timeout_ms, &rtt);
+        net_unlock();
         if (rtt_out != 0) {
             *rtt_out = rtt;
         }
@@ -1644,6 +1801,31 @@ int process_get_snapshot(uint32_t slot, struct process_snapshot *snapshot) {
     snapshot->state = process->state;
     snapshot->loaded = process->loaded;
     process_copy_name_to_snapshot(snapshot, process->name);
+
+    /* Physical RAM footprint: the allocated ELF image (code+data+BSS, which
+     * includes the userspace umalloc heap) plus the 1 MB user stack and the
+     * 16 KB kernel stack. */
+    snapshot->mem_bytes = (uint64_t)process->user_image_capacity
+                        + (uint64_t)PROCESS_USER_STACK_SIZE
+                        + (uint64_t)PROCESS_KERNEL_STACK_SIZE;
+
+    /* Threads = process slots sharing this one's address space (page tables).
+     * Today every process has its own tables, so this is 1; once userspace
+     * threads share their parent's tables it counts them automatically. */
+    {
+        uint32_t threads = 0;
+        size_t i;
+        if (process->user_page_tables != 0) {
+            for (i = 0; i < PROCESS_MAX_COUNT; ++i) {
+                if (g_processes[i].loaded &&
+                    g_processes[i].state != PROCESS_STATE_EXITED &&
+                    g_processes[i].user_page_tables == process->user_page_tables) {
+                    ++threads;
+                }
+            }
+        }
+        snapshot->thread_count = threads ? threads : 1u;
+    }
     return 1;
 }
 

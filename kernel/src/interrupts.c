@@ -1,4 +1,5 @@
 #include "interrupts.h"
+#include "journal.h"
 #include "process.h"
 #include "serial.h"
 #include "timer.h"
@@ -43,6 +44,10 @@ extern void timer_interrupt_stub(void);
 extern void pagefault_stub(void);
 extern void gpfault_stub(void);
 
+/* GP-register snapshot written by pagefault_stub before fault_handler runs.
+ * Order: rax, rbx, rcx, rdx, rsi, rdi, rbp (indices 0..6). */
+uint64_t g_fault_regs[16];
+
 int fault_handler(uint64_t cr2, uint64_t error_code, uint64_t rip, uint64_t vector, uint64_t cs) {
     serial_write("CPU EXCEPTION vector=");
     serial_write_hex_u64(vector);
@@ -54,9 +59,16 @@ int fault_handler(uint64_t cr2, uint64_t error_code, uint64_t rip, uint64_t vect
     serial_write_hex_u64(rip);
     serial_write(" cs=");
     serial_write_hex_u64(cs);
+    serial_write(" rbx=");
+    serial_write_hex_u64(g_fault_regs[1]);
+    serial_write(" rbp=");
+    serial_write_hex_u64(g_fault_regs[6]);
     serial_write("\n");
 
     if ((cs & 0x03u) == 0x03u) {
+        /* Record rbx/rbp in the persisted journal too (visible via dmesg and
+         * /journal.log) so faults can be diagnosed without a serial capture. */
+        journal_log_hex(JOURNAL_FAULT, 0, "  fault rbx=", g_fault_regs[1]);
         return process_handle_user_fault(vector, rip, cr2, error_code);
     }
     return 0;
@@ -149,4 +161,13 @@ void interrupts_init(void) {
 
     interrupt_load_runtime_tables(&gdt_desc, &idt_desc, TSS_SELECTOR);
     timer_init();
+}
+
+/* Point the TSS ring-0 stack (rsp0) at the kernel stack of the process that is
+ * about to run. The CPU loads rsp0 on every privilege transition (syscall /
+ * IRQ / fault from user mode), so each process handles its traps on its own
+ * kernel stack. This is what lets a process be suspended in the middle of a
+ * blocking syscall without another process clobbering its kernel frames. */
+void interrupt_set_kernel_stack(uintptr_t rsp0_top) {
+    g_tss.rsp0 = rsp0_top;
 }

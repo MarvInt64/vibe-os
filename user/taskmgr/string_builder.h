@@ -34,6 +34,16 @@ public:
 
     StringBuilder &append(unsigned int v) { return append(static_cast<unsigned long>(v)); }
 
+    /* Append a human-readable byte size: "512 B", "12.3 KB", "8.0 MB". */
+    StringBuilder &append_size(unsigned long bytes) {
+        if (bytes < 1024UL) { append(bytes); return append(" B"); }
+        unsigned long divisor = (bytes < 1024UL * 1024UL) ? 1024UL : 1024UL * 1024UL;
+        const char *unit      = (bytes < 1024UL * 1024UL) ? " KB" : " MB";
+        unsigned long x10 = bytes * 10UL / divisor;   /* value × 10 for one decimal */
+        append(x10 / 10UL).append(".").append(x10 % 10UL);
+        return append(unit);
+    }
+
     void clear() { len_ = 0; buf_[0] = '\0'; }
 
     const char *c_str() const { return buf_; }

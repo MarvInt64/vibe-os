@@ -43,7 +43,8 @@ enum {
     SYS_WINDOW_SET_MENU = 30,
     SYS_NET_HTTPS_GET = 31,
     SYS_JOURNAL_READ = 32,
-    SYS_LOG = 33
+    SYS_LOG = 33,
+    SYS_THREAD_CREATE = 34
 };
 
 static inline long __sc0(long n) {

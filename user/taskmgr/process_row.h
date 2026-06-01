@@ -9,9 +9,11 @@
  *   row_vbox  (VBox, height shared equally in the outer rows_vbox)
  *   ├── top_hbox  (HBox, h=18)
  *   │   ├── name_label    — "PID n  process-name"  (expands to fill width)
- *   │   ├── state_label   — "RUNNING" / "SLEEP" …  (fixed width)
- *   │   └── kill_button   — "KILL"                  (fixed width)
- *   └── metric_label      — "ticks n  switches n  parent n"  (fills width)
+ *   │   ├── ram_label     — "12.3 MB"  (fixed, colour-coded by size)
+ *   │   ├── thread_label  — "2 thr"    (fixed)
+ *   │   ├── state_label   — "RUNNING"  (fixed)
+ *   │   └── kill_button   — "KILL"     (fixed)
+ *   └── metric_label      — "ticks n · sw n · parent n"  (fills width)
  *
  * init() creates all widgets and adds them to the parent rows_vbox.
  * update() / hide() are called every refresh cycle from TaskManager. */
@@ -36,10 +38,12 @@ public:
     unsigned int pid() const { return pid_; }
 
 private:
-    vui_widget  *row_vbox_    = nullptr;
-    vui_widget  *name_label_  = nullptr;
-    vui_widget  *state_label_ = nullptr;
-    vui_widget  *kill_button_ = nullptr;
-    vui_widget  *metric_label_= nullptr;
-    unsigned int pid_         = 0;
+    vui_widget  *row_vbox_     = nullptr;
+    vui_widget  *name_label_   = nullptr;
+    vui_widget  *ram_label_    = nullptr;
+    vui_widget  *thread_label_ = nullptr;
+    vui_widget  *state_label_  = nullptr;
+    vui_widget  *kill_button_  = nullptr;
+    vui_widget  *metric_label_ = nullptr;
+    unsigned int pid_          = 0;
 };

@@ -359,7 +359,12 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
         if (run_result == PROCESS_RUN_NONE) {
             __asm__ volatile("sti; hlt; cli");
         } else {
-            __asm__ volatile("pause");
+            /* Work is pending (a process is runnable or parked on blocking I/O).
+             * Enable interrupts so the timer keeps advancing — blocking-I/O
+             * timeouts are measured in real time even though the waiting process
+             * is parked mid-syscall. The timer's kernel-mode path only does
+             * bookkeeping (tick count + wakeups) and returns, so this is safe. */
+            __asm__ volatile("sti; pause");
         }
     }
 }

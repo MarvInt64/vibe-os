@@ -48,8 +48,9 @@ private:
 
     /* --- Members --------------------------------------------------------- */
     vui_window *window_       = nullptr;
-    vui_widget *total_label_   = nullptr; /* "PROCESSES n / 4"    */
+    vui_widget *total_label_   = nullptr; /* "PROC n / 4"          */
     vui_widget *ready_label_   = nullptr; /* "READY n   SLEEP n"  */
+    vui_widget *mem_label_     = nullptr; /* "RAM x.x MB  n thr"  */
     vui_widget *status_label_  = nullptr; /* last action feedback  */
 
     std::array<ProcessRow, VUI_PROCESS_MAX> rows_;

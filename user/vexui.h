@@ -39,7 +39,7 @@ typedef unsigned int vui_u32;
 #define VUI_OK          0x0050c98au
 #define VUI_WARN        0x00f0b86eu
 #define VUI_DANGER      0x00ef7f7fu
-#define VUI_PROCESS_MAX 4
+#define VUI_PROCESS_MAX 8   /* must match kernel PROCESS_MAX_COUNT */
 
 typedef struct vui_window vui_window;
 typedef struct vui_widget vui_widget;
@@ -59,6 +59,9 @@ typedef struct vui_process_info {
     unsigned char state;
     unsigned char loaded;
     char name[32];
+    /* Must match struct process_snapshot in kernel/include/process.h. */
+    unsigned long mem_bytes;     /* physical RAM footprint (bytes)        */
+    unsigned int  thread_count;  /* threads sharing the address space (>=1) */
 } vui_process_info;
 
 /* Open a window with a content area of width x height pixels.

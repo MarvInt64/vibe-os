@@ -68,7 +68,7 @@ void TaskManager::build_ui() {
     vui_set_anchor(summary, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
     vui_set_gap(summary, 0);
 
-    total_label_ = vui_label(window_, 0, 0, "PROCESSES");
+    total_label_ = vui_label(window_, 0, 0, "PROC");
     vui_set_color(total_label_, VUI_ACCENT);
     vui_set_expand(total_label_);
     vui_box_add(summary, total_label_);
@@ -78,7 +78,13 @@ void TaskManager::build_ui() {
     vui_set_expand(ready_label_);
     vui_box_add(summary, ready_label_);
 
+    mem_label_ = vui_label(window_, 0, 0, "RAM");
+    vui_set_color(mem_label_, VUI_WARN);
+    vui_set_expand(mem_label_);
+    vui_box_add(summary, mem_label_);
+
     status_label_ = vui_label(window_, 0, 0, "READY");
+    vui_set_size(status_label_, 92, 0);
     vui_set_color(status_label_, VUI_TEXT_DIM);
     vui_box_add(summary, status_label_);
 
@@ -91,12 +97,22 @@ void TaskManager::build_ui() {
     vui_set_anchor(headers, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
     vui_set_gap(headers, 6);
 
+    /* Column headers — widths mirror the per-row columns in process_row.cpp
+     * (name expands; RAM 88, THR 60, STATE 72, action/kill 52). */
     auto *h_process = vui_label(window_, 0, 0, "PROCESS");
     vui_set_expand(h_process);
     vui_box_add(headers, h_process);
 
+    auto *h_ram = vui_label(window_, 0, 0, "RAM");
+    vui_set_size(h_ram, 88, 0);
+    vui_box_add(headers, h_ram);
+
+    auto *h_thr = vui_label(window_, 0, 0, "THREADS");
+    vui_set_size(h_thr, 60, 0);
+    vui_box_add(headers, h_thr);
+
     auto *h_state = vui_label(window_, 0, 0, "STATE");
-    vui_set_size(h_state, 80, 0);
+    vui_set_size(h_state, 72, 0);
     vui_box_add(headers, h_state);
 
     auto *h_action = vui_label(window_, 0, 0, "ACTION");
@@ -118,7 +134,8 @@ void TaskManager::build_ui() {
 /* ---- Private — data refresh -------------------------------------------- */
 
 void TaskManager::refresh() {
-    unsigned int loaded = 0, ready = 0, sleeping = 0;
+    unsigned int  loaded = 0, ready = 0, sleeping = 0, total_threads = 0;
+    unsigned long total_mem = 0;
 
     for (int slot = 0; slot < VUI_PROCESS_MAX; ++slot) {
         vui_process_info p{};
@@ -135,18 +152,24 @@ void TaskManager::refresh() {
         ++loaded;
         if (s == ProcessState::Ready)    ++ready;
         if (s == ProcessState::Sleeping) ++sleeping;
+        total_mem     += p.mem_bytes;
+        total_threads += p.thread_count;
         rows_[slot].update(p);
     }
 
-    StringBuilder<64> total;
-    total.append("PROCESSES ").append(loaded)
+    StringBuilder<48> total;
+    total.append("PROC ").append(loaded)
          .append(" / ").append(static_cast<unsigned int>(VUI_PROCESS_MAX));
     vui_set_text(total_label_, total.c_str());
 
-    StringBuilder<64> stats;
+    StringBuilder<48> stats;
     stats.append("READY ").append(ready)
-         .append("   SLEEP ").append(sleeping);
+         .append("  SLEEP ").append(sleeping);
     vui_set_text(ready_label_, stats.c_str());
+
+    StringBuilder<48> mem;
+    mem.append_size(total_mem).append("  ").append(total_threads).append(" thr");
+    vui_set_text(mem_label_, mem.c_str());
 }
 
 void TaskManager::set_status(const char *text, vui_u32 color) {

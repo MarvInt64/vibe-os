@@ -930,6 +930,13 @@ static void execute_command(void) {
 		} else {
 			waitpid(pid);
 		}
+	} else if (strcmp(cmd, "threadtest") == 0) {
+		int pid = spawn("/bin/threadtest");
+		if (pid <= 0) {
+			write_str("threadtest: "); write_line(strerror(pid));
+		} else {
+			waitpid(pid);
+		}
 	} else if (strcmp(cmd, "gui") == 0 || strcmp(cmd, "wm") == 0 || strcmp(cmd, "desktop") == 0) {
 		write_line("Starting VibeOS desktop...");
 		syscall1(SYS_WINDOWMGR_START, 0);

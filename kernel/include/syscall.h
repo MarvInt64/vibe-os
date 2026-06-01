@@ -38,7 +38,12 @@ enum syscall_number {
 	SYS_WINDOW_SET_MENU = 30,
 	SYS_NET_HTTPS_GET = 31,
 	SYS_JOURNAL_READ = 32,
-	SYS_LOG = 33
+	SYS_LOG = 33,
+	/* Create a thread sharing the caller's address space.
+	 * rdi = entry function (user ptr), rsi = stack top (user ptr, owned by
+	 * caller, e.g. malloc'd), rdx = argument passed to the entry in rdi.
+	 * Returns the new thread's tid (a pid), or <0 on error. */
+	SYS_THREAD_CREATE = 34
 };
 
 enum syscall_error {

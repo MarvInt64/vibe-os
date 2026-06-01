@@ -96,6 +96,18 @@ void __attribute__((noreturn)) Browser::run() {
             }
         }
 
+        /* While the worker thread is fetching, keep repainting so the progress
+         * bar animates and the window stays visibly alive. */
+        if (fetch_state_.load(std::memory_order_acquire) == (int)FetchState::Fetching) {
+            ++progress_phase_;
+            dirty = true;
+        }
+
+        /* Settle the state machine once the worker finishes (page is stable). */
+        int before = fetch_state_.load(std::memory_order_acquire);
+        poll_fetch();
+        if (before != fetch_state_.load(std::memory_order_acquire)) dirty = true;
+
         if (dirty) render();
         vos_yield();
     }
@@ -331,8 +343,50 @@ void Browser::layout_current() {
     clamp_scroll();
 }
 
+/* Hand a navigation off to a background worker thread so the UI thread stays
+ * responsive (and can animate a progress bar) while the blocking fetch runs.
+ * Ignored if a fetch is already in flight. */
 void Browser::navigate(const char *url) {
-    load_url(url);
+    if (!url || !url[0]) return;
+    int expected = (int)FetchState::Idle;
+    /* Only start if currently Idle (also accept Ready/Failed = settled). */
+    int cur = fetch_state_.load(std::memory_order_acquire);
+    if (cur == (int)FetchState::Fetching) return;   /* one fetch at a time */
+    (void)expected;
+
+    __builtin_strncpy(pending_url_, url, sizeof pending_url_);
+    pending_url_[sizeof pending_url_ - 1] = '\0';
+    progress_phase_ = 0;
+    editing_ = false;   /* UI thread: deselect the URL bar for the load */
+    fetch_state_.store((int)FetchState::Fetching, std::memory_order_release);
+
+    /* Reap a previous finished worker handle before reusing it. */
+    if (worker_.joinable()) worker_.detach();
+    worker_ = std::thread([this] { fetch_worker(); });
+}
+
+/* Worker-thread body: performs the blocking load, then publishes the result.
+ * load_url() does the fetch + DOM parse + layout (all heap ops are thread-safe
+ * via the umalloc lock). It must not draw or present — only the UI thread
+ * touches the canvas. */
+void Browser::fetch_worker() {
+    load_url(pending_url_);
+    /* load_url sets status_ and html_buf_/layout_ on success; mark the page
+     * ready for the UI thread to render. (Failure also lands here — the UI
+     * just shows whatever status load_url left.) */
+    fetch_state_.store((int)FetchState::Ready, std::memory_order_release);
+}
+
+/* UI-thread side: when the worker has finished, the page (layout_) is stable,
+ * so settle back to Idle. Called once per frame from run(). Returns true if a
+ * state transition happened (so the caller repaints). */
+void Browser::poll_fetch() {
+    int s = fetch_state_.load(std::memory_order_acquire);
+    if (s == (int)FetchState::Ready || s == (int)FetchState::Failed) {
+        if (worker_.joinable()) worker_.join();   /* reap the finished thread */
+        scroll_ = 0;
+        fetch_state_.store((int)FetchState::Idle, std::memory_order_release);
+    }
 }
 
 void Browser::load_url(const char *start_url) {
@@ -355,8 +409,10 @@ void Browser::load_url(const char *start_url) {
         p=0; path[p++]='/';
         if(u[i]=='/'){ ++i; while(u[i]&&p<(int)sizeof(path)-1) path[p++]=u[i++]; } path[p]='\0';
 
+        /* Runs on the worker thread — update status_ only (the UI thread reads
+         * it and repaints); never draw or present() from here. */
         if (!parse_ipv4(host,&ip)) {
-            __builtin_snprintf(status_,sizeof status_,"Resolving %s …",host); present();
+            __builtin_snprintf(status_,sizeof status_,"Resolving %s …",host);
             if (vos_resolve(host,&ip)<0){__builtin_strcpy(status_,"DNS: cannot resolve host");return;}
         }
 
@@ -367,7 +423,6 @@ void Browser::load_url(const char *start_url) {
         req.ip=ip; req.port=secure?443:80; req.host=host; req.path=path;
         req.out=raw; req.cap=RAW_CAP;
         __builtin_snprintf(status_,sizeof status_,"%s %s …",secure?"TLS":"HTTP",host);
-        present();
         vos_log(VOS_LOG_APP, cur);
         n = secure ? vos_https_get(&req) : vos_http_get(&req);
         if (n <= 0) {
@@ -424,14 +479,14 @@ void Browser::load_url(const char *start_url) {
 
         layout_current();
         __builtin_free(raw);
-        scroll_ = 0;
         push_history(cur);
         __builtin_snprintf(status_,sizeof status_,
-            "%d  %d runs  %luK  %s",
-            code, layout_.run_count, (unsigned long)0,
+            "%d  %d runs  %s",
+            code, layout_.run_count,
             page_title_[0] ? page_title_ : "");
         vos_log(VOS_LOG_APP, status_);
-        editing_ = false;
+        /* scroll reset + URL-bar deselect happen on the UI thread (poll_fetch /
+         * navigate), never from this worker thread. */
         return;
     }
     __builtin_strcpy(status_,"too many redirects");
@@ -457,8 +512,8 @@ void Browser::images_collect(dom_node *node) {
                 for (int k=0;k<n_imgs_;++k)
                     if (__builtin_strcmp(images_[k].src,src)==0){dup=true;break;}
                 if (!dup) {
+                    /* Worker thread: status only, no present() (UI owns the canvas). */
                     __builtin_snprintf(status_,sizeof status_,"Loading image %d …",n_imgs_+1);
-                    present();
                     image_load(src);
                 }
             }
@@ -584,8 +639,35 @@ void Browser::render() {
     fill(0, BAR_H, win_w_, STATUS_H + 4, COL_BAR);
     draw_text(MARGIN, BAR_H + 2, status_, COL_DIM);
 
+    bool fetching =
+        fetch_state_.load(std::memory_order_acquire) == (int)FetchState::Fetching;
+
+    /* ---- Indeterminate progress bar (while the worker fetches) ---------- */
+    if (fetching) {
+        int bar_y = BAR_H + STATUS_H + 2;
+        int bar_w = win_w_;
+        fill(0, bar_y, bar_w, 2, COL_BAR);
+        /* A 25%-wide knob sweeps left→right, wrapping — honest "indeterminate"
+         * feedback since a single blocking GET gives no byte progress. */
+        int knob = bar_w / 4;
+        int span = bar_w + knob;
+        int pos  = (progress_phase_ * 12) % span - knob;
+        fill(pos < 0 ? 0 : pos, bar_y,
+             pos < 0 ? knob + pos : (pos + knob > bar_w ? bar_w - pos : knob),
+             2, COL_ACCENT);
+    }
+
     /* ---- Page paper area ----------------------------------------------- */
     fill(MARGIN, CONTENT_TOP, page_w(), win_h_ - CONTENT_TOP, COL_PAGE);
+
+    /* While fetching, the worker thread is actively writing layout_; the UI
+     * thread must not read it. Show a placeholder and skip the content pass.
+     * The atomic acquire above pairs with the worker's release of Ready. */
+    if (fetching) {
+        draw_text(MARGIN + PAGE_PAD, CONTENT_TOP + 20, "Loading", COL_DIM);
+        present();
+        return;
+    }
 
     /* ---- Content: positioned runs offset by scroll --------------------- */
     clamp_scroll();
