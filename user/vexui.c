@@ -79,7 +79,8 @@ enum { W_PANEL, W_LABEL, W_BUTTON, W_BAR, W_VBOX, W_HBOX,
        W_TILE,
        W_INPUT,
        W_BADGE,
-       W_TABS
+       W_TABS,
+       W_SPARK
 };
 
 static const vui_theme g_default_theme = {
@@ -396,6 +397,12 @@ vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels,
     if (!wd) return 0;
     wd->x=x; wd->y=y; wd->w=width; wd->h=28; scopy(wd->text, labels?labels:"", sizeof(wd->text));
     wd->value=active; init_margins(wd); w->dirty=1; return wd;
+}
+vui_widget *vui_sparkline(vui_window *w, int x, int y, int width, int height) {
+    vui_widget *wd = new_widget(w, W_SPARK);
+    if (!wd) return 0;
+    wd->x=x; wd->y=y; wd->w=width; wd->h=height; wd->color=VUI_ACCENT;
+    init_margins(wd); w->dirty=1; return wd;
 }
 vui_widget *vui_bar(vui_window *w, int x, int y, int width, int height, int max) {
     vui_widget *wd = new_widget(w, W_BAR);
@@ -972,6 +979,21 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
             }
             text(w, sx + (sw - slen(label) * 8) / 2, wd->y + 6, label,
                  seg == wd->value ? g_theme.text : g_theme.text_dim);
+        }
+        break; }
+    case W_SPARK: {
+        /* Decorative mini bar-graph (a "tiny graph" per the design spec). */
+        static const unsigned char pat[24] = {
+            3,5,4,7,5,8,6,9,7,10,6,8,5,7,9,6,4,7,5,8,6,9,7,5
+        };
+        uint32_t accent = wd->color ? wd->color : g_theme.accent;
+        uint32_t bar = mix(accent, g_theme.surface, 1u, 4u);  /* accent-tinted, visible */
+        int n = wd->w / 4; int i;
+        if (n > 24) n = 24;
+        for (i = 0; i < n; ++i) {
+            int hgt = 2 + (pat[i] * (wd->h - 2)) / 10;
+            if (hgt > wd->h) hgt = wd->h;
+            rect(w, wd->x + i * 4, wd->y + wd->h - hgt, 2, hgt, bar);
         }
         break; }
     case W_BAR: {

@@ -35,23 +35,38 @@ void TaskManager::build_ui() {
     /* ---- Metric cards --------------------------------------------------- */
     vui_set_anchor(vui_card(window_, 16, 14, 144, 66, "Processes"),
                    VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
-    total_label_ = vui_label(window_, 28, 42, "0 / 0");
+    total_label_ = vui_label(window_, 28, 40, "0 / 0");
     vui_set_color(total_label_, VUI_ACCENT);
+    vui_set_anchor(vui_sparkline(window_, 28, 60, 120, 13), VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
 
     vui_set_anchor(vui_card(window_, 168, 14, 144, 66, "Scheduler"),
                    VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
-    ready_label_ = vui_label(window_, 180, 42, "READY 0");
+    ready_label_ = vui_label(window_, 180, 40, "READY 0");
     vui_set_color(ready_label_, VUI_OK);
+    {
+        auto *sp = vui_sparkline(window_, 180, 60, 120, 13);
+        vui_set_color(sp, VUI_OK);
+        vui_set_anchor(sp, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
+    }
 
     vui_set_anchor(vui_card(window_, 320, 14, 144, 66, "Memory"),
                    VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
-    mem_label_ = vui_label(window_, 332, 42, "0 B");
+    mem_label_ = vui_label(window_, 332, 40, "0 B");
     vui_set_color(mem_label_, VUI_WARN);
+    {
+        auto *sp = vui_sparkline(window_, 332, 60, 120, 13);
+        vui_set_color(sp, VUI_WARN);
+        vui_set_anchor(sp, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
+    }
 
     vui_set_anchor(vui_card(window_, 472, 14, 152, 66, "Status"),
                    VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
-    status_label_ = vui_label(window_, 484, 42, "READY");
+    status_label_ = vui_label(window_, 484, 40, "READY");
     vui_set_color(status_label_, VUI_TEXT_DIM);
+    {
+        auto *sp = vui_sparkline(window_, 484, 60, 128, 13);
+        vui_set_anchor(sp, VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
+    }
 
     /* ---- Navigation/search strip ---------------------------------------- */
     auto *tabs = vui_tabs(window_, 16, 94, 392, "PROCESSES|SYSTEM|SERVICES|PERF", 0);

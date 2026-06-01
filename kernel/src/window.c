@@ -1045,14 +1045,23 @@ static void render_background_surface(struct desktop_state *desktop) {
         }
     }
 
-    /* ---- Top bar: thin, dense, right-aligned indicators with a sparkline. ---- */
+    /* ---- Top bar: thin, dense; V-logo + brand left, indicators right. ---- */
     fb_fill_rect(fb, 0, 0, w, 54, mix_color(g_chrome_theme.surface, g_chrome_theme.bg, 1u, 3u));
     fb_fill_rect(fb, 0, 53, w, 1, g_chrome_theme.border);
-    draw_text(fb, 28, 20, "VibeOS", g_chrome_theme.text, 1);
-    fb_fill_rect(fb, 132, 16, 1, 22, g_chrome_theme.border);
-    draw_text(fb, 148, 20, "DESKTOP", g_chrome_theme.text_dim, 1);
 
-    sx = w - 360;
+    /* Thin outlined V mark in the accent colour. */
+    {
+        int i;
+        for (i = 0; i < 8; ++i) {
+            fb_fill_rect(fb, 22 + i, 15 + i * 2, 2, 2, g_chrome_theme.accent);
+            fb_fill_rect(fb, 38 - i, 15 + i * 2, 2, 2, g_chrome_theme.accent);
+        }
+    }
+    draw_text(fb, 50, 20, "VibeOS", g_chrome_theme.text, 1);
+    fb_fill_rect(fb, 154, 16, 1, 22, g_chrome_theme.border);
+    draw_text(fb, 170, 20, "DESKTOP", g_chrome_theme.text_dim, 1);
+
+    sx = w - 400;
     {
         static const int hs[16] = {4, 6, 5, 8, 6, 10, 7, 9, 12, 8, 6, 9, 11, 7, 5, 8};
         int i;
@@ -1071,6 +1080,23 @@ static void render_background_surface(struct desktop_state *desktop) {
     fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
     sx += 12;
     draw_text(fb, sx, 20, "MEM 42%", g_chrome_theme.text, 1);
+    sx += 7 * 8 + 16;
+    fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
+    sx += 14;
+    /* Power glyph: an open ring with a stem at the top. */
+    {
+        int pr = 7, pcx = sx + pr, pcy = 28, xx, yy;
+        for (yy = -pr; yy <= pr; ++yy) {
+            for (xx = -pr; xx <= pr; ++xx) {
+                int d2 = xx * xx + yy * yy;
+                if (d2 <= pr * pr && d2 >= (pr - 2) * (pr - 2)) {
+                    if (yy < -pr + 4 && xx >= -1 && xx <= 1) continue;  /* top gap */
+                    fb_fill_rect(fb, pcx + xx, pcy + yy, 1, 1, g_chrome_theme.text_dim);
+                }
+            }
+        }
+        fb_fill_rect(fb, pcx, pcy - pr - 1, 2, 7, g_chrome_theme.text_dim);  /* stem */
+    }
 
     for (order = 0; order < desktop->launcher_count; ++order) {
         struct desktop_icon icon = launcher_icon_at(desktop, order);
