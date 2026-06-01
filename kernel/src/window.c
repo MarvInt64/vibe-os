@@ -316,7 +316,11 @@ static int ui_dock_icon_gap(const struct desktop_state *desktop) { return large_
 static int ui_dock_pad(const struct desktop_state *desktop) { return large_ui(desktop) ? 14 : 10; }
 
 static int dock_icon_count(const struct desktop_state *desktop) {
-    return DESKTOP_ICON_COUNT + (desktop->app_created ? 1 : 0);
+    int i;
+    int n = DESKTOP_ICON_COUNT;
+    for (i = 0; i < MAX_USER_APPS; i++)
+        if (desktop->user_apps[i].created) n++;
+    return n;
 }
 
 static void ui_dock_metrics(const struct desktop_state *desktop, int *dx, int *dy, int *dw, int *dh) {
@@ -377,16 +381,31 @@ static struct desktop_icon dock_icon_at(const struct desktop_state *desktop, int
         return desktop_icon_at(desktop, index);
     }
 
-    ui_dock_metrics(desktop, &dx, &dy, &dw, &dh);
-    (void)dw;
-    (void)dh;
-    icon.x = dx + pad + index * (isz + gap);
-    icon.y = dy + pad;
-    icon.window_index = WINDOW_APP;
-    icon.color = 0x008f7bf0u;
-    icon.label = desktop->app_title[0] ? desktop->app_title : "APP";
-    icon.launcher_index = -1;
-    return icon;
+    /* Map dock position to a created user-app slot (in slot order). */
+    {
+        int app_pos = index - DESKTOP_ICON_COUNT;
+        int i;
+        int found = -1;
+        int count = 0;
+        for (i = 0; i < MAX_USER_APPS; i++) {
+            if (desktop->user_apps[i].created) {
+                if (count == app_pos) { found = i; break; }
+                count++;
+            }
+        }
+        if (found < 0) found = 0; /* fallback */
+
+        ui_dock_metrics(desktop, &dx, &dy, &dw, &dh);
+        (void)dw;
+        (void)dh;
+        icon.x = dx + pad + index * (isz + gap);
+        icon.y = dy + pad;
+        icon.window_index = WINDOW_APP_FIRST + found;
+        icon.color = 0x008f7bf0u;
+        icon.label = desktop->user_apps[found].title[0] ? desktop->user_apps[found].title : "APP";
+        icon.launcher_index = -1;
+        return icon;
+    }
 }
 
 static struct desktop_icon launcher_icon_at(const struct desktop_state *desktop, int index) {
@@ -614,7 +633,28 @@ enum resize_edge {
     RESIZE_BOTTOM = 8
 };
 
-static void app_enqueue_event(struct desktop_state *desktop, uint32_t type, int x, int y, uint32_t buttons, uint32_t key);
+static void app_enqueue_event_slot(struct desktop_state *desktop, int slot, uint32_t type, int x, int y, uint32_t buttons, uint32_t key);
+
+/* ---- Multi-app slot helpers ---- */
+static int is_user_app_slot(int idx) {
+    return idx >= WINDOW_APP_FIRST && idx < WINDOW_APP_FIRST + MAX_USER_APPS;
+}
+static int slot_index(int window_idx) {
+    return window_idx - WINDOW_APP_FIRST;
+}
+static int find_slot_by_pid(struct desktop_state *d, uint32_t pid) {
+    int i;
+    for (i = 0; i < MAX_USER_APPS; i++)
+        if (d->user_apps[i].created && d->user_apps[i].pid == pid) return i;
+    return -1;
+}
+static int find_free_slot(struct desktop_state *d) {
+    int i;
+    for (i = 0; i < MAX_USER_APPS; i++)
+        if (!d->user_apps[i].created) return i;
+    return 0; /* reuse slot 0 if all full */
+}
+
 
 /* Which traffic-light control (if any) is under the cursor. Geometry mirrors
  * the buttons drawn in draw_window_frame so the hit-testing actually lines up. */
@@ -691,16 +731,17 @@ static void app_window_max_size(struct desktop_state *desktop, int *max_w, int *
     if (*max_h > (int)WINDOW_APP_SURFACE_MAX_HEIGHT) *max_h = (int)WINDOW_APP_SURFACE_MAX_HEIGHT;
 }
 
-static void update_app_content_size(struct desktop_state *desktop) {
+static void update_app_content_size_slot(struct desktop_state *desktop, int slot) {
     int cw;
     int ch;
-    app_content_size_for_window(desktop, &desktop->windows[WINDOW_APP], &cw, &ch);
+    int win_idx = WINDOW_APP_FIRST + slot;
+    app_content_size_for_window(desktop, &desktop->windows[win_idx], &cw, &ch);
     if (cw > (int)WINDOW_APP_CONTENT_MAX_WIDTH) cw = (int)WINDOW_APP_CONTENT_MAX_WIDTH;
     if (ch > (int)WINDOW_APP_CONTENT_MAX_HEIGHT) ch = (int)WINDOW_APP_CONTENT_MAX_HEIGHT;
-    if (desktop->app_content_width != cw || desktop->app_content_height != ch) {
-        desktop->app_content_width = cw;
-        desktop->app_content_height = ch;
-        app_enqueue_event(desktop, WINSYS_EVENT_RESIZE, cw, ch, 0, 0);
+    if (desktop->user_apps[slot].content_width != cw || desktop->user_apps[slot].content_height != ch) {
+        desktop->user_apps[slot].content_width = cw;
+        desktop->user_apps[slot].content_height = ch;
+        app_enqueue_event_slot(desktop, slot, WINSYS_EVENT_RESIZE, cw, ch, 0, 0);
     }
 }
 
@@ -904,9 +945,10 @@ static uint32_t *surface_storage_for_window(struct desktop_state *desktop, int i
             return desktop->terminal_surface_storage;
         case WINDOW_TASK_MANAGER:
             return desktop->tasks_surface_storage;
-        case WINDOW_APP:
-            return desktop->app_surface_storage;
         default:
+            if (is_user_app_slot(index)) {
+                return desktop->user_apps[slot_index(index)].surface_storage;
+            }
             return 0;
     }
 }
@@ -918,8 +960,14 @@ static void window_max_surface(int index, int *out_w, int *out_h) {
         case WINDOW_INFO: *out_w = WINDOW_INFO_MAX_WIDTH; *out_h = WINDOW_INFO_MAX_HEIGHT; break;
         case WINDOW_FILES: *out_w = WINDOW_FILES_MAX_WIDTH; *out_h = WINDOW_FILES_MAX_HEIGHT; break;
         case WINDOW_TERMINAL: *out_w = WINDOW_TERMINAL_MAX_WIDTH; *out_h = WINDOW_TERMINAL_MAX_HEIGHT; break;
-        case WINDOW_APP: *out_w = WINDOW_APP_SURFACE_MAX_WIDTH; *out_h = WINDOW_APP_SURFACE_MAX_HEIGHT; break;
-        default: *out_w = WINDOW_TASKS_MAX_WIDTH; *out_h = WINDOW_TASKS_MAX_HEIGHT; break;
+        case WINDOW_TASK_MANAGER: *out_w = WINDOW_TASKS_MAX_WIDTH; *out_h = WINDOW_TASKS_MAX_HEIGHT; break;
+        default:
+            if (is_user_app_slot(index)) {
+                *out_w = WINDOW_APP_SURFACE_MAX_WIDTH; *out_h = WINDOW_APP_SURFACE_MAX_HEIGHT;
+            } else {
+                *out_w = WINDOW_TASKS_MAX_WIDTH; *out_h = WINDOW_TASKS_MAX_HEIGHT;
+            }
+            break;
     }
 }
 
@@ -935,7 +983,7 @@ static void window_toggle_maximize(struct desktop_state *desktop, int index) {
         int availw = (int)desktop->screen_width - ui_dock_width(desktop) - 24;
         int availh = (int)desktop->screen_height - ui_taskbar_height(desktop) - 24;
 
-        if (index == WINDOW_APP) {
+        if (is_user_app_slot(index)) {
             app_window_max_size(desktop, &maxw, &maxh);
         } else {
             window_max_surface(index, &maxw, &maxh);
@@ -959,8 +1007,8 @@ static void window_toggle_maximize(struct desktop_state *desktop, int index) {
 
     clamp_window_to_screen(desktop, w);
     fb_init(&desktop->window_fbs[index], (uintptr_t)surface_storage_for_window(desktop, index), w->width, w->height, w->width * 4u, 32u);
-    if (index == WINDOW_APP && desktop->app_created) {
-        update_app_content_size(desktop);
+    if (is_user_app_slot(index) && desktop->user_apps[slot_index(index)].created) {
+        update_app_content_size_slot(desktop, slot_index(index));
     }
 }
 
@@ -1008,17 +1056,18 @@ static void render_window_surface(struct desktop_state *desktop, int index) {
     fb_fill_rect(fb, 0, 0, window->width, window->height, WINDOW_TRANSPARENT_KEY);
     draw_window_frame(desktop, fb, &local_window, focused);
 
-    if (index == WINDOW_APP) {
+    if (is_user_app_slot(index)) {
         /* Content comes from the userspace app's last-presented pixel buffer. */
+        int s = slot_index(index);
         int cx = app_ctx.content_x;
         int cy = app_ctx.content_y;
-        int cw = desktop->app_content_width;
-        int ch = desktop->app_content_height;
+        int cw = desktop->user_apps[s].content_width;
+        int ch = desktop->user_apps[s].content_height;
         int row;
         if (cw > app_ctx.content_width) cw = app_ctx.content_width;
         if (ch > app_ctx.content_height) ch = app_ctx.content_height;
         for (row = 0; row < ch; ++row) {
-            const uint32_t *src = &desktop->app_content_storage[(size_t)row * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH];
+            const uint32_t *src = &desktop->user_apps[s].content_storage[(size_t)row * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH];
             int col;
             for (col = 0; col < cw; ++col) {
                 fb_put_pixel(fb, cx + col, cy + row, src[col]);
@@ -1099,13 +1148,14 @@ static int build_context_entries(struct desktop_state *desktop, int win, struct 
     ctx_set_label(&out[n], "Show"); out[n].kind = CTX_SHOW; out[n].action = 0; ++n;
     ctx_set_label(&out[n], "Hide"); out[n].kind = CTX_HIDE; out[n].action = 0; ++n;
 
-    if (win == WINDOW_APP) {
+    if (is_user_app_slot(win)) {
+        int s = slot_index(win);
         int i;
         ctx_set_label(&out[n], "Quit App"); out[n].kind = CTX_QUIT_APP; out[n].action = 0; ++n;
-        for (i = 0; i < desktop->app_menu_count && n < CTX_MAX_ENTRIES; ++i) {
-            ctx_set_label(&out[n], desktop->app_menu_items[i].label);
+        for (i = 0; i < desktop->user_apps[s].menu_count && n < CTX_MAX_ENTRIES; ++i) {
+            ctx_set_label(&out[n], desktop->user_apps[s].menu[i].label);
             out[n].kind = CTX_APP_USER;
-            out[n].action = desktop->app_menu_items[i].action_id;
+            out[n].action = desktop->user_apps[s].menu[i].action_id;
             ++n;
         }
     } else {
@@ -1274,19 +1324,26 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
     desktop->windows[WINDOW_FILES] = (struct window_state){"FILES", (int)screen_width - files_width - right_margin, top_margin + 36, files_width, files_height, 0x001a2233u, 0x00222d42u, 0x00f5b15au, WINDOW_FILES, 1, 0, 0, 0, 0, 0};
     desktop->windows[WINDOW_TERMINAL] = (struct window_state){"TERMINAL", clamp_value(((int)screen_width - terminal_width) / 2 + 40, 220, 340), clamp_value((int)screen_height / 5, 160, 240), terminal_width, terminal_height, 0x000e1622u, 0x00222d42u, 0x0064f2ccu, WINDOW_TERMINAL, 0, 0, 0, 0, 0, 0};
     desktop->windows[WINDOW_TASK_MANAGER] = (struct window_state){"TASK MANAGER", clamp_value((int)screen_width - tasks_width - 150, 260, 1320), clamp_value(top_margin + 92, 160, 320), tasks_width, tasks_height, 0x001a2233u, 0x00222d42u, 0x00ef7f7fu, WINDOW_TASK_MANAGER, 0, 0, 0, 0, 0, 0};
-    /* Userspace app window: hidden until an app creates it. */
-    desktop->windows[WINDOW_APP] = (struct window_state){"APP", 320, 160, 480, 320, 0x001a2233u, 0x00222d42u, 0x008f7bf0u, WINDOW_APP, 0, 0, 0, 0, 0, 0};
-    desktop->app_created = 0;
-    desktop->app_pid = 0;
-    desktop->app_content_width = 0;
-    desktop->app_content_height = 0;
-    desktop->app_event_head = 0;
-    desktop->app_event_tail = 0;
+    /* Userspace app windows: hidden until an app creates them. */
+    {
+        int i;
+        for (i = 0; i < MAX_USER_APPS; i++) {
+            int win_idx = WINDOW_APP_FIRST + i;
+            desktop->windows[win_idx] = (struct window_state){"APP", 320 + i * 24, 160 + i * 24, 480, 320, 0x001a2233u, 0x00222d42u, 0x008f7bf0u, (uint8_t)win_idx, 0, 0, 0, 0, 0, 0};
+            desktop->user_apps[i].created = 0;
+            desktop->user_apps[i].pid = 0;
+            desktop->user_apps[i].content_width = 0;
+            desktop->user_apps[i].content_height = 0;
+            desktop->user_apps[i].event_head = 0;
+            desktop->user_apps[i].event_tail = 0;
+            desktop->user_apps[i].menu_count = 0;
+            desktop->user_apps[i].title[0] = '\0';
+        }
+    }
     desktop->context_menu_open = 0;
     desktop->context_menu_x = 0;
     desktop->context_menu_y = 0;
     desktop->context_menu_window = -1;
-    desktop->app_menu_count = 0;
     desktop->launcher_count = 0;
     desktop->dragging_launcher = -1;
     desktop->launcher_drag_offset_x = 0;
@@ -1300,7 +1357,12 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
     desktop->z_order[1] = WINDOW_FILES;
     desktop->z_order[2] = WINDOW_TERMINAL;
     desktop->z_order[3] = WINDOW_TASK_MANAGER;
-    desktop->z_order[4] = WINDOW_APP;
+    {
+        int i;
+        for (i = 0; i < MAX_USER_APPS; i++) {
+            desktop->z_order[4 + i] = WINDOW_APP_FIRST + i;
+        }
+    }
     desktop->focused_window = WINDOW_FILES;
     desktop->dragging_window = -1;
     desktop->drag_offset_x = 0;
@@ -1332,7 +1394,13 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
     fb_init(&desktop->window_fbs[WINDOW_FILES], (uintptr_t)surface_storage_for_window(desktop, WINDOW_FILES), desktop->windows[WINDOW_FILES].width, desktop->windows[WINDOW_FILES].height, desktop->windows[WINDOW_FILES].width * 4u, 32u);
     fb_init(&desktop->window_fbs[WINDOW_TERMINAL], (uintptr_t)surface_storage_for_window(desktop, WINDOW_TERMINAL), desktop->windows[WINDOW_TERMINAL].width, desktop->windows[WINDOW_TERMINAL].height, desktop->windows[WINDOW_TERMINAL].width * 4u, 32u);
     fb_init(&desktop->window_fbs[WINDOW_TASK_MANAGER], (uintptr_t)surface_storage_for_window(desktop, WINDOW_TASK_MANAGER), desktop->windows[WINDOW_TASK_MANAGER].width, desktop->windows[WINDOW_TASK_MANAGER].height, desktop->windows[WINDOW_TASK_MANAGER].width * 4u, 32u);
-    fb_init(&desktop->window_fbs[WINDOW_APP], (uintptr_t)surface_storage_for_window(desktop, WINDOW_APP), desktop->windows[WINDOW_APP].width, desktop->windows[WINDOW_APP].height, desktop->windows[WINDOW_APP].width * 4u, 32u);
+    {
+        int i;
+        for (i = 0; i < MAX_USER_APPS; i++) {
+            int win_idx = WINDOW_APP_FIRST + i;
+            fb_init(&desktop->window_fbs[win_idx], (uintptr_t)surface_storage_for_window(desktop, win_idx), desktop->windows[win_idx].width, desktop->windows[win_idx].height, desktop->windows[win_idx].width * 4u, 32u);
+        }
+    }
     app_init_text(&desktop->apps[WINDOW_INFO], &desktop->app_storage[WINDOW_INFO].text, INFO_LINES, sizeof(INFO_LINES) / sizeof(INFO_LINES[0]));
     app_init_text(&desktop->apps[WINDOW_FILES], &desktop->app_storage[WINDOW_FILES].text, FILES_LINES, sizeof(FILES_LINES) / sizeof(FILES_LINES[0]));
     app_init_terminal(&desktop->apps[WINDOW_TERMINAL], &desktop->app_storage[WINDOW_TERMINAL].terminal);
@@ -1344,22 +1412,25 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
     clamp_window_to_screen(desktop, &desktop->windows[WINDOW_TASK_MANAGER]);
 }
 
-static void app_enqueue_event(struct desktop_state *desktop, uint32_t type, int x, int y, uint32_t buttons, uint32_t key) {
-    int next = (desktop->app_event_tail + 1) % WINSYS_EVENT_QUEUE;
-    if (next == desktop->app_event_head) {
+static void app_enqueue_event_slot(struct desktop_state *desktop, int slot, uint32_t type, int x, int y, uint32_t buttons, uint32_t key) {
+    int next;
+    if (slot < 0 || slot >= MAX_USER_APPS) return;
+    next = (desktop->user_apps[slot].event_tail + 1) % WINSYS_EVENT_QUEUE;
+    if (next == desktop->user_apps[slot].event_head) {
         return; /* queue full, drop */
     }
-    desktop->app_events[desktop->app_event_tail].type = type;
-    desktop->app_events[desktop->app_event_tail].x = x;
-    desktop->app_events[desktop->app_event_tail].y = y;
-    desktop->app_events[desktop->app_event_tail].buttons = buttons;
-    desktop->app_events[desktop->app_event_tail].key = key;
-    desktop->app_event_tail = next;
+    desktop->user_apps[slot].events[desktop->user_apps[slot].event_tail].type = type;
+    desktop->user_apps[slot].events[desktop->user_apps[slot].event_tail].x = x;
+    desktop->user_apps[slot].events[desktop->user_apps[slot].event_tail].y = y;
+    desktop->user_apps[slot].events[desktop->user_apps[slot].event_tail].buttons = buttons;
+    desktop->user_apps[slot].events[desktop->user_apps[slot].event_tail].key = key;
+    desktop->user_apps[slot].event_tail = next;
 }
 
-/* Content-area origin of the app window, in screen coordinates. */
-static void app_content_origin(struct desktop_state *desktop, int *ox, int *oy) {
-    struct window_state *w = &desktop->windows[WINDOW_APP];
+
+/* Content-area origin of a user-app window, in screen coordinates. */
+static void app_content_origin_for_window(struct desktop_state *desktop, int win_idx, int *ox, int *oy) {
+    struct window_state *w = &desktop->windows[win_idx];
     *ox = w->x + (large_ui(desktop) ? 22 : 16);
     *oy = w->y + (large_ui(desktop) ? 58 : 48);
 }
@@ -1383,7 +1454,7 @@ static void apply_window_resize(struct desktop_state *desktop, int index, int mo
         return;
     }
 
-    if (index == WINDOW_APP) {
+    if (is_user_app_slot(index)) {
         app_window_max_size(desktop, &max_w, &max_h);
     } else {
         window_max_surface(index, &max_w, &max_h);
@@ -1434,8 +1505,8 @@ static void apply_window_resize(struct desktop_state *desktop, int index, int mo
     window->width = w;
     window->height = h;
     fb_init(&desktop->window_fbs[index], (uintptr_t)surface_storage_for_window(desktop, index), w, h, w * 4u, 32u);
-    if (index == WINDOW_APP && desktop->app_created) {
-        update_app_content_size(desktop);
+    if (is_user_app_slot(index) && desktop->user_apps[slot_index(index)].created) {
+        update_app_content_size_slot(desktop, slot_index(index));
     }
     mark_window_dirty(desktop, index);
     mark_dirty_rect(desktop, before);
@@ -1523,8 +1594,11 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
                     if (desktop->focused_window == menu_window) desktop->focused_window = -1;
                     mark_dirty_rect(desktop, before);
                 } else if (e->kind == CTX_QUIT_APP) {
-                    if (menu_window == WINDOW_APP && desktop->app_pid != 0) {
-                        (void)process_kill(desktop->app_pid);
+                    if (is_user_app_slot(menu_window)) {
+                        int s = slot_index(menu_window);
+                        if (desktop->user_apps[s].pid != 0) {
+                            (void)process_kill(desktop->user_apps[s].pid);
+                        }
                     }
                 } else if (e->kind == CTX_APP_KERNEL) {
                     /* App does its own work (e.g. spawn a fresh shell); the
@@ -1534,7 +1608,9 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
                     mark_window_dirty(desktop, menu_window);
                     focus_window(desktop, menu_window);
                 } else if (e->kind == CTX_APP_USER) {
-                    app_enqueue_event(desktop, WINSYS_EVENT_MENU_ACTION, 0, 0, 0, e->action);
+                    if (is_user_app_slot(menu_window)) {
+                        app_enqueue_event_slot(desktop, slot_index(menu_window), WINSYS_EVENT_MENU_ACTION, 0, 0, 0, e->action);
+                    }
                 }
                 mark_dock_dirty(desktop);
             }
@@ -1552,8 +1628,8 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
 
             btn = window_button_hit(desktop, window, mouse->x, mouse->y);
             if (btn == WIN_BTN_CLOSE || btn == WIN_BTN_MIN) {
-                if (btn == WIN_BTN_CLOSE && index == WINDOW_APP && desktop->app_created) {
-                    app_enqueue_event(desktop, WINSYS_EVENT_CLOSE, 0, 0, 0, 0);
+                if (btn == WIN_BTN_CLOSE && is_user_app_slot(index) && desktop->user_apps[slot_index(index)].created) {
+                    app_enqueue_event_slot(desktop, slot_index(index), WINSYS_EVENT_CLOSE, 0, 0, 0, 0);
                 }
                 /* Minimise and close both hide the window; reopen from its dock
                  * icon. Repaint the dock so the running-dot updates. */
@@ -1635,38 +1711,41 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
     }
 
     /* Deliver input to a focused userspace app window via its event queue. */
-    if (desktop->focused_window == WINDOW_APP && desktop->windows[WINDOW_APP].visible &&
+    if (is_user_app_slot(desktop->focused_window) &&
+        desktop->windows[desktop->focused_window].visible &&
         desktop->dragging_window < 0 && desktop->resizing_window < 0) {
+        int fw = desktop->focused_window;
+        int s = slot_index(fw);
         int ox;
         int oy;
         size_t k;
-        app_content_origin(desktop, &ox, &oy);
+        app_content_origin_for_window(desktop, fw, &ox, &oy);
         if (mouse->moved) {
-            app_enqueue_event(desktop, WINSYS_EVENT_MOUSE_MOVE, mouse->x - ox, mouse->y - oy, mouse->buttons, 0);
+            app_enqueue_event_slot(desktop, s, WINSYS_EVENT_MOUSE_MOVE, mouse->x - ox, mouse->y - oy, mouse->buttons, 0);
         }
         if (mouse->wheel != 0) {
-            app_enqueue_event(desktop, WINSYS_EVENT_SCROLL, 0, mouse->wheel, 0, 0);
+            app_enqueue_event_slot(desktop, s, WINSYS_EVENT_SCROLL, 0, mouse->wheel, 0, 0);
         }
         if (mouse->left_pressed) {
-            app_enqueue_event(desktop, WINSYS_EVENT_MOUSE_DOWN, mouse->x - ox, mouse->y - oy, 1, 0);
+            app_enqueue_event_slot(desktop, s, WINSYS_EVENT_MOUSE_DOWN, mouse->x - ox, mouse->y - oy, 1, 0);
         }
         if (mouse->left_released) {
-            app_enqueue_event(desktop, WINSYS_EVENT_MOUSE_UP, mouse->x - ox, mouse->y - oy, 0, 0);
+            app_enqueue_event_slot(desktop, s, WINSYS_EVENT_MOUSE_UP, mouse->x - ox, mouse->y - oy, 0, 0);
         }
         if (mouse->right_pressed) {
-            app_enqueue_event(desktop, WINSYS_EVENT_CONTEXT_MENU, mouse->x - ox, mouse->y - oy, 2, 0);
+            app_enqueue_event_slot(desktop, s, WINSYS_EVENT_CONTEXT_MENU, mouse->x - ox, mouse->y - oy, 2, 0);
         }
         if (mouse->right_released) {
-            app_enqueue_event(desktop, WINSYS_EVENT_MOUSE_UP, mouse->x - ox, mouse->y - oy, 0, 0);
+            app_enqueue_event_slot(desktop, s, WINSYS_EVENT_MOUSE_UP, mouse->x - ox, mouse->y - oy, 0, 0);
         }
         for (k = 0; k < keyboard->count; ++k) {
-            app_enqueue_event(desktop, WINSYS_EVENT_KEY, 0, 0, 0, (uint32_t)(uint8_t)keyboard->chars[k]);
+            app_enqueue_event_slot(desktop, s, WINSYS_EVENT_KEY, 0, 0, 0, (uint32_t)(uint8_t)keyboard->chars[k]);
         }
         if (keyboard->enter_pressed) {
-            app_enqueue_event(desktop, WINSYS_EVENT_KEY, 0, 0, 0, (uint32_t)'\n');
+            app_enqueue_event_slot(desktop, s, WINSYS_EVENT_KEY, 0, 0, 0, (uint32_t)'\n');
         }
         if (keyboard->backspace_pressed) {
-            app_enqueue_event(desktop, WINSYS_EVENT_KEY, 0, 0, 0, 0x08u);
+            app_enqueue_event_slot(desktop, s, WINSYS_EVENT_KEY, 0, 0, 0, 0x08u);
         }
         return;
     }
@@ -1778,7 +1857,9 @@ int desktop_take_dirty_rect(struct desktop_state *desktop, struct rect *rect) {
 /* ---- Window server (userspace GUI apps) ---- */
 
 int desktop_app_create(struct desktop_state *desktop, uint32_t pid, const char *title, int width, int height) {
-    struct window_state *w = &desktop->windows[WINDOW_APP];
+    int slot;
+    int win_idx;
+    struct window_state *w;
     int frame_w;
     int frame_h;
     size_t i;
@@ -1788,57 +1869,76 @@ int desktop_app_create(struct desktop_state *desktop, uint32_t pid, const char *
     if (width > (int)WINDOW_APP_CONTENT_MAX_WIDTH) width = (int)WINDOW_APP_CONTENT_MAX_WIDTH;
     if (height > (int)WINDOW_APP_CONTENT_MAX_HEIGHT) height = (int)WINDOW_APP_CONTENT_MAX_HEIGHT;
 
+    /* Reuse existing slot if this PID already has one; else find free slot. */
+    slot = find_slot_by_pid(desktop, pid);
+    if (slot < 0) slot = find_free_slot(desktop);
+    win_idx = WINDOW_APP_FIRST + slot;
+    w = &desktop->windows[win_idx];
+
     /* Window size = content size + frame insets (matches build_app_draw_context). */
     frame_w = width + (large_ui(desktop) ? 44 : 32);
     frame_h = height + (large_ui(desktop) ? 82 : 66);
 
-    for (i = 0; i + 1 < sizeof(desktop->app_title) && title && title[i]; ++i) {
-        desktop->app_title[i] = title[i];
+    for (i = 0; i + 1 < sizeof(desktop->user_apps[slot].title) && title && title[i]; ++i) {
+        desktop->user_apps[slot].title[i] = title[i];
     }
-    desktop->app_title[(title) ? i : 0] = '\0';
+    desktop->user_apps[slot].title[(title) ? i : 0] = '\0';
 
-    w->title = desktop->app_title;
+    w->title = desktop->user_apps[slot].title;
     w->width = frame_w;
     w->height = frame_h;
-    w->x = (int)desktop->screen_width / 2 - frame_w / 2;
-    w->y = (int)desktop->screen_height / 2 - frame_h / 2;
+    w->x = (int)desktop->screen_width / 2 - frame_w / 2 + slot * 24;
+    w->y = (int)desktop->screen_height / 2 - frame_h / 2 + slot * 24;
     w->visible = 1;
     w->maximized = 0;
     if (w->x < ui_dock_width(desktop) + 16) w->x = ui_dock_width(desktop) + 16;
     if (w->y < 16) w->y = 16;
 
-    desktop->app_created = 1;
-    desktop->app_pid = pid;
-    desktop->app_content_width = width;
-    desktop->app_content_height = height;
-    desktop->app_event_head = 0;
-    desktop->app_event_tail = 0;
-    desktop->app_menu_count = 0;
+    desktop->user_apps[slot].created = 1;
+    desktop->user_apps[slot].pid = pid;
+    desktop->user_apps[slot].content_width = width;
+    desktop->user_apps[slot].content_height = height;
+    desktop->user_apps[slot].event_head = 0;
+    desktop->user_apps[slot].event_tail = 0;
+    desktop->user_apps[slot].menu_count = 0;
 
-    fb_init(&desktop->window_fbs[WINDOW_APP], (uintptr_t)desktop->app_surface_storage, w->width, w->height, w->width * 4u, 32u);
+    fb_init(&desktop->window_fbs[win_idx], (uintptr_t)desktop->user_apps[slot].surface_storage, w->width, w->height, w->width * 4u, 32u);
 
-    focus_window(desktop, WINDOW_APP);
+    focus_window(desktop, win_idx);
     mark_dock_dirty(desktop);
-    mark_window_dirty(desktop, WINDOW_APP);
+    mark_window_dirty(desktop, win_idx);
     mark_dirty_rect(desktop, window_rect(w));
-    return WINDOW_APP;
+    return win_idx;
 }
 
 int desktop_app_present(struct desktop_state *desktop, uint32_t pid, int win_id, const uint32_t *src, int src_w, int src_h) {
+    int slot;
+    int win_idx;
     int row;
     int copy_w;
     int copy_h;
 
-    if (win_id != WINDOW_APP || !desktop->app_created || desktop->app_pid != pid || src == 0) {
-        return -1;
+    if (src == 0) return -1;
+
+    /* Accept win_id as the window index, or fall back to PID lookup. */
+    if (is_user_app_slot(win_id)) {
+        slot = slot_index(win_id);
+        if (slot < 0 || slot >= MAX_USER_APPS) return -1;
+        if (!desktop->user_apps[slot].created || desktop->user_apps[slot].pid != pid) return -1;
+        win_idx = win_id;
+    } else {
+        slot = find_slot_by_pid(desktop, pid);
+        if (slot < 0) return -1;
+        win_idx = WINDOW_APP_FIRST + slot;
     }
-    copy_w = src_w < desktop->app_content_width ? src_w : desktop->app_content_width;
-    copy_h = src_h < desktop->app_content_height ? src_h : desktop->app_content_height;
+
+    copy_w = src_w < desktop->user_apps[slot].content_width ? src_w : desktop->user_apps[slot].content_width;
+    copy_h = src_h < desktop->user_apps[slot].content_height ? src_h : desktop->user_apps[slot].content_height;
     if (copy_w > (int)WINDOW_APP_CONTENT_MAX_WIDTH) copy_w = (int)WINDOW_APP_CONTENT_MAX_WIDTH;
     if (copy_h > (int)WINDOW_APP_CONTENT_MAX_HEIGHT) copy_h = (int)WINDOW_APP_CONTENT_MAX_HEIGHT;
 
     for (row = 0; row < copy_h; ++row) {
-        uint32_t *dst = &desktop->app_content_storage[(size_t)row * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH];
+        uint32_t *dst = &desktop->user_apps[slot].content_storage[(size_t)row * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH];
         const uint32_t *s = &src[(size_t)row * (size_t)src_w];
         int col;
         for (col = 0; col < copy_w; ++col) {
@@ -1846,29 +1946,48 @@ int desktop_app_present(struct desktop_state *desktop, uint32_t pid, int win_id,
         }
     }
 
-    mark_window_dirty(desktop, WINDOW_APP);
-    mark_dirty_rect(desktop, window_rect(&desktop->windows[WINDOW_APP]));
+    mark_window_dirty(desktop, win_idx);
+    mark_dirty_rect(desktop, window_rect(&desktop->windows[win_idx]));
     return 0;
 }
 
 int desktop_app_poll_event(struct desktop_state *desktop, uint32_t pid, int win_id, struct winsys_event *out) {
-    if (win_id != WINDOW_APP || !desktop->app_created || desktop->app_pid != pid || out == 0) {
-        return 0;
+    int slot;
+
+    if (out == 0) return 0;
+
+    if (is_user_app_slot(win_id)) {
+        slot = slot_index(win_id);
+        if (slot < 0 || slot >= MAX_USER_APPS) return 0;
+        if (!desktop->user_apps[slot].created || desktop->user_apps[slot].pid != pid) return 0;
+    } else {
+        slot = find_slot_by_pid(desktop, pid);
+        if (slot < 0) return 0;
     }
-    if (desktop->app_event_head == desktop->app_event_tail) {
+
+    if (desktop->user_apps[slot].event_head == desktop->user_apps[slot].event_tail) {
         return 0; /* empty */
     }
-    *out = desktop->app_events[desktop->app_event_head];
-    desktop->app_event_head = (desktop->app_event_head + 1) % WINSYS_EVENT_QUEUE;
+    *out = desktop->user_apps[slot].events[desktop->user_apps[slot].event_head];
+    desktop->user_apps[slot].event_head = (desktop->user_apps[slot].event_head + 1) % WINSYS_EVENT_QUEUE;
     return 1;
 }
 
 int desktop_app_set_menu(struct desktop_state *desktop, uint32_t pid, int win_id, const struct winsys_menu_item *items, int count) {
+    int slot;
     int i;
 
-    if (desktop == 0 || win_id != WINDOW_APP || !desktop->app_created || desktop->app_pid != pid) {
-        return -1;
+    if (desktop == 0) return -1;
+
+    if (is_user_app_slot(win_id)) {
+        slot = slot_index(win_id);
+        if (slot < 0 || slot >= MAX_USER_APPS) return -1;
+        if (!desktop->user_apps[slot].created || desktop->user_apps[slot].pid != pid) return -1;
+    } else {
+        slot = find_slot_by_pid(desktop, pid);
+        if (slot < 0) return -1;
     }
+
     if (count < 0) count = 0;
     if (count > WINSYS_MAX_MENU_ITEMS) count = WINSYS_MAX_MENU_ITEMS;
     if (count > 0 && items == 0) {
@@ -1878,36 +1997,40 @@ int desktop_app_set_menu(struct desktop_state *desktop, uint32_t pid, int win_id
     for (i = 0; i < count; ++i) {
         int j;
         for (j = 0; j + 1 < WINSYS_MENU_LABEL_MAX && items[i].label[j]; ++j) {
-            desktop->app_menu_items[i].label[j] = items[i].label[j];
+            desktop->user_apps[slot].menu[i].label[j] = items[i].label[j];
         }
-        desktop->app_menu_items[i].label[j] = '\0';
-        desktop->app_menu_items[i].action_id = items[i].action_id;
+        desktop->user_apps[slot].menu[i].label[j] = '\0';
+        desktop->user_apps[slot].menu[i].action_id = items[i].action_id;
     }
-    desktop->app_menu_count = count;
+    desktop->user_apps[slot].menu_count = count;
     return 0;
 }
 
 void desktop_app_close_for_pid(struct desktop_state *desktop, uint32_t pid) {
+    int slot;
+    int win_idx;
     struct window_state *w;
     struct rect before;
     struct rect old_dock;
 
-    if (desktop == 0 || !desktop->app_created || desktop->app_pid != pid) {
-        return;
-    }
+    if (desktop == 0) return;
 
-    w = &desktop->windows[WINDOW_APP];
+    slot = find_slot_by_pid(desktop, pid);
+    if (slot < 0) return;
+
+    win_idx = WINDOW_APP_FIRST + slot;
+    w = &desktop->windows[win_idx];
     before = window_rect(w);
     old_dock = dock_dirty_rect(desktop);
     w->visible = 0;
-    desktop->app_created = 0;
-    desktop->app_pid = 0;
-    desktop->app_content_width = 0;
-    desktop->app_content_height = 0;
-    desktop->app_event_head = 0;
-    desktop->app_event_tail = 0;
-    desktop->app_menu_count = 0;
-    if (desktop->focused_window == WINDOW_APP) {
+    desktop->user_apps[slot].created = 0;
+    desktop->user_apps[slot].pid = 0;
+    desktop->user_apps[slot].content_width = 0;
+    desktop->user_apps[slot].content_height = 0;
+    desktop->user_apps[slot].event_head = 0;
+    desktop->user_apps[slot].event_tail = 0;
+    desktop->user_apps[slot].menu_count = 0;
+    if (desktop->focused_window == win_idx) {
         desktop->focused_window = -1;
     }
     mark_dirty_rect(desktop, old_dock);

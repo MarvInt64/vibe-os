@@ -1,26 +1,33 @@
 # VibeOS
 
-A hobby x86_64 operating system written from scratch in C, C++20 and x86 assembly.
+A hobby x86_64 operating system vibed with AI from scratch in C, C++20 and x86 assembly.
 It boots via GRUB/Multiboot2, runs entirely bare-metal, and includes a working graphical desktop, networking stack, persistent ext2 file system, and a userspace with a shell, text editor, browser and GUI apps.
+
+![VibeOS desktop](docs/screen1.jpg)
 
 ---
 
 ## Features
 
-| Area | Status |
+| Area | Details |
 |---|---|
-| Boot | GRUB Multiboot2 → 32-bit protected mode → 64-bit long mode |
-| Memory | Physical frame allocator, 4-level paging, kernel heap (`kmalloc`/`kfree`) |
-| Interrupts | IDT, PIC remapping, IRQ handlers, syscall interface (`int 0x80`) |
-| Scheduler | Round-robin preemptive multi-process (per-process page tables) |
-| Storage | IDE/PIO driver, persistent raw disk image formatted as ext2 |
-| File system | ext2 read/write — `ls`, `cd`, `cat`, `touch`, `mkdir`, `rm`, `cp`, `mv`, `echo >` |
-| Networking | Intel e1000 NIC, ARP, IPv4, ICMP (`ping`), UDP, DNS, TCP, TLS (BearSSL) |
-| GUI | Framebuffer renderer, window server, drag/resize/close, multi-window desktop |
-| VexUI toolkit | Retained-mode widget library — labels, buttons, panels, progress bars, VBox/HBox layout containers, in-window menu bar |
-| Userspace | Freestanding libc (stdio/stdlib/string/ctype), C++20 runtime (vtable, RTTI, global/local ctors, `new`/`delete`) |
-| Apps | `sh` shell, `edit` text editor, `browser` (HTTP reader), `taskmgr` process manager, `uidemo`, `hello`, `cpptest` |
-| Kernel events | `dmesg` journal, serial debug output, crash persistence to `/journal.log` |
+| **Boot** | GRUB Multiboot2 → 32-bit protected mode → 64-bit long mode; VGA text-mode fallback during early init |
+| **Memory** | Physical frame allocator, 4-level paging, kernel heap (`kmalloc`/`kfree`), per-process page tables with full address-space isolation |
+| **Interrupts** | IDT, PIC remapping, IRQ handlers, `int 0x80` syscall interface (34 syscalls) |
+| **Scheduler** | Round-robin preemptive multi-process; FPU/SSE context switch per process (`fxsave`/`fxrstor`) so userspace can freely use floats and SSE |
+| **Process management** | `SYS_PROCESS_SPAWN` / `SYS_WAITPID` / `SYS_PROCESS_KILL`; per-process file-descriptor table; `SYS_GETARG` argument passing |
+| **Storage** | IDE/PIO driver, ramdisk (in-memory block device for early boot), persistent raw disk image |
+| **File system** | ext2 read/write; full VFS layer; `open`/`close`/`read`/`write`/`stat`/`readdir`/`chdir`/`getcwd`/`unlink`/`creat`/`mkdir` syscalls; survives reboots |
+| **Networking** | Intel e1000 NIC driver; ARP, IPv4, ICMP (`ping`), UDP, DNS, TCP; HTTP (`curl`); TLS via BearSSL (freestanding port) — `SYS_NET_HTTPS_GET` syscall exists and encrypts the connection, but certificate validation is disabled (accept-all, no trust store) and the shell `curl` command currently only uses plain HTTP |
+| **Graphics** | BGA (Bochs Graphics Adapter) driver for arbitrary resolutions; double-buffered framebuffer with dirty-rect partial redraws; runtime resolution switching via `display <w> <h>`; VGA text fallback |
+| **Window server** | Multi-window compositor; drag, resize, close; dock/taskbar with app icons; PS/2 mouse + keyboard |
+| **VexUI toolkit** | Retained-mode widget library: labels, buttons, panels, progress bars; **VBox/HBox layout containers** with `expand`/`fill`/`gap`/`padding`; **in-window menu bar** with hover, dropdowns and separators |
+| **Font rendering** | Built-in bitmap font atlas (`font_atlas.c`) used by VexUI and the kernel terminal; DejaVu Sans TTF embedded via `.incbin` + stb_truetype glyph cache (`appfont.c`) used by the browser for anti-aliased proportional text |
+| **Userspace libc** | Freestanding libc: stdio/stdlib/string/ctype; `crt0` (entry, `.init_array` ctors, `_exit`); user heap (`umalloc`) |
+| **C++20 userspace** | Full freestanding C++20 runtime: vtables, RTTI, `typeid`, global/local statics, `new`/`delete`, `__cxa_guard_*`, `__cxa_atexit`; standard headers `<array>`, `<span>`, `<algorithm>`, `<utility>`, `<type_traits>`, `<new>`, `<typeinfo>`, etc. |
+| **Kernel C++ runtime** | Kernel-side C++20 subset (no exceptions/RTTI); `new`/`delete` via `kmalloc`; `.init_array` global ctors; automatic boot self-test |
+| **Logging** | Kernel event journal (`dmesg`); serial debug output; `SYS_LOG` / `vos_log` for userspace; crash persistence to `/journal.log` |
+| **Apps** | `sh` (interactive shell), `edit` (text editor), `browser` (HTTP/HTTPS reader), `taskmgr` (process manager, written in C++20), `uidemo`, `hello`, `cpptest` |
 
 ---
 
@@ -113,17 +120,46 @@ The desktop starts automatically. Click the **TERM** icon on the taskbar to open
 
 ### Shell commands
 
+**File system**
 ```
-help          — list available commands
-ls / cd / cat / mkdir / rm / cp / mv / touch / echo
-ping <host>   — ICMP ping (e.g. ping 8.8.8.8)
-curl <url>    — plain-text HTTP GET
-dmesg         — kernel event journal
-gui           — start the graphical desktop (if not already running)
-taskmgr       — open the process manager window
-edit <file>   — open the text editor
-browser       — open the web reader
-cpptest       — run the C++ runtime smoke test
+ls [path]              list directory
+cd <path>              change directory
+pwd                    print working directory
+cat <file>             print file contents
+stat <path>            show file metadata (size, type, inode)
+touch <file>           create empty file
+mkdir <dir>            create directory
+rm <path>              remove file
+cp <src> <dst>         copy file
+mv <src> <dst>         move / rename
+echo <text> [> file]   print text or redirect to file
+```
+
+**Network**
+```
+ping <host/ip>         ICMP ping (e.g. ping 8.8.8.8)
+ifconfig / ip          show IP address, MAC, link status
+curl <url>             HTTP GET (plain-text only; strips http:// prefix)
+```
+
+**System**
+```
+display <w> <h>        switch screen resolution at runtime (e.g. display 1024 768)
+dmesg / journal        print kernel event journal
+about                  OS version info
+clear                  clear terminal
+exit                   exit shell
+```
+
+**GUI apps** (launch from shell or desktop icons)
+```
+gui / desktop / wm     start graphical desktop
+taskmgr / tasks        process manager
+browser / web          HTTP/HTTPS text browser
+edit <file>            text editor
+uidemo                 VexUI widget demo
+hello                  minimal hello-world app
+cpptest / c++test      C++20 runtime smoke test
 ```
 
 ---

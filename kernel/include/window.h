@@ -6,15 +6,20 @@
 #include "input.h"
 #include "winsys.h"
 
+/* Number of concurrent userspace app windows supported. */
+#define MAX_USER_APPS 4
+
 enum window_id {
     WINDOW_INFO = 0,
     WINDOW_FILES = 1,
     WINDOW_TERMINAL = 2,
     WINDOW_TASK_MANAGER = 3,
-    /* Slot for a userspace app window (content presented via the window
-     * server syscalls). Only the four windows above get desktop icons. */
-    WINDOW_APP = 4,
-    WINDOW_COUNT = 5
+    /* First slot for a userspace app window. Slots 4..4+MAX_USER_APPS-1 are
+     * all userspace app windows. Only the four kernel windows above get
+     * desktop icons. */
+    WINDOW_APP_FIRST = 4,
+    WINDOW_APP = 4, /* backward-compat alias */
+    WINDOW_COUNT = 4 + MAX_USER_APPS
 };
 
 #define DESKTOP_ICON_COUNT 4
@@ -58,6 +63,24 @@ struct window_state {
     int restore_height;
 };
 
+/* Per-slot state for a userspace app window.  Each of the MAX_USER_APPS
+ * concurrent app windows gets its own copy of these fields instead of the
+ * single flat set that used to live directly in desktop_state. */
+struct user_app_slot {
+    uint32_t surface_storage[WINDOW_APP_SURFACE_MAX_WIDTH * WINDOW_APP_SURFACE_MAX_HEIGHT];
+    uint32_t content_storage[WINDOW_APP_CONTENT_MAX_WIDTH * WINDOW_APP_CONTENT_MAX_HEIGHT];
+    int content_width;
+    int content_height;
+    uint8_t created;
+    uint32_t pid;
+    struct winsys_event events[WINSYS_EVENT_QUEUE];
+    int event_head;
+    int event_tail;
+    char title[64];
+    int menu_count;
+    struct winsys_menu_item menu[WINSYS_MAX_MENU_ITEMS];
+};
+
 struct desktop_state {
     uint32_t screen_width;
     uint32_t screen_height;
@@ -93,27 +116,14 @@ struct desktop_state {
     uint32_t terminal_surface_storage[WINDOW_TERMINAL_MAX_WIDTH * WINDOW_TERMINAL_MAX_HEIGHT];
     uint32_t tasks_surface_storage[WINDOW_TASKS_MAX_WIDTH * WINDOW_TASKS_MAX_HEIGHT];
 
-    /* Userspace app window (WINDOW_APP): frame buffer + last-presented content
-     * + an input event queue the app drains via SYS_EVENT_POLL. */
-    uint32_t app_surface_storage[WINDOW_APP_SURFACE_MAX_WIDTH * WINDOW_APP_SURFACE_MAX_HEIGHT];
-    uint32_t app_content_storage[WINDOW_APP_CONTENT_MAX_WIDTH * WINDOW_APP_CONTENT_MAX_HEIGHT];
-    int app_content_width;
-    int app_content_height;
-    uint8_t app_created;
-    uint32_t app_pid;
-    char app_title[64];
-    struct winsys_event app_events[WINSYS_EVENT_QUEUE];
-    int app_event_head;
-    int app_event_tail;
+    /* Userspace app windows: up to MAX_USER_APPS concurrent apps, each with
+     * its own pixel buffers, event queue, PID and title. */
+    struct user_app_slot user_apps[MAX_USER_APPS];
+
     uint8_t context_menu_open;
     int context_menu_x;
     int context_menu_y;
     int context_menu_window;
-
-    /* Context-menu entries declared by the userspace app in WINDOW_APP (set via
-     * SYS_WINDOW_SET_MENU). Kernel apps declare theirs through their vtable. */
-    struct winsys_menu_item app_menu_items[WINSYS_MAX_MENU_ITEMS];
-    int app_menu_count;
 
     /* User desktop launchers loaded from .desktop files in /home/user/Desktop.
      * Each launcher is a small text file with Name= and Exec= keys. */
