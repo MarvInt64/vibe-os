@@ -80,6 +80,8 @@ struct user_app_slot {
     char title[64];
     int menu_count;
     struct winsys_menu_item menu[WINSYS_MAX_MENU_ITEMS];
+    int menubar_count;
+    struct winsys_menubar_item menubar[WINSYS_MAX_MENUBAR_ITEMS];
 };
 
 struct desktop_state {
@@ -188,5 +190,6 @@ int desktop_shell_dock_active(const struct desktop_state *desktop);
 /* Replace the WINDOW_APP context-menu entries with `count` items read from the
  * calling app's address space. Returns 0 on success, negative on error. */
 int desktop_app_set_menu(struct desktop_state *desktop, uint32_t pid, int win_id, const struct winsys_menu_item *items, int count);
+int desktop_app_set_menubar(struct desktop_state *desktop, uint32_t pid, int win_id, const struct winsys_menubar_item *items, int count);
 
 #endif

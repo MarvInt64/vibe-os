@@ -96,6 +96,32 @@ void __attribute__((noreturn)) Browser::run() {
         exit(1);
     }
 
+    /* Declare this app's global menu bar; the desktop shows it in the top bar
+     * while the browser is focused, and reports picks via VOS_EV_MENU_ACTION. */
+    static const vos_menubar_item kMenuBar[] = {
+        {"Page","",VOS_MB_TITLE,0},
+        {"New Tab","Ctrl+T",0,1},{"New Window","Ctrl+N",0,2},
+        {"Open Location","Ctrl+L",0,3},{"Reload","Ctrl+R",0,4},
+        {"","",VOS_MB_DIVIDER,0},{"Save Page","Ctrl+S",0,5},{"Print","Ctrl+P",0,6},
+        {"","",VOS_MB_DIVIDER,0},{"Close Window","Ctrl+W",VOS_MB_DANGER,7},
+        {"Edit","",VOS_MB_TITLE,0},
+        {"Undo","Ctrl+Z",0,10},{"Redo","Ctrl+Shift+Z",0,11},{"","",VOS_MB_DIVIDER,0},
+        {"Cut","Ctrl+X",0,12},{"Copy","Ctrl+C",0,13},{"Paste","Ctrl+V",0,14},
+        {"Select All","Ctrl+A",0,15},{"","",VOS_MB_DIVIDER,0},{"Find in Page","Ctrl+F",0,16},
+        {"View","",VOS_MB_TITLE,0},
+        {"Show Toolbar","",VOS_MB_CHECK|VOS_MB_CHECKED,20},
+        {"Show Status Bar","",VOS_MB_CHECK|VOS_MB_CHECKED,21},{"","",VOS_MB_DIVIDER,0},
+        {"Zoom In","Ctrl++",0,22},{"Zoom Out","Ctrl+-",0,23},{"Reset Zoom","Ctrl+0",0,24},
+        {"Navigate","",VOS_MB_TITLE,0},
+        {"Back","Alt+Left",0,30},{"Forward","Alt+Right",0,31},{"Home","Alt+Home",0,32},
+        {"Reload","Ctrl+R",0,33},{"","",VOS_MB_DIVIDER,0},{"Open Downloads","",0,34},
+        {"Tools","",VOS_MB_TITLE,0},
+        {"Developer Console","Ctrl+Shift+I",0,40},{"Network Inspector","",0,41},{"Settings","",0,42},
+        {"Help","",VOS_MB_TITLE,0},
+        {"VibeOS Help","",0,50},{"Keyboard Shortcuts","",0,51},{"About","",0,52},
+    };
+    vos_window_set_menubar(win_id_, kMenuBar, (int)(sizeof(kMenuBar) / sizeof(kMenuBar[0])));
+
     /* Pre-fill URL bar with a hint. */
     const char *hint = "example.com";
     __builtin_strcpy(url_, hint);

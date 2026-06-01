@@ -55,6 +55,9 @@ int vos_event_poll(int id, struct vos_event *out) {
 int vos_window_set_menu(int id, const struct vos_menu_item *items, int count) {
     return (int)__sc3(SYS_WINDOW_SET_MENU, (uint64_t)id, (uint64_t)(size_t)items, (uint64_t)count);
 }
+int vos_window_set_menubar(int id, const struct vos_menubar_item *items, int count) {
+    return (int)__sc3(SYS_WINDOW_SET_MENUBAR, (uint64_t)id, (uint64_t)(size_t)items, (uint64_t)count);
+}
 
 void vos_log(int level, const char *msg) {
     __sc2(SYS_LOG, (uint64_t)level, (uint64_t)(size_t)msg);

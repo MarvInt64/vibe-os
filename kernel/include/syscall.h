@@ -48,7 +48,10 @@ enum syscall_number {
 	/* Set the desktop wallpaper from a userspace XRGB pixel buffer.
 	 * rdi = pixels (user ptr, 0x00RRGGBB), rsi = width, rdx = height.
 	 * The kernel scales it to the screen and uses it as the backdrop. */
-	SYS_SET_WALLPAPER = 36
+	SYS_SET_WALLPAPER = 36,
+	/* Set the focused-window top-bar menu bar.
+	 * rdi = win id, rsi = struct winsys_menubar_item* (user), rdx = count. */
+	SYS_WINDOW_SET_MENUBAR = 37
 };
 
 enum syscall_error {

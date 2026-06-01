@@ -46,7 +46,8 @@ enum {
     SYS_LOG = 33,
     SYS_THREAD_CREATE = 34,
     SYS_WINDOW_CREATE_EX = 35,
-    SYS_SET_WALLPAPER = 36
+    SYS_SET_WALLPAPER = 36,
+    SYS_WINDOW_SET_MENUBAR = 37
 };
 
 static inline long __sc0(long n) {

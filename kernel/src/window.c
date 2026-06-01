@@ -732,6 +732,12 @@ static void focus_window(struct desktop_state *desktop, int index) {
     if (previous_focus != index) {
         mark_window_dirty(desktop, index);
         mark_dirty_rect(desktop, window_rect(&desktop->windows[index]));
+        /* The top-bar menu bar belongs to the focused app, so refresh it. Any
+         * open menu belongs to the old app — close it too. */
+        desktop->topbar_menu_open = -1;
+        desktop->topbar_menu_hover = -1;
+        desktop->background_dirty = 1;
+        mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
     }
 }
 
@@ -1005,169 +1011,196 @@ int desktop_set_wallpaper(struct desktop_state *desktop, const uint32_t *src, in
     return 0;
 }
 
-/* ---- Global top-bar menu (Page/Edit/View/…) ---------------------------- */
-#define MI_DIV    1u
-#define MI_DANGER 2u
-#define MI_CHECK  4u
-#define MI_ARROW  8u
-struct tb_item { const char *label; const char *sc; unsigned flags; };
-struct tb_menu { const char *title; const struct tb_item *items; int count; };
+/* ---- Global top-bar menu: defined by the focused window's app ---------- */
 
-static const struct tb_item TB_PAGE[] = {
-    {"New Tab","Ctrl+T",0},{"New Window","Ctrl+N",0},{"Open Location","Ctrl+L",0},{"Reload","Ctrl+R",0},
-    {0,0,MI_DIV},{"Save Page","Ctrl+S",0},{"Print","Ctrl+P",0},
-    {0,0,MI_DIV},{"Close Window","Ctrl+W",MI_DANGER},
-};
-static const struct tb_item TB_EDIT[] = {
-    {"Undo","Ctrl+Z",0},{"Redo","Ctrl+Shift+Z",0},{0,0,MI_DIV},
-    {"Cut","Ctrl+X",0},{"Copy","Ctrl+C",0},{"Paste","Ctrl+V",0},{"Select All","Ctrl+A",0},
-    {0,0,MI_DIV},{"Find in Page","Ctrl+F",0},
-};
-static const struct tb_item TB_VIEW[] = {
-    {"Show Toolbar",0,MI_CHECK},{"Show Status Bar",0,MI_CHECK},{0,0,MI_DIV},
-    {"Zoom In","Ctrl++",0},{"Zoom Out","Ctrl+-",0},{"Reset Zoom","Ctrl+0",0},
-    {0,0,MI_DIV},{"Developer Layout",0,MI_ARROW},
-};
-static const struct tb_item TB_NAV[] = {
-    {"Back","Alt+Left",0},{"Forward","Alt+Right",0},{"Home","Alt+Home",0},{"Reload","Ctrl+R",0},
-    {0,0,MI_DIV},{"Open VibeNet",0,0},{"Open Downloads",0,0},
-};
-static const struct tb_item TB_TOOLS[] = {
-    {"Developer Console","Ctrl+Shift+I",0},{"Network Inspector",0,0},{"Extensions",0,0},{"Settings",0,0},
-};
-static const struct tb_item TB_WINDOW[] = {
-    {"Minimize",0,0},{"Maximize",0,0},{"Tile Left",0,0},{"Tile Right",0,0},
-    {0,0,MI_DIV},{"Bring All to Front",0,0},
-};
-static const struct tb_item TB_HELP[] = {
-    {"VibeOS Help",0,0},{"Keyboard Shortcuts",0,0},{"Release Notes",0,0},{"About",0,0},
-};
-#define TB_M(a) (a), (int)(sizeof(a)/sizeof((a)[0]))
-static const struct tb_menu TB_MENUS[] = {
-    {"Page",     TB_M(TB_PAGE)},   {"Edit",   TB_M(TB_EDIT)},
-    {"View",     TB_M(TB_VIEW)},   {"Navigate", TB_M(TB_NAV)},
-    {"Tools",    TB_M(TB_TOOLS)},  {"Window", TB_M(TB_WINDOW)},
-    {"Help",     TB_M(TB_HELP)},
-};
-#define TB_MENU_COUNT ((int)(sizeof(TB_MENUS)/sizeof(TB_MENUS[0])))
+/* The focused window's menu bar (a flat winsys_menubar_item list), or NULL. */
+static const struct winsys_menubar_item *tb_bar(struct desktop_state *d, int *count) {
+    int f = d->focused_window;
+    if (f >= 0 && f < WINDOW_COUNT && is_user_app_slot(f)) {
+        int sl = slot_index(f);
+        if (sl >= 0 && sl < MAX_USER_APPS && d->user_apps[sl].created &&
+            d->user_apps[sl].menubar_count > 0) {
+            *count = d->user_apps[sl].menubar_count;
+            return d->user_apps[sl].menubar;
+        }
+    }
+    *count = 0;
+    return 0;
+}
 
-/* x (and width) of menu title `idx` in the top bar. Brand "VibeOS", a divider,
- * the "Desktop" context label, then the menus — a fixed layout so the painted
- * labels and the hit-test/dropdown geometry never disagree. */
-static int tb_menu_x(int idx, int *w_out) {
-    int adv = text_char_advance(1);
-    int x = 122 + 7 * adv + 24;   /* after "Desktop" + gap */
+/* Index in bar[] of the m-th top-level title, or -1. */
+static int tb_title_idx(const struct winsys_menubar_item *bar, int n, int m) {
+    int i, c = 0;
+    for (i = 0; i < n; ++i)
+        if (bar[i].flags & WINSYS_MB_TITLE) { if (c == m) return i; ++c; }
+    return -1;
+}
+static int tb_menu_count(const struct winsys_menubar_item *bar, int n) {
+    int i, c = 0;
+    for (i = 0; i < n; ++i) if (bar[i].flags & WINSYS_MB_TITLE) ++c;
+    return c;
+}
+
+/* The active-app label: focused window title (clamped) or "Desktop". */
+static void tb_app_label(struct desktop_state *d, char *out, int cap) {
+    const char *t = "Desktop";
     int i;
-    for (i = 0; i < idx; ++i) x += (int)strlen(TB_MENUS[i].title) * adv + 22;
-    if (w_out) *w_out = (int)strlen(TB_MENUS[idx].title) * adv;
+    if (d->focused_window >= 0 && d->focused_window < WINDOW_COUNT &&
+        d->windows[d->focused_window].visible && d->windows[d->focused_window].title[0])
+        t = d->windows[d->focused_window].title;
+    for (i = 0; t[i] && i < cap - 1 && i < 16; ++i) out[i] = t[i];
+    out[i] = '\0';
+}
+
+/* x (and pixel width) of the m-th top-level menu title. */
+static int tb_menu_x(struct desktop_state *d, int m, int *w_out) {
+    const struct winsys_menubar_item *bar;
+    int n, adv = text_char_advance(1);
+    char aa[20];
+    int x, i, ti;
+    tb_app_label(d, aa, sizeof aa);
+    x = 122 + (int)strlen(aa) * adv + 24;
+    bar = tb_bar(d, &n);
+    for (i = 0; i < m; ++i) {
+        ti = tb_title_idx(bar, n, i);
+        if (ti >= 0) x += (int)strlen(bar[ti].label) * adv + 22;
+    }
+    ti = tb_title_idx(bar, n, m);
+    if (w_out) *w_out = (ti >= 0) ? (int)strlen(bar[ti].label) * adv : 0;
     return x;
 }
 
-static int tb_label_at(int x, int y) {
-    int i;
-    if (y < 8 || y > 42) return -1;
-    for (i = 0; i < TB_MENU_COUNT; ++i) {
-        int w, mx = tb_menu_x(i, &w);
+static int tb_label_at(struct desktop_state *d, int x, int y) {
+    int n, total, i;
+    const struct winsys_menubar_item *bar = tb_bar(d, &n);
+    if (y < 8 || y > 42 || !bar) return -1;
+    total = tb_menu_count(bar, n);
+    for (i = 0; i < total; ++i) {
+        int w, mx = tb_menu_x(d, i, &w);
         if (x >= mx - 5 && x < mx + w + 5) return i;
     }
     return -1;
 }
 
-static struct rect tb_dropdown_rect(struct desktop_state *desktop, int idx) {
-    const struct tb_menu *m = &TB_MENUS[idx];
-    int adv = text_char_advance(1);
+/* Row count (incl. dividers) of menu m; *first = bar[] index of its first row. */
+static int tb_menu_rows(const struct winsys_menubar_item *bar, int n, int m, int *first) {
+    int ti = tb_title_idx(bar, n, m);
+    int next = tb_title_idx(bar, n, m + 1);
+    if (ti < 0) { *first = 0; return 0; }
+    if (next < 0) next = n;
+    *first = ti + 1;
+    return next - (ti + 1);
+}
+
+static struct rect tb_dropdown_rect(struct desktop_state *desktop, int m) {
+    const struct winsys_menubar_item *bar;
+    int n, first, rows, adv = text_char_advance(1);
     int i, longest = 0, w, h, mw, x;
-    for (i = 0; i < m->count; ++i) {
-        const struct tb_item *it = &m->items[i];
+    bar = tb_bar(desktop, &n);
+    rows = tb_menu_rows(bar, n, m, &first);
+    for (i = 0; i < rows; ++i) {
+        const struct winsys_menubar_item *it = &bar[first + i];
         int len;
-        if (it->flags & MI_DIV) continue;
-        len = (int)strlen(it->label) + ((it->flags & MI_CHECK) ? 2 : 0);
-        if (it->sc) len += (int)strlen(it->sc) + 4;
+        if (it->flags & WINSYS_MB_DIVIDER) continue;
+        len = (int)strlen(it->label) + ((it->flags & WINSYS_MB_CHECK) ? 2 : 0);
+        if (it->shortcut[0]) len += (int)strlen(it->shortcut) + 4;
         if (len > longest) longest = len;
     }
     w = longest * adv + 40; if (w < 200) w = 200; if (w > 360) w = 360;
-    h = m->count * 22 + 12;
-    x = tb_menu_x(idx, &mw) - 6;
+    h = rows * 22 + 12;
+    x = tb_menu_x(desktop, m, &mw) - 6;
     if (x + w > (int)desktop->screen_width - 8) x = (int)desktop->screen_width - w - 8;
     if (x < 6) x = 6;
     return rect_from_bounds(x, 50, w, h);
 }
 
-static int tb_item_at(struct desktop_state *desktop, int idx, int x, int y) {
-    struct rect r = tb_dropdown_rect(desktop, idx);
-    const struct tb_menu *m = &TB_MENUS[idx];
-    int row;
+/* bar[] index of the item under (x,y) in menu m's dropdown, or -1. */
+static int tb_item_at(struct desktop_state *desktop, int m, int x, int y) {
+    const struct winsys_menubar_item *bar;
+    int n, first, rows, row;
+    struct rect r = tb_dropdown_rect(desktop, m);
+    bar = tb_bar(desktop, &n);
+    rows = tb_menu_rows(bar, n, m, &first);
     if (!point_in_rect(x, y, r.x, r.y, r.width, r.height)) return -1;
     row = (y - (r.y + 6)) / 22;
-    if (row < 0 || row >= m->count) return -1;
-    if (m->items[row].flags & MI_DIV) return -1;
-    return row;
+    if (row < 0 || row >= rows) return -1;
+    if (bar[first + row].flags & WINSYS_MB_DIVIDER) return -1;
+    return first + row;
 }
 
-/* Painted into the (cached) background: brand divider, the context label and
- * the plain menu titles. */
-static void draw_topbar_menu_labels(struct framebuffer *fb) {
-    int i;
+static void draw_topbar_menu_labels(struct desktop_state *desktop, struct framebuffer *fb) {
+    const struct winsys_menubar_item *bar;
+    int n, total, i;
+    char aa[20];
+    bar = tb_bar(desktop, &n);
+    tb_app_label(desktop, aa, sizeof aa);
     fb_fill_rect(fb, 110, 16, 1, 22, g_chrome_theme.border);
-    draw_text(fb, 122, 20, "Desktop", g_chrome_theme.text, 1);
-    for (i = 0; i < TB_MENU_COUNT; ++i) {
-        int w, mx = tb_menu_x(i, &w);
-        draw_text(fb, mx, 20, TB_MENUS[i].title, g_chrome_theme.text_dim, 1);
+    draw_text(fb, 122, 20, aa, g_chrome_theme.text, 1);
+    if (!bar) return;
+    total = tb_menu_count(bar, n);
+    for (i = 0; i < total; ++i) {
+        int w, mx = tb_menu_x(desktop, i, &w);
+        int ti = tb_title_idx(bar, n, i);
+        if (ti >= 0) draw_text(fb, mx, 20, bar[ti].label, g_chrome_theme.text_dim, 1);
     }
 }
 
-/* Live overlay (drawn above windows each compose): open-label underline and
- * the floating dropdown panel. */
 static void draw_topbar_menu_overlay(struct desktop_state *desktop, struct framebuffer *fb) {
-    int idx = desktop->topbar_menu_open;
-    const struct tb_menu *m;
+    int m = desktop->topbar_menu_open;
+    const struct winsys_menubar_item *bar;
     struct rect r;
     uint32_t dbg, item_text, muted;
-    int w, mx, i;
+    int n, total, first, rows, w, mx, i;
 
-    if (idx < 0 || idx >= TB_MENU_COUNT) return;
+    if (m < 0) return;
+    bar = tb_bar(desktop, &n);
+    if (!bar) return;
+    total = tb_menu_count(bar, n);
+    if (m >= total) return;
 
-    mx = tb_menu_x(idx, &w);
-    fb_fill_rect(fb, mx, 44, w, 2, g_chrome_theme.accent);   /* open-label underline */
+    mx = tb_menu_x(desktop, m, &w);
+    fb_fill_rect(fb, mx, 44, w, 2, g_chrome_theme.accent);
 
-    m = &TB_MENUS[idx];
-    r = tb_dropdown_rect(desktop, idx);
-    dbg       = mix_color(g_chrome_theme.bg, 0x00000000u, 1u, 3u);   /* dark glass panel */
+    r = tb_dropdown_rect(desktop, m);
+    rows = tb_menu_rows(bar, n, m, &first);
+    dbg       = mix_color(g_chrome_theme.bg, 0x00000000u, 1u, 3u);
     item_text = mix_color(g_chrome_theme.text, g_chrome_theme.text_dim, 1u, 2u);
     muted     = mix_color(g_chrome_theme.text_dim, g_chrome_theme.bg, 1u, 2u);
 
     draw_soft_shadow(fb, r.x, r.y, r.width, r.height, 10, 5, 0x00060a12u);
     draw_rounded_panel(fb, r.x, r.y, r.width, r.height, 10, dbg, dbg, g_chrome_theme.border, dbg);
 
-    for (i = 0; i < m->count; ++i) {
-        const struct tb_item *it = &m->items[i];
+    for (i = 0; i < rows; ++i) {
+        const struct winsys_menubar_item *it = &bar[first + i];
         int ry = r.y + 6 + i * 22;
         int hov, tx;
         uint32_t col;
-        if (it->flags & MI_DIV) {
+        if (it->flags & WINSYS_MB_DIVIDER) {
             fb_fill_rect(fb, r.x + 10, ry + 10, r.width - 20, 1,
                          mix_color(g_chrome_theme.border, dbg, 1u, 2u));
             continue;
         }
-        hov = (i == desktop->topbar_menu_hover);
-        col = (it->flags & MI_DANGER) ? g_chrome_theme.danger
-                                      : (hov ? g_chrome_theme.text : item_text);
+        hov = ((first + i) == desktop->topbar_menu_hover);
+        col = (it->flags & WINSYS_MB_DANGER) ? g_chrome_theme.danger
+                                             : (hov ? g_chrome_theme.text : item_text);
         if (hov) fb_fill_rect(fb, r.x + 4, ry + 1, r.width - 8, 20,
                               mix_color(g_chrome_theme.accent, dbg, 1u, 6u));
         tx = r.x + 14;
-        if (it->flags & MI_CHECK) {
-            fb_fill_rect(fb, r.x + 11, ry + 11, 2, 4, g_chrome_theme.accent);
-            fb_fill_rect(fb, r.x + 13, ry + 13, 4, 2, g_chrome_theme.accent);
-            fb_fill_rect(fb, r.x + 16, ry + 6, 2, 8, g_chrome_theme.accent);
+        if (it->flags & WINSYS_MB_CHECK) {
+            if (it->flags & WINSYS_MB_CHECKED) {
+                fb_fill_rect(fb, r.x + 11, ry + 11, 2, 4, g_chrome_theme.accent);
+                fb_fill_rect(fb, r.x + 13, ry + 13, 4, 2, g_chrome_theme.accent);
+                fb_fill_rect(fb, r.x + 16, ry + 6, 2, 8, g_chrome_theme.accent);
+            }
             tx = r.x + 26;
         }
         draw_text(fb, tx, ry + 3, it->label, col, 1);
-        if (it->sc) {
-            int sw = (int)strlen(it->sc) * text_char_advance(1);
-            draw_text(fb, r.x + r.width - 12 - sw, ry + 3, it->sc,
+        if (it->shortcut[0]) {
+            int sw = (int)strlen(it->shortcut) * text_char_advance(1);
+            draw_text(fb, r.x + r.width - 12 - sw, ry + 3, it->shortcut,
                       hov ? g_chrome_theme.text_dim : muted, 1);
         }
-        if (it->flags & MI_ARROW) draw_text(fb, r.x + r.width - 16, ry + 3, ">", muted, 1);
+        if (it->flags & WINSYS_MB_ARROW) draw_text(fb, r.x + r.width - 16, ry + 3, ">", muted, 1);
     }
 }
 
@@ -1224,7 +1257,7 @@ static void render_background_surface(struct desktop_state *desktop) {
         }
     }
     draw_text(fb, 50, 20, "VibeOS", g_chrome_theme.text, 1);
-    draw_topbar_menu_labels(fb);
+    draw_topbar_menu_labels(desktop, fb);
 
     sx = w - 400;
     {
@@ -1804,7 +1837,7 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
         }
     }
     if (desktop->topbar_menu_open >= 0 && !mouse->left_pressed) {
-        int tl = tb_label_at(mouse->x, mouse->y);
+        int tl = tb_label_at(desktop, mouse->x, mouse->y);
         if (tl >= 0 && tl != desktop->topbar_menu_open) {
             mark_dirty_rect(desktop, tb_dropdown_rect(desktop, desktop->topbar_menu_open));
             desktop->topbar_menu_open = tl;
@@ -1820,7 +1853,7 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
         }
     }
     if (mouse->left_pressed) {
-        int tl = tb_label_at(mouse->x, mouse->y);
+        int tl = tb_label_at(desktop, mouse->x, mouse->y);
         if (tl >= 0) {
             int prev = desktop->topbar_menu_open;
             if (prev >= 0) mark_dirty_rect(desktop, tb_dropdown_rect(desktop, prev));
@@ -1833,11 +1866,17 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
         }
         if (desktop->topbar_menu_open >= 0) {
             int it = tb_item_at(desktop, desktop->topbar_menu_open, mouse->x, mouse->y);
+            int bn;
+            const struct winsys_menubar_item *bar = tb_bar(desktop, &bn);
             mark_dirty_rect(desktop, tb_dropdown_rect(desktop, desktop->topbar_menu_open));
             mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
             desktop->topbar_menu_open = -1;
             desktop->topbar_menu_hover = -1;
-            (void)it;   /* item activation: reserved (no app-menu protocol yet) */
+            /* Report the chosen entry's action_id back to the focused app. */
+            if (it >= 0 && bar && is_user_app_slot(desktop->focused_window)) {
+                app_enqueue_event_slot(desktop, slot_index(desktop->focused_window),
+                    WINSYS_EVENT_MENU_ACTION, 0, 0, 0, bar[it].action_id);
+            }
             return;
         }
     }
@@ -2297,6 +2336,41 @@ int desktop_app_set_menu(struct desktop_state *desktop, uint32_t pid, int win_id
         desktop->user_apps[slot].menu[i].action_id = items[i].action_id;
     }
     desktop->user_apps[slot].menu_count = count;
+    return 0;
+}
+
+int desktop_app_set_menubar(struct desktop_state *desktop, uint32_t pid, int win_id, const struct winsys_menubar_item *items, int count) {
+    int slot, i;
+
+    if (desktop == 0) return -1;
+    if (is_user_app_slot(win_id)) {
+        slot = slot_index(win_id);
+        if (slot < 0 || slot >= MAX_USER_APPS) return -1;
+        if (!desktop->user_apps[slot].created || desktop->user_apps[slot].pid != pid) return -1;
+    } else {
+        slot = find_slot_by_pid(desktop, pid);
+        if (slot < 0) return -1;
+    }
+
+    if (count < 0) count = 0;
+    if (count > WINSYS_MAX_MENUBAR_ITEMS) count = WINSYS_MAX_MENUBAR_ITEMS;
+    if (count > 0 && items == 0) return -1;
+
+    for (i = 0; i < count; ++i) {
+        int j;
+        for (j = 0; j + 1 < WINSYS_MENUBAR_LABEL_MAX && items[i].label[j]; ++j)
+            desktop->user_apps[slot].menubar[i].label[j] = items[i].label[j];
+        desktop->user_apps[slot].menubar[i].label[j] = '\0';
+        for (j = 0; j + 1 < WINSYS_MENUBAR_SHORTCUT_MAX && items[i].shortcut[j]; ++j)
+            desktop->user_apps[slot].menubar[i].shortcut[j] = items[i].shortcut[j];
+        desktop->user_apps[slot].menubar[i].shortcut[j] = '\0';
+        desktop->user_apps[slot].menubar[i].flags = items[i].flags;
+        desktop->user_apps[slot].menubar[i].action_id = items[i].action_id;
+    }
+    desktop->user_apps[slot].menubar_count = count;
+    /* Repaint the top bar so the focused app's menus show immediately. */
+    desktop->background_dirty = 1;
+    mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
     return 0;
 }
 

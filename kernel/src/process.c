@@ -1461,6 +1461,19 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         return 0;
     }
 
+    if (number == SYS_WINDOW_SET_MENUBAR) {
+        /* rdi = win id, rsi = struct winsys_menubar_item* (user), rdx = count.
+         * App address space is active, so the array is directly readable. */
+        struct desktop_state *d = desktop_active();
+        const struct winsys_menubar_item *items = (const struct winsys_menubar_item *)(uintptr_t)frame->rsi;
+        if (d == 0) {
+            frame->rax = (uint64_t)(-SYSCALL_EPERM);
+            return 0;
+        }
+        frame->rax = (uint64_t)(int64_t)desktop_app_set_menubar(d, process->pid, (int)frame->rdi, items, (int)frame->rdx);
+        return 0;
+    }
+
     if (number == SYS_NET_INFO) {
         /* rdi = user pointer to struct net_info (filled in place). The calling
          * process's address space is active here, so the write lands correctly. */

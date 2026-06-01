@@ -70,6 +70,24 @@ enum {
 struct vos_event { uint32_t type; int32_t x; int32_t y; uint32_t buttons; uint32_t key; };
 struct vos_menu_item { char label[24]; uint32_t action_id; };
 
+/* Top-bar menu bar declared by the focused app. A flat list where each
+ * VOS_MB_TITLE item starts a top-level menu (Page/Edit/…) and the items after
+ * it (until the next title) are that menu's entries. */
+enum {
+    VOS_MB_TITLE   = 1u,
+    VOS_MB_DIVIDER = 2u,
+    VOS_MB_DANGER  = 4u,
+    VOS_MB_CHECK   = 8u,
+    VOS_MB_CHECKED = 16u,
+    VOS_MB_ARROW   = 32u
+};
+struct vos_menubar_item {
+    char label[28];
+    char shortcut[16];
+    uint32_t flags;
+    uint32_t action_id;
+};
+
 int vos_window_create(const char *title, int w, int h);   /* >=0 id, <0 = no server */
 #define VOS_WINDOW_FRAMELESS 0x00000001u
 #define VOS_WINDOW_NO_DOCK   0x00000002u
@@ -91,6 +109,8 @@ int vos_set_wallpaper(const uint32_t *pixels, int w, int h);
 int vos_getarg(char *buf, int size);
 int vos_event_poll(int id, struct vos_event *out);         /* 1 = got event, 0 = empty */
 int vos_window_set_menu(int id, const struct vos_menu_item *items, int count);
+/* Declare the focused-window top-bar menu bar. */
+int vos_window_set_menubar(int id, const struct vos_menubar_item *items, int count);
 
 #ifdef __cplusplus
 }

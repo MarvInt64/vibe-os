@@ -68,4 +68,30 @@ struct winsys_menu_item {
     uint32_t action_id;
 };
 
+/* ---- App-declared top-bar menu bar ----
+ * The focused window supplies the global menu bar shown in the top bar. The
+ * bar is a flat list: an item with WINSYS_MB_TITLE starts a new top-level menu
+ * (Page, Edit, …); the items after it (until the next title) are that menu's
+ * entries. Picking an entry sends a WINSYS_EVENT_MENU_ACTION with its
+ * action_id back to the app. The compositor owns all drawing/interaction. */
+#define WINSYS_MENUBAR_LABEL_MAX    28
+#define WINSYS_MENUBAR_SHORTCUT_MAX 16
+#define WINSYS_MAX_MENUBAR_ITEMS    64
+
+enum {
+    WINSYS_MB_TITLE   = 1u,   /* starts a new top-level menu */
+    WINSYS_MB_DIVIDER = 2u,   /* horizontal separator (label ignored) */
+    WINSYS_MB_DANGER  = 4u,   /* destructive item (subtle red) */
+    WINSYS_MB_CHECK   = 8u,   /* checkbox item */
+    WINSYS_MB_CHECKED = 16u,  /* checkbox is currently on */
+    WINSYS_MB_ARROW   = 32u   /* opens a submenu (arrow shown) */
+};
+
+struct winsys_menubar_item {
+    char label[WINSYS_MENUBAR_LABEL_MAX];
+    char shortcut[WINSYS_MENUBAR_SHORTCUT_MAX];
+    uint32_t flags;
+    uint32_t action_id;
+};
+
 #endif
