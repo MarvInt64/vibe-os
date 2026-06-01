@@ -37,6 +37,10 @@
 #include <cstring>
 #include <cstdlib>
 
+/* The browser's identity, sent as the User-Agent on every request. The kernel
+ * net layer stays generic and forwards whatever the app provides. */
+static const char *BROWSER_USER_AGENT = "VibeOS github.com/MarvInt64/vibe-os";
+
 /* ---- theme colours ----------------------------------------------------- */
 static const uint32_t COL_BG       = 0x00101620u;  /* window background    */
 static const uint32_t COL_BAR      = 0x001d2740u;  /* chrome bar           */
@@ -275,7 +279,7 @@ int Browser::fetch_raw(const char *url, char *out, int cap, int *bodyoff) {
     path[0]='/'; p=1;
     if (u[i]=='/'){++i; while(u[i]&&p<(int)sizeof(path)-1) path[p++]=u[i++];} path[p]='\0';
     if (!parse_ipv4(host, &ip)) { if (vos_resolve(host,&ip)<0) return -1; }
-    req.ip=ip; req.port=secure?443:80; req.host=host; req.path=path; req.out=out; req.cap=cap;
+    req.ip=ip; req.port=secure?443:80; req.host=host; req.path=path; req.out=out; req.cap=cap; req.user_agent=BROWSER_USER_AGENT;
     n = secure ? vos_https_get(&req) : vos_http_get(&req);
     if (n <= 0) return -1;
     /* Locate the header/body separator. */
@@ -421,7 +425,7 @@ void Browser::load_url(const char *start_url) {
         if (!raw) { __builtin_strcpy(status_,"out of memory"); return; }
 
         req.ip=ip; req.port=secure?443:80; req.host=host; req.path=path;
-        req.out=raw; req.cap=RAW_CAP;
+        req.out=raw; req.cap=RAW_CAP; req.user_agent=BROWSER_USER_AGENT;
         __builtin_snprintf(status_,sizeof status_,"%s %s …",secure?"TLS":"HTTP",host);
         vos_log(VOS_LOG_APP, cur);
         n = secure ? vos_https_get(&req) : vos_http_get(&req);

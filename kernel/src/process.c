@@ -1435,10 +1435,12 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             const char *path;
             char *out;
             int cap;
+            const char *user_agent;
         };
         struct http_req *r = (struct http_req *)(uintptr_t)frame->rdi;
         char host[128];
         char path[256];
+        char ua[96];
 
         if (r == 0 || r->out == 0 || r->cap <= 0) {
             frame->rax = (uint64_t)(-SYSCALL_EINVAL);
@@ -1449,9 +1451,11 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             frame->rax = (uint64_t)(-SYSCALL_EINVAL);
             return 0;
         }
-        net_lock();
-        frame->rax = (uint64_t)(int64_t)net_http_get(r->ip, r->port, host, path, r->out, r->cap, 5000);
-        net_unlock();
+        if (r->user_agent == 0 || !process_copy_user_string(ua, sizeof(ua), r->user_agent))
+            ua[0] = '\0';
+        /* No net_lock: net_http_get allocates its own connection slot, so
+         * concurrent callers run in parallel on distinct TCP connections. */
+        frame->rax = (uint64_t)(int64_t)net_http_get(r->ip, r->port, host, path, ua, r->out, r->cap, 5000);
         return 0;
     }
 
@@ -1464,10 +1468,12 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             const char *path;
             char *out;
             int cap;
+            const char *user_agent;
         };
         struct http_req *r = (struct http_req *)(uintptr_t)frame->rdi;
         char host[128];
         char path[256];
+        char ua[96];
 
         if (r == 0 || r->out == 0 || r->cap <= 0) {
             frame->rax = (uint64_t)(-SYSCALL_EINVAL);
@@ -1478,8 +1484,10 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             frame->rax = (uint64_t)(-SYSCALL_EINVAL);
             return 0;
         }
+        if (r->user_agent == 0 || !process_copy_user_string(ua, sizeof(ua), r->user_agent))
+            ua[0] = '\0';
         net_lock();
-        frame->rax = (uint64_t)(int64_t)net_https_get(r->ip, r->port, host, path, r->out, r->cap, 15000);
+        frame->rax = (uint64_t)(int64_t)net_https_get(r->ip, r->port, host, path, ua, r->out, r->cap, 15000);
         net_unlock();
         return 0;
     }

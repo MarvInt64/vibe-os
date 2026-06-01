@@ -47,8 +47,11 @@ int net_resolve(const char *hostname, uint32_t *out_ip, int timeout_ms);
  * (headers + body) is written into out (up to out_cap bytes). Returns the
  * number of bytes received (>=0) or negative on error. host_header is sent in
  * the Host: line. */
+/* user_agent is the value for the User-Agent: header, supplied by the calling
+ * application (0 or "" to omit it). The kernel does not invent an identity. */
 int net_http_get(uint32_t dst_ip, uint16_t port, const char *host_header,
-                 const char *path, char *out, int out_cap, int timeout_ms);
+                 const char *path, const char *user_agent,
+                 char *out, int out_cap, int timeout_ms);
 
 /* ---- Raw TCP stream (single connection; drives the TLS layer) ---- */
 int tcp_open(uint32_t dst_ip, uint16_t port, int timeout_ms);   /* 0 ok, <0 error */
@@ -60,6 +63,7 @@ void tcp_close(void);
  * net_http_get. NOTE: v1 does NOT validate certificates (accept-all) — it is
  * encrypted but MITM-able. Implemented in net_tls.c. */
 int net_https_get(uint32_t dst_ip, uint16_t port, const char *host_header,
-                  const char *path, char *out, int out_cap, int timeout_ms);
+                  const char *path, const char *user_agent,
+                  char *out, int out_cap, int timeout_ms);
 
 #endif

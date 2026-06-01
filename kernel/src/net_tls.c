@@ -130,7 +130,8 @@ static int tls_low_write(void *ctx, const unsigned char *buf, size_t len) {
 }
 
 int net_https_get(uint32_t dst_ip, uint16_t port, const char *host_header,
-                  const char *path, char *out, int out_cap, int timeout_ms) {
+                  const char *path, const char *user_agent,
+                  char *out, int out_cap, int timeout_ms) {
     unsigned char seed[64];
     int total = 0;
 
@@ -157,11 +158,16 @@ int net_https_get(uint32_t dst_ip, uint16_t port, const char *host_header,
     }
     br_sslio_init(&g_ioc, &g_sc.eng, tls_low_read, 0, tls_low_write, 0);
 
-    /* Send the HTTP/1.0 request. */
+    /* Send the HTTP/1.0 request. The User-Agent is whatever the calling app
+     * supplied; HTTPS connections are not pooled here, so request close. */
     br_sslio_write_all(&g_ioc, "GET ", 4);
     br_sslio_write_all(&g_ioc, path, strlen(path));
     br_sslio_write_all(&g_ioc, " HTTP/1.0\r\nHost: ", 17);
     br_sslio_write_all(&g_ioc, host_header, strlen(host_header));
+    if (user_agent && user_agent[0]) {
+        br_sslio_write_all(&g_ioc, "\r\nUser-Agent: ", 14);
+        br_sslio_write_all(&g_ioc, user_agent, strlen(user_agent));
+    }
     br_sslio_write_all(&g_ioc, "\r\nConnection: close\r\n\r\n", 23);
     if (br_sslio_flush(&g_ioc) != 0) {
         tcp_close();

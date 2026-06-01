@@ -679,6 +679,7 @@ struct http_req {
     const char *path;
     char *out;
     int cap;
+    const char *user_agent;
 };
 
 static char g_http_buf[8192];
@@ -731,6 +732,7 @@ static void cmd_curl(const char *url) {
     req.path = g_path_buf;
     req.out = g_http_buf;
     req.cap = (int)sizeof(g_http_buf) - 1;
+    req.user_agent = "VibeOS github.com/MarvInt64/vibe-os";
 
     n = (int)syscall1(SYS_NET_HTTP_GET, (uint64_t)(size_t)&req);
     if (n <= 0) {

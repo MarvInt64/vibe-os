@@ -44,8 +44,12 @@ void journal_log(enum journal_level level, uint32_t pid, const char *msg) {
     copy_msg(e->msg, msg);
     g_next_seq++;
 
-    /* Mark the journal for persistence on important events. */
-    if (level == JOURNAL_WARN || level == JOURNAL_ERROR || level == JOURNAL_FAULT) {
+    /* Mark the journal for persistence on important events. APP-level entries
+     * (e.g. the browser's load results) are included so post-mortem inspection
+     * of /journal.log reflects app activity, not just faults. The main loop
+     * coalesces multiple pending entries into one disk write. */
+    if (level == JOURNAL_WARN || level == JOURNAL_ERROR ||
+        level == JOURNAL_FAULT || level == JOURNAL_APP) {
         g_persist_pending = 1;
     }
 

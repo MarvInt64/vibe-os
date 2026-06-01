@@ -20,12 +20,12 @@ static void net_wait_yield(void) {
     }
 }
 
-/* ---- Single-connection serialization -------------------------------------
- * There is exactly one TCP/DNS connection slot (g_tcp). The old fully-blocking
- * model serialized network syscalls implicitly because each ran to completion.
- * Now that waits yield, two processes could interleave and corrupt g_tcp, so a
- * simple lock restores serialization. It self-heals if the owner dies while
- * parked (e.g. the process was killed mid-request). */
+/* ---- Network serialization -----------------------------------------------
+ * TCP now has multiple connection slots (g_tcp_conns), so plain HTTP fetches
+ * run in parallel on distinct connections. DNS, ping and the single-instance
+ * TLS context still share global state; net_lock serializes those callers.
+ * It self-heals if the owner dies while parked (e.g. the process was killed
+ * mid-request). */
 static volatile int      g_net_locked;
 static volatile uint32_t g_net_owner_pid;
 
@@ -98,7 +98,9 @@ static volatile uint16_t g_dns_id;
 static volatile uint32_t g_dns_result_ip;
 static volatile uint8_t g_dns_got;
 
-/* Single synchronous TCP client connection. */
+/* Synchronous TCP client connection. Multiple slots allow concurrent
+ * connections (e.g. the browser fetching images in parallel). */
+#define NET_MAX_CONNS 4
 struct tcp_conn {
     int state;
     uint32_t remote_ip;
@@ -112,8 +114,62 @@ struct tcp_conn {
     int rx_cap;
     int rx_len;
     uint8_t peer_fin;
+    uint8_t in_use;
+    /* HTTP keep-alive: a connection that finished a framed response and may be
+     * reused for the next request to the same (remote_ip, remote_port). It
+     * stays in_use (occupies its slot) but is available via tcp_find_idle. */
+    uint8_t idle;
 };
-static struct tcp_conn g_tcp;
+static struct tcp_conn g_tcp_conns[NET_MAX_CONNS];
+
+/* Slot allocation, atomic against concurrent threads. */
+static volatile unsigned char g_conn_lock;
+static struct tcp_conn *tcp_alloc(void) {
+    struct tcp_conn *c = 0;
+    int free_slot = -1, idle_slot = -1;
+    while (__atomic_test_and_set(&g_conn_lock, __ATOMIC_ACQUIRE)) net_wait_yield();
+    for (int i = 0; i < NET_MAX_CONNS; ++i) {
+        if (!g_tcp_conns[i].in_use) { if (free_slot < 0) free_slot = i; }
+        else if (g_tcp_conns[i].idle && idle_slot < 0) { idle_slot = i; }
+    }
+    /* Prefer a truly free slot; otherwise evict the first cached idle
+     * keep-alive connection (its slot is reclaimed for this new request). */
+    int slot = (free_slot >= 0) ? free_slot : idle_slot;
+    if (slot >= 0) {
+        c = &g_tcp_conns[slot];
+        memset(c, 0, sizeof(*c));
+        c->in_use = 1;
+        c->local_port = (uint16_t)(0xD100u + slot);
+        c->state = TCP_CLOSED;
+    }
+    __atomic_clear(&g_conn_lock, __ATOMIC_RELEASE);
+    return c;   /* 0 only if all slots are busy with active (non-idle) requests */
+}
+static void tcp_free(struct tcp_conn *c) {
+    if (c) { c->in_use = 0; c->idle = 0; c->state = TCP_CLOSED; }
+}
+
+/* Reuse a cached keep-alive connection to (ip, port) if one is still alive.
+ * Returns the connection (marked active, rx sink reset) or 0 if none. */
+static struct tcp_conn *tcp_find_idle(uint32_t ip, uint16_t port,
+                                      uint8_t *out, int out_cap) {
+    struct tcp_conn *c = 0;
+    while (__atomic_test_and_set(&g_conn_lock, __ATOMIC_ACQUIRE)) net_wait_yield();
+    for (int i = 0; i < NET_MAX_CONNS; ++i) {
+        struct tcp_conn *k = &g_tcp_conns[i];
+        if (k->in_use && k->idle && k->state == TCP_ESTABLISHED &&
+            k->remote_ip == ip && k->remote_port == port) {
+            k->idle = 0;
+            k->rx_buf = out;
+            k->rx_cap = out_cap;
+            k->rx_len = 0;
+            c = k;
+            break;
+        }
+    }
+    __atomic_clear(&g_conn_lock, __ATOMIC_RELEASE);
+    return c;
+}
 
 static const uint8_t BROADCAST_MAC[6] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
@@ -281,8 +337,8 @@ static uint16_t tcp_checksum(uint32_t src_ip, uint32_t dst_ip, const uint8_t *se
     return (uint16_t)(~sum & 0xffffu);
 }
 
-/* Send a TCP segment for g_tcp with the given flags and optional payload. */
-static int tcp_send(uint8_t flags, const uint8_t *payload, uint16_t payload_len) {
+/* Send a TCP segment for connection c with the given flags and optional payload. */
+static int tcp_send(struct tcp_conn *c, uint8_t flags, const uint8_t *payload, uint16_t payload_len) {
     uint8_t *f = g_txframe;
     uint8_t *ip = f + 14;
     uint8_t *tcp = ip + 20;
@@ -290,21 +346,32 @@ static int tcp_send(uint8_t flags, const uint8_t *payload, uint16_t payload_len)
     uint16_t ip_total = (uint16_t)(20 + seg_len);
     uint16_t i;
 
-    eth_build_header(f, g_tcp.mac, ETHERTYPE_IP);
+    eth_build_header(f, c->mac, ETHERTYPE_IP);
 
-    wr16(tcp + 0, g_tcp.local_port);
-    wr16(tcp + 2, g_tcp.remote_port);
-    wr32(tcp + 4, g_tcp.snd_nxt);
-    wr32(tcp + 8, (flags & TCP_ACK) ? g_tcp.rcv_nxt : 0u);
+    wr16(tcp + 0, c->local_port);
+    wr16(tcp + 2, c->remote_port);
+    wr32(tcp + 4, c->snd_nxt);
+    wr32(tcp + 8, (flags & TCP_ACK) ? c->rcv_nxt : 0u);
     tcp[12] = 0x50;          /* data offset 5 (20 bytes), no options */
     tcp[13] = flags;
-    wr16(tcp + 14, 0x4000);  /* window */
+    /* Advertise the actual free receive-buffer space as the TCP window. This
+     * applies real flow control: the peer never sends more than we can buffer,
+     * so a slow consumer (e.g. the browser worker starved of CPU by taskmgr)
+     * throttles the sender instead of overflowing and losing data. A window of
+     * 0 pauses the sender; tcp_stream_recv sends a window-update ACK after it
+     * drains, reopening the window. */
+    {
+        int free_space = c->rx_cap - c->rx_len;
+        if (free_space < 0) free_space = 0;
+        if (free_space > 0xFFFF) free_space = 0xFFFF;
+        wr16(tcp + 14, (uint16_t)free_space);
+    }
     wr16(tcp + 16, 0);       /* checksum placeholder */
     wr16(tcp + 18, 0);       /* urgent */
     for (i = 0; i < payload_len; ++i) {
         tcp[20 + i] = payload[i];
     }
-    wr16(tcp + 16, tcp_checksum(NET_IP, g_tcp.remote_ip, tcp, seg_len));
+    wr16(tcp + 16, tcp_checksum(NET_IP, c->remote_ip, tcp, seg_len));
 
     ip[0] = 0x45; ip[1] = 0;
     wr16(ip + 2, ip_total);
@@ -313,7 +380,7 @@ static int tcp_send(uint8_t flags, const uint8_t *payload, uint16_t payload_len)
     ip[8] = 64; ip[9] = IP_PROTO_TCP;
     wr16(ip + 10, 0);
     wr32(ip + 12, NET_IP);
-    wr32(ip + 16, g_tcp.remote_ip);
+    wr32(ip + 16, c->remote_ip);
     wr16(ip + 10, ip_checksum(ip, 20));
 
     return e1000_transmit(&g_nic, f, 14 + ip_total);
@@ -329,49 +396,58 @@ static void handle_tcp(const uint8_t *ip, const uint8_t *tcp, uint16_t seg_len) 
     uint16_t payload_len = (seg_len > data_off) ? (uint16_t)(seg_len - data_off) : 0u;
     const uint8_t *payload = tcp + data_off;
     uint32_t src_ip = rd32(ip + 12);
+    struct tcp_conn *c = 0;
+    int i;
 
-    if (g_tcp.state == TCP_CLOSED) {
-        return;
+    /* Demux: find the connection slot this segment belongs to. */
+    for (i = 0; i < NET_MAX_CONNS; ++i) {
+        struct tcp_conn *cc = &g_tcp_conns[i];
+        if (cc->in_use && cc->state != TCP_CLOSED &&
+            cc->remote_ip == src_ip && cc->remote_port == src_port &&
+            cc->local_port == dst_port) {
+            c = cc;
+            break;
+        }
     }
-    if (src_ip != g_tcp.remote_ip || src_port != g_tcp.remote_port || dst_port != g_tcp.local_port) {
+    if (!c) {
         return;
     }
 
     if (flags & TCP_RST) {
-        g_tcp.state = TCP_DONE;
+        c->state = TCP_DONE;
         return;
     }
 
-    if (g_tcp.state == TCP_SYN_SENT) {
+    if (c->state == TCP_SYN_SENT) {
         if ((flags & TCP_SYN) && (flags & TCP_ACK)) {
-            g_tcp.rcv_nxt = seq + 1u;
-            g_tcp.snd_nxt += 1u;            /* our SYN consumed one seq */
-            tcp_send(TCP_ACK, 0, 0);
-            g_tcp.state = TCP_ESTABLISHED;
+            c->rcv_nxt = seq + 1u;
+            c->snd_nxt += 1u;            /* our SYN consumed one seq */
+            tcp_send(c, TCP_ACK, 0, 0);
+            c->state = TCP_ESTABLISHED;
         }
         return;
     }
 
     /* ESTABLISHED / CLOSING: accept in-order data, ACK it. */
-    if (payload_len > 0 && seq == g_tcp.rcv_nxt) {
+    if (payload_len > 0 && seq == c->rcv_nxt) {
         int copy = payload_len;
-        if (g_tcp.rx_len + copy > g_tcp.rx_cap) {
-            copy = g_tcp.rx_cap - g_tcp.rx_len;
+        if (c->rx_len + copy > c->rx_cap) {
+            copy = c->rx_cap - c->rx_len;
         }
         if (copy > 0) {
-            memcpy(g_tcp.rx_buf + g_tcp.rx_len, payload, (size_t)copy);
-            g_tcp.rx_len += copy;
+            memcpy(c->rx_buf + c->rx_len, payload, (size_t)copy);
+            c->rx_len += copy;
         }
-        g_tcp.rcv_nxt += payload_len;
-        tcp_send(TCP_ACK, 0, 0);
+        c->rcv_nxt += payload_len;
+        tcp_send(c, TCP_ACK, 0, 0);
     }
 
     if (flags & TCP_FIN) {
-        g_tcp.rcv_nxt += 1u;
-        g_tcp.peer_fin = 1;
-        tcp_send(TCP_ACK | TCP_FIN, 0, 0);
-        g_tcp.snd_nxt += 1u;
-        g_tcp.state = TCP_DONE;
+        c->rcv_nxt += 1u;
+        c->peer_fin = 1;
+        tcp_send(c, TCP_ACK | TCP_FIN, 0, 0);
+        c->snd_nxt += 1u;
+        c->state = TCP_DONE;
     }
 }
 
@@ -762,14 +838,14 @@ int net_resolve(const char *hostname, uint32_t *out_ip, int timeout_ms) {
 
 /* Wait until cond() is true or timeout, polling the NIC. Returns 1 if cond
  * became true, 0 on timeout. (cond checked via the connection state.) */
-static int tcp_wait_state(int want_min_state, int timeout_ms) {
+static int tcp_wait_state(struct tcp_conn *c, int want_min_state, int timeout_ms) {
     uint32_t hz = timer_frequency_hz();
     uint64_t deadline = timer_tick_count() + (uint64_t)timeout_ms * hz / 1000u + 1u;
     uint64_t spins = (uint64_t)timeout_ms * 200000u + 1000000u;
 
     while (timer_tick_count() < deadline && spins-- > 0) {
         net_poll();
-        if (g_tcp.state >= want_min_state) {
+        if (c->state >= want_min_state) {
             return 1;
         }
         net_wait_yield();
@@ -777,120 +853,257 @@ static int tcp_wait_state(int want_min_state, int timeout_ms) {
     return 0;
 }
 
+/* Case-insensitive search for `needle` within the first `n` bytes of `hay`.
+ * Returns the offset of the match, or -1. */
+static int ci_find(const char *hay, int n, const char *needle) {
+    int nl = 0; while (needle[nl]) ++nl;
+    if (nl == 0) return 0;
+    for (int i = 0; i + nl <= n; ++i) {
+        int k = 0;
+        while (k < nl) {
+            char a = hay[i + k], b = needle[k];
+            if (a >= 'A' && a <= 'Z') a += 32;
+            if (b >= 'A' && b <= 'Z') b += 32;
+            if (a != b) break;
+            ++k;
+        }
+        if (k == nl) return i;
+    }
+    return -1;
+}
+
+/* HTTP/1.1 response framer for keep-alive. Decides whether buf[0..len) holds a
+ * COMPLETE response so we can stop reading without waiting for the peer to
+ * close. Sets *want_close=1 when the response is not poolable (Connection:
+ * close, HTTP/1.0 without keep-alive, or no determinable body length).
+ * Handles Content-Length and Transfer-Encoding: chunked. */
+static int http_response_complete(const char *buf, int len, int *want_close) {
+    int hdr_end;
+    int body_off;
+    int i;
+    *want_close = 0;
+
+    /* Need the full header block first. */
+    for (hdr_end = -1, i = 0; i + 3 < len; ++i) {
+        if (buf[i]=='\r'&&buf[i+1]=='\n'&&buf[i+2]=='\r'&&buf[i+3]=='\n') { hdr_end = i; break; }
+    }
+    if (hdr_end < 0) return 0;          /* headers still arriving */
+    body_off = hdr_end + 4;
+
+    /* Connection disposition. HTTP/1.1 defaults to keep-alive; 1.0 to close. */
+    {
+        int is_10 = (ci_find(buf, (hdr_end < 16 ? hdr_end : 16), "http/1.0") >= 0);
+        int hdr_close      = ci_find(buf, hdr_end, "connection: close") >= 0;
+        int hdr_keepalive  = ci_find(buf, hdr_end, "connection: keep-alive") >= 0;
+        *want_close = hdr_close || (is_10 && !hdr_keepalive);
+    }
+
+    /* Transfer-Encoding: chunked — robustly framing chunk boundaries is more
+     * than v1 needs (and a naive terminator scan risks truncating + poisoning a
+     * pooled connection). Treat chunked as non-poolable: let the body be
+     * delimited by connection close, exactly like the old behaviour. */
+    if (ci_find(buf, hdr_end, "transfer-encoding: chunked") >= 0) {
+        *want_close = 1;
+        return 0;
+    }
+
+    /* Content-Length: complete once we have header + that many body bytes. */
+    {
+        int cl = ci_find(buf, hdr_end, "content-length:");
+        if (cl >= 0) {
+            int j = cl + 15;
+            long n = 0; int have = 0;
+            while (j < hdr_end && (buf[j]==' '||buf[j]=='\t')) ++j;
+            while (j < hdr_end && buf[j] >= '0' && buf[j] <= '9') { n = n*10 + (buf[j]-'0'); ++j; have=1; }
+            if (have) return (len - body_off) >= n ? 1 : 0;
+        }
+    }
+
+    /* No length framing → body is delimited by connection close; not poolable. */
+    *want_close = 1;
+    return 0;
+}
+
 int net_http_get(uint32_t dst_ip, uint16_t port, const char *host_header,
-                 const char *path, char *out, int out_cap, int timeout_ms) {
+                 const char *path, const char *user_agent,
+                 char *out, int out_cap, int timeout_ms) {
     const uint8_t *dst_mac;
-    char req[512];
+    char req[640];
     int rlen = 0;
     uint32_t hz = timer_frequency_hz();
     uint64_t deadline;
     uint64_t spins;
+    struct tcp_conn *c;
+    int result;
+    int reused;
+    int want_close = 0;
 
     if (!g_nic.present || out == 0 || out_cap <= 0) {
         return -1;
     }
 
-    dst_mac = resolve_mac(dst_ip, 1000);
-    if (!dst_mac) {
-        return -2;
-    }
+    /* Keep-alive: reuse a cached connection to this host if one is alive,
+     * skipping DNS/ARP and the TCP handshake entirely. */
+    c = tcp_find_idle(dst_ip, port, (uint8_t *)out, out_cap);
+    reused = (c != 0);
 
-    /* Initialise the connection. */
-    memset(&g_tcp, 0, sizeof(g_tcp));
-    g_tcp.state = TCP_SYN_SENT;
-    g_tcp.remote_ip = dst_ip;
-    g_tcp.remote_port = port;
-    g_tcp.local_port = 0xD000u;
-    g_tcp.snd_nxt = 0x1000u;       /* initial send sequence */
-    g_tcp.rcv_nxt = 0;
-    memcpy(g_tcp.mac, dst_mac, 6);
-    g_tcp.rx_buf = (uint8_t *)out;
-    g_tcp.rx_cap = out_cap;
-    g_tcp.rx_len = 0;
-
-    /* Three-way handshake: send SYN, wait for ESTABLISHED. */
-    tcp_send(TCP_SYN, 0, 0);
-    if (!tcp_wait_state(TCP_ESTABLISHED, timeout_ms)) {
-        return -3;
-    }
-
-    /* Build and send the HTTP request. */
-    {
-        const char *p;
-        int i = 0;
-        const char *parts[6];
-        int pi;
-        parts[0] = "GET "; parts[1] = path; parts[2] = " HTTP/1.0\r\nHost: ";
-        parts[3] = host_header; parts[4] = "\r\nConnection: close\r\n\r\n"; parts[5] = 0;
-        for (pi = 0; parts[pi] != 0; ++pi) {
-            for (p = parts[pi]; *p && i < (int)sizeof(req); ++p) {
-                req[i++] = *p;
-            }
+    if (!reused) {
+        c = tcp_alloc();
+        if (!c) {
+            return -1;
         }
+        dst_mac = resolve_mac(dst_ip, 1000);
+        if (!dst_mac) {
+            tcp_free(c);
+            return -2;
+        }
+        c->state = TCP_SYN_SENT;
+        c->remote_ip = dst_ip;
+        c->remote_port = port;
+        c->snd_nxt = 0x2000u;       /* initial send sequence */
+        c->rcv_nxt = 0;
+        memcpy(c->mac, dst_mac, 6);
+        c->rx_buf = (uint8_t *)out;
+        c->rx_cap = out_cap;
+        c->rx_len = 0;
+
+        /* Three-way handshake: send SYN, wait for ESTABLISHED. */
+        tcp_send(c, TCP_SYN, 0, 0);
+        if (!tcp_wait_state(c, TCP_ESTABLISHED, timeout_ms)) {
+            tcp_free(c);
+            return -3;
+        }
+    }
+
+    /* Build and send an HTTP/1.1 keep-alive request with the app's User-Agent.
+     * HTTP/1.1 + Content-Length / chunked framing lets us pool the connection. */
+    {
+        int i = 0;
+        const char *p;
+        #define REQ_PUT(s) do { for (p=(s); *p && i<(int)sizeof(req); ++p) req[i++]=*p; } while (0)
+        REQ_PUT("GET ");  REQ_PUT(path);
+        REQ_PUT(" HTTP/1.1\r\nHost: "); REQ_PUT(host_header);
+        if (user_agent && user_agent[0]) { REQ_PUT("\r\nUser-Agent: "); REQ_PUT(user_agent); }
+        REQ_PUT("\r\nConnection: keep-alive\r\n\r\n");
+        #undef REQ_PUT
         rlen = i;
     }
-    tcp_send(TCP_PSH | TCP_ACK, (const uint8_t *)req, (uint16_t)rlen);
-    g_tcp.snd_nxt += (uint32_t)rlen;
+    tcp_send(c, TCP_PSH | TCP_ACK, (const uint8_t *)req, (uint16_t)rlen);
+    c->snd_nxt += (uint32_t)rlen;
 
-    /* Collect the response until the peer closes or we time out / fill up. */
-    deadline = timer_tick_count() + (uint64_t)timeout_ms * hz / 1000u + 1u;
-    spins = (uint64_t)timeout_ms * 200000u + 1000000u;
-    while (timer_tick_count() < deadline && spins-- > 0) {
-        net_poll();
-        if (g_tcp.state == TCP_DONE || g_tcp.rx_len >= g_tcp.rx_cap) {
-            break;
+    /* Receive until the response is fully framed (Content-Length / chunked),
+     * or the peer closes, or we fill the buffer / time out.
+     *
+     * The deadline is an IDLE timeout: it is pushed forward whenever new bytes
+     * arrive. A transfer that is merely slow — e.g. because another process
+     * (taskmgr) is sharing the CPU — must not be truncated; only a genuinely
+     * stalled connection times out. */
+    {
+        int last_len = c->rx_len;
+        deadline = timer_tick_count() + (uint64_t)timeout_ms * hz / 1000u + 1u;
+        spins = (uint64_t)timeout_ms * 200000u + 1000000u;
+        while (timer_tick_count() < deadline && spins-- > 0) {
+            net_poll();
+            if (http_response_complete((const char *)c->rx_buf, c->rx_len, &want_close))
+                break;
+            if (c->state == TCP_DONE || c->rx_len >= c->rx_cap) {
+                want_close = 1;   /* close-delimited or buffer full → cannot pool */
+                break;
+            }
+            if (c->rx_len != last_len) {     /* progress → reset the idle clock */
+                last_len = c->rx_len;
+                deadline = timer_tick_count() + (uint64_t)timeout_ms * hz / 1000u + 1u;
+                spins = (uint64_t)timeout_ms * 200000u + 1000000u;
+            }
+            net_wait_yield();
         }
-        net_wait_yield();
     }
 
-    return g_tcp.rx_len;
+    result = c->rx_len;
+
+    /* Pool the connection for the next request to this host when the response
+     * was cleanly framed and neither side asked to close; otherwise tear down. */
+    if (!want_close && c->state == TCP_ESTABLISHED) {
+        c->idle = 1;        /* stays in_use, reusable via tcp_find_idle */
+        /* Detach the caller's buffer: it may be freed after we return, and a
+         * stray server segment must not write into it. tcp_find_idle re-points
+         * rx_buf/rx_cap on reuse; until then handle_tcp sees rx_cap 0 and drops
+         * any unexpected payload safely. */
+        c->rx_buf = 0;
+        c->rx_cap = 0;
+        c->rx_len = 0;
+        return result;
+    }
+
+    /* Close down: if still established, send FIN. */
+    if (c->state == TCP_ESTABLISHED) {
+        tcp_send(c, TCP_FIN | TCP_ACK, 0, 0);
+        c->snd_nxt += 1u;
+    }
+
+    result = c->rx_len;
+    tcp_free(c);
+    return result;
 }
 
 /* ---- Raw TCP stream API (used by the TLS layer in net_tls.c) ----
- * Same single-connection g_tcp model as net_http_get, but split into open /
- * send / recv / close so an external state machine (BearSSL) can drive I/O.
+ * Split into open / send / recv / close so an external state machine
+ * (BearSSL) can drive I/O. The TLS layer is single-instance and serialized
+ * by net_lock in process.c; it gets its own slot via tcp_alloc so it never
+ * collides with parallel net_http_get connections.
  * Received bytes land in g_tcp_stream_rx; tcp_stream_recv() drains them. */
 static uint8_t g_tcp_stream_rx[32768];
+static struct tcp_conn *g_stream_conn;
 
 int tcp_open(uint32_t dst_ip, uint16_t port, int timeout_ms) {
     const uint8_t *dst_mac;
+    struct tcp_conn *c;
 
     if (!g_nic.present) {
         return -1;
     }
+    c = tcp_alloc();
+    if (!c) {
+        return -1;
+    }
+    g_stream_conn = c;
+
     dst_mac = resolve_mac(dst_ip, 1000);
     if (!dst_mac) {
+        tcp_free(c);
+        g_stream_conn = 0;
         return -2;
     }
-    memset(&g_tcp, 0, sizeof(g_tcp));
-    g_tcp.state = TCP_SYN_SENT;
-    g_tcp.remote_ip = dst_ip;
-    g_tcp.remote_port = port;
-    g_tcp.local_port = 0xD100u;
-    g_tcp.snd_nxt = 0x2000u;
-    g_tcp.rcv_nxt = 0;
-    memcpy(g_tcp.mac, dst_mac, 6);
-    g_tcp.rx_buf = g_tcp_stream_rx;
-    g_tcp.rx_cap = (int)sizeof(g_tcp_stream_rx);
-    g_tcp.rx_len = 0;
+    c->state = TCP_SYN_SENT;
+    c->remote_ip = dst_ip;
+    c->remote_port = port;
+    c->snd_nxt = 0x2000u;
+    c->rcv_nxt = 0;
+    memcpy(c->mac, dst_mac, 6);
+    c->rx_buf = g_tcp_stream_rx;
+    c->rx_cap = (int)sizeof(g_tcp_stream_rx);
+    c->rx_len = 0;
 
-    tcp_send(TCP_SYN, 0, 0);
-    if (!tcp_wait_state(TCP_ESTABLISHED, timeout_ms)) {
+    tcp_send(c, TCP_SYN, 0, 0);
+    if (!tcp_wait_state(c, TCP_ESTABLISHED, timeout_ms)) {
+        tcp_free(c);
+        g_stream_conn = 0;
         return -3;
     }
     return 0;
 }
 
 int tcp_stream_send(const uint8_t *data, int len) {
+    struct tcp_conn *c = g_stream_conn;
     int off = 0;
-    if (data == 0 || len < 0) {
+    if (c == 0 || data == 0 || len < 0) {
         return -1;
     }
     while (off < len) {
         int chunk = len - off;
         if (chunk > 1400) chunk = 1400;
-        tcp_send(TCP_PSH | TCP_ACK, data + off, (uint16_t)chunk);
-        g_tcp.snd_nxt += (uint32_t)chunk;
+        tcp_send(c, TCP_PSH | TCP_ACK, data + off, (uint16_t)chunk);
+        c->snd_nxt += (uint32_t)chunk;
         off += chunk;
         net_poll();   /* pick up ACKs / incoming data between segments */
     }
@@ -898,26 +1111,33 @@ int tcp_stream_send(const uint8_t *data, int len) {
 }
 
 int tcp_stream_recv(uint8_t *buf, int len, int timeout_ms) {
+    struct tcp_conn *c = g_stream_conn;
     uint32_t hz = timer_frequency_hz();
     uint64_t deadline = timer_tick_count() + (uint64_t)timeout_ms * hz / 1000u + 1u;
     uint64_t spins = (uint64_t)timeout_ms * 200000u + 1000000u;
 
-    if (buf == 0 || len <= 0) {
+    if (c == 0 || buf == 0 || len <= 0) {
         return -1;
     }
     for (;;) {
         net_poll();
-        if (g_tcp.rx_len > 0) {
-            int n = g_tcp.rx_len;
+        if (c->rx_len > 0) {
+            int was = c->rx_len;
+            int n = c->rx_len;
             if (n > len) n = len;
-            memcpy(buf, g_tcp.rx_buf, (size_t)n);
-            if (g_tcp.rx_len - n > 0) {
-                memmove(g_tcp.rx_buf, g_tcp.rx_buf + n, (size_t)(g_tcp.rx_len - n));
+            memcpy(buf, c->rx_buf, (size_t)n);
+            if (c->rx_len - n > 0) {
+                memmove(c->rx_buf, c->rx_buf + n, (size_t)(c->rx_len - n));
             }
-            g_tcp.rx_len -= n;
+            c->rx_len -= n;
+            /* If the buffer had filled up (sender may be window-blocked), send a
+             * window-update ACK now that we freed space, so the peer resumes. */
+            if (c->state == TCP_ESTABLISHED && was >= c->rx_cap - 2048) {
+                tcp_send(c, TCP_ACK, 0, 0);
+            }
             return n;
         }
-        if (g_tcp.state == TCP_DONE) {
+        if (c->state == TCP_DONE) {
             return 0;   /* peer closed, nothing buffered */
         }
         if (timer_tick_count() >= deadline || spins-- == 0) {
@@ -928,11 +1148,16 @@ int tcp_stream_recv(uint8_t *buf, int len, int timeout_ms) {
 }
 
 void tcp_close(void) {
-    if (g_tcp.state == TCP_ESTABLISHED) {
-        tcp_send(TCP_FIN | TCP_ACK, 0, 0);
-        g_tcp.snd_nxt += 1u;
+    struct tcp_conn *c = g_stream_conn;
+    if (c == 0) {
+        return;
     }
-    g_tcp.state = TCP_CLOSED;
+    if (c->state == TCP_ESTABLISHED) {
+        tcp_send(c, TCP_FIN | TCP_ACK, 0, 0);
+        c->snd_nxt += 1u;
+    }
+    tcp_free(c);
+    g_stream_conn = 0;
 }
 
 int net_parse_ipv4(const char *text, uint32_t *out_ip) {
