@@ -86,12 +86,14 @@ enum { W_PANEL, W_LABEL, W_BUTTON, W_BAR, W_VBOX, W_HBOX,
 static const vui_theme g_default_theme = {
     0x0015273cu, 0x001b3048u, 0x00233850u, 0x0039506au,
     0x005a7da3u, 0x00eaf2fau, 0x00b7c7d8u, 0x004da3ffu,
-    0x0063d9a5u, 0x00e6b65cu, 0x00e36c7au, 6u, 10u
+    0x0063d9a5u, 0x00e6b65cu, 0x00e36c7au,
+    0x000c1b2au, 0x00d6e3efu, 0x007f93a8u, 6u, 10u
 };
 static vui_theme g_theme = {
     0x0015273cu, 0x001b3048u, 0x00233850u, 0x0039506au,
     0x005a7da3u, 0x00eaf2fau, 0x00b7c7d8u, 0x004da3ffu,
-    0x0063d9a5u, 0x00e6b65cu, 0x00e36c7au, 6u, 10u
+    0x0063d9a5u, 0x00e6b65cu, 0x00e36c7au,
+    0x000c1b2au, 0x00d6e3efu, 0x007f93a8u, 6u, 10u
 };
 
 struct vui_widget {
@@ -194,6 +196,9 @@ static void theme_set_key(vui_theme *t, const char *key, int key_len, vui_u32 co
     else if (streqn(key, key_len, "ok")) t->ok = color;
     else if (streqn(key, key_len, "warn")) t->warn = color;
     else if (streqn(key, key_len, "danger")) t->danger = color;
+    else if (streqn(key, key_len, "menu_bg")) t->menu_bg = color;
+    else if (streqn(key, key_len, "menu_item")) t->menu_item = color;
+    else if (streqn(key, key_len, "menu_muted")) t->menu_muted = color;
 }
 
 int vui_load_theme(const char *path) {
@@ -913,31 +918,33 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         text(w, tx, ty, wd->text, VUI_TEXT);
         break; }
     case W_TILE: {
+        /* Dock icon tile (per the design spec): a subtle rounded square with a
+         * faint border and an outline glyph; hover/active shift to a restrained
+         * blue and an accent indicator line appears below the tile. */
         uint32_t accent = wd->color ? wd->color : g_theme.accent;
         int cx = wd->x + wd->w / 2;
-        int cy = wd->y + wd->h / 2;
-        uint32_t ic;
-        /* No permanent tile box — icons sit directly on the flat dock bar
-         * (matches the reference). Only hover/press shows a subtle highlight. */
-        if (wd->hover || wd->pressed) {
-            uint32_t hl = wd->pressed ? mix(accent, g_theme.surface, 1u, 2u)
-                                      : mix(accent, g_theme.surface, 1u, 4u);
-            glass_box(w, wd->x + 3, wd->y + 3, wd->w - 6, wd->h - 6, hl, 0);
-        }
-        /* Monochrome line-art icon: light, brighter on hover. */
-        ic = (wd->hover || wd->pressed) ? g_theme.text : g_theme.text_dim;
+        int cy = wd->y + wd->h / 2 - 2;
+        int active = (wd->hover || wd->pressed);
+        uint32_t tbg = active ? mix(g_theme.surface, accent, 1u, 6u)
+                              : mix(g_theme.surface, 0x00ffffffu, 1u, 24u);
+        uint32_t tbd = active ? mix(g_theme.surface, accent, 1u, 2u)
+                              : mix(g_theme.surface, 0x00cfe2f5u, 1u, 3u);
+        uint32_t ic  = active ? g_theme.text : g_theme.text_dim;
+        rect(w, wd->x, wd->y, wd->w, wd->h, tbg);
+        rect(w, wd->x + 1, wd->y, wd->w - 2, 1, tbd);
+        rect(w, wd->x + 1, wd->y + wd->h - 1, wd->w - 2, 1, tbd);
+        rect(w, wd->x, wd->y + 1, 1, wd->h - 2, tbd);
+        rect(w, wd->x + wd->w - 1, wd->y + 1, 1, wd->h - 2, tbd);
         if (wd->value > 0) {
             tile_icon(w, cx, cy, wd->value, ic);
         } else {
             int glyph_w = slen(wd->text) * 8;
             int tx = wd->x + (wd->w - glyph_w) / 2;
-            int ty = wd->y + (wd->h - 16) / 2;
+            int ty = wd->y + (wd->h - 16) / 2 - 2;
             if (tx < wd->x + 6) tx = wd->x + 6;
             text(w, tx, ty, wd->text, ic);
         }
-        /* Faint vertical divider sitting in the gap to the right of the tile. */
-        rect(w, wd->x + wd->w + 11, wd->y + 7, 1, wd->h - 14,
-             mix(g_theme.border, g_theme.surface, 1u, 2u));
+        if (active) rect(w, cx - 8, wd->y + wd->h + 3, 16, 2, accent);
         break; }
     case W_INPUT: {
         int tx = wd->x + 28;
@@ -1019,28 +1026,27 @@ static void draw_dropdown(struct vui_window *w) {
     /* Clamp to window right edge. */
     if (dx + dw > w->width) dx = w->width - dw;
 
-    /* Drop shadow */
-    rect(w, dx + 2, dy + 2, dw, dh, 0x00080e18u);
-
-    /* Panel background + border */
-    rect(w, dx, dy, dw, dh, VUI_PANEL);
-    rect(w, dx,        dy,        dw, 1,  VUI_BORDER);
-    rect(w, dx,        dy + dh-1, dw, 1,  VUI_BORDER);
-    rect(w, dx,        dy,        1,  dh, VUI_BORDER);
-    rect(w, dx + dw-1, dy,        1,  dh, VUI_BORDER);
+    /* Dark glass panel matching the top-bar dropdowns (themed via menu_*). */
+    int i;
+    rect(w, dx + 3, dy + 4, dw, dh, mix(0x00000000u, g_theme.menu_bg, 1u, 2u)); /* soft shadow */
+    rect(w, dx, dy, dw, dh, g_theme.menu_bg);
+    rect(w, dx,        dy,        dw, 1,  g_theme.border);
+    rect(w, dx,        dy + dh-1, dw, 1,  g_theme.border);
+    rect(w, dx,        dy,        1,  dh, g_theme.border);
+    rect(w, dx + dw-1, dy,        1,  dh, g_theme.border);
 
     /* Items — positions already set by layout_menu_dropdown(). */
-    int i;
     for (i = 0; i < w->widget_count; ++i) {
         struct vui_widget *it = &w->widgets[i];
         if (it->type != W_MENUITEM || it->parent_idx != menu_idx) continue;
         if (it->separator) {
-            rect(w, it->x + 6, it->y, it->w - 12, 1, VUI_BORDER);
+            rect(w, it->x + 8, it->y, it->w - 16, 1, mix(g_theme.border, g_theme.menu_bg, 1u, 2u));
         } else {
             if (it->hover)
-                rect(w, it->x + 1, it->y + 1, it->w - 2, it->h - 2,
-                     mix(VUI_ACCENT, VUI_PANEL, 1u, 4u));
-            text(w, it->x + 12, it->y + 3, it->text, VUI_TEXT);
+                rect(w, it->x + 4, it->y + 1, it->w - 8, it->h - 2,
+                     mix(VUI_ACCENT, g_theme.menu_bg, 1u, 6u));
+            text(w, it->x + 12, it->y + 3, it->text,
+                 it->hover ? g_theme.text : g_theme.menu_item);
         }
     }
 }

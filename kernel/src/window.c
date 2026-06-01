@@ -36,6 +36,10 @@ struct desktop_theme {
     uint32_t ok;
     uint32_t warn;
     uint32_t danger;
+    /* Menu / dropdown surfaces (top-bar dropdowns + context menus). */
+    uint32_t menu_bg;
+    uint32_t menu_item;
+    uint32_t menu_muted;
 };
 
 static struct desktop_theme g_chrome_theme = {
@@ -45,7 +49,9 @@ static struct desktop_theme g_chrome_theme = {
     /* border_hi   text         text_dim     accent */
     0x005a7da3u, 0x00eaf2fau, 0x00b7c7d8u, 0x004da3ffu,
     /* ok          warn         danger */
-    0x0063d9a5u, 0x00e6b65cu, 0x00e36c7au
+    0x0063d9a5u, 0x00e6b65cu, 0x00e36c7au,
+    /* menu_bg     menu_item    menu_muted */
+    0x000c1b2au, 0x00d6e3efu, 0x007f93a8u
 };
 
 static const char *const INFO_LINES[] = {
@@ -215,6 +221,9 @@ static void desktop_theme_load(void) {
     desktop_theme_apply_color(data, "ok", &g_chrome_theme.ok);
     desktop_theme_apply_color(data, "warn", &g_chrome_theme.warn);
     desktop_theme_apply_color(data, "danger", &g_chrome_theme.danger);
+    desktop_theme_apply_color(data, "menu_bg", &g_chrome_theme.menu_bg);
+    desktop_theme_apply_color(data, "menu_item", &g_chrome_theme.menu_item);
+    desktop_theme_apply_color(data, "menu_muted", &g_chrome_theme.menu_muted);
 }
 
 static int parse_decimal(const char *s, int fallback) {
@@ -1163,9 +1172,9 @@ static void draw_topbar_menu_overlay(struct desktop_state *desktop, struct frame
 
     r = tb_dropdown_rect(desktop, m);
     rows = tb_menu_rows(bar, n, m, &first);
-    dbg       = mix_color(g_chrome_theme.bg, 0x00000000u, 1u, 3u);
-    item_text = mix_color(g_chrome_theme.text, g_chrome_theme.text_dim, 1u, 2u);
-    muted     = mix_color(g_chrome_theme.text_dim, g_chrome_theme.bg, 1u, 2u);
+    dbg       = g_chrome_theme.menu_bg;
+    item_text = g_chrome_theme.menu_item;
+    muted     = g_chrome_theme.menu_muted;
 
     draw_soft_shadow(fb, r.x, r.y, r.width, r.height, 10, 5, 0x00060a12u);
     draw_rounded_panel(fb, r.x, r.y, r.width, r.height, 10, dbg, dbg, g_chrome_theme.border, dbg);
@@ -1492,19 +1501,25 @@ static void draw_context_menu(struct desktop_state *desktop, struct framebuffer 
 
     count = build_context_entries(desktop, desktop->context_menu_window, entries);
     r = context_menu_rect(desktop);
-    draw_soft_shadow(fb, r.x, r.y, r.width, r.height, 12, 5, 0x00070b12u);
-    draw_rounded_panel(fb, r.x, r.y, r.width, r.height, 10,
-                       g_chrome_theme.surface_hi, g_chrome_theme.surface,
-                       g_chrome_theme.border_hi, 0x00ffffffu);
-    y = r.y + 12;
-    for (i = 0; i < count; ++i) {
-        uint32_t color = g_chrome_theme.text_dim;
-        if (entries[i].kind == CTX_SHOW) color = g_chrome_theme.text;
-        else if (entries[i].kind == CTX_QUIT_APP) color = g_chrome_theme.danger;
-        else if (entries[i].kind == CTX_APP_KERNEL || entries[i].kind == CTX_APP_USER) color = g_chrome_theme.accent;
-        draw_text(fb, r.x + 14, y, entries[i].label, color, 1);
-        y += 22;
+    /* Same dark glass-panel look as the top-bar dropdowns. */
+    {
+        uint32_t dbg = g_chrome_theme.menu_bg;
+        uint32_t item_text = g_chrome_theme.menu_item;
+        draw_soft_shadow(fb, r.x, r.y, r.width, r.height, 10, 5, 0x00060a12u);
+        draw_rounded_panel(fb, r.x, r.y, r.width, r.height, 10, dbg, dbg, g_chrome_theme.border, dbg);
+        for (i = 0; i < count; ++i) {
+            int ry = r.y + 8 + i * 22;
+            int hov = (i == desktop->context_menu_hover);
+            uint32_t color;
+            if (entries[i].kind == CTX_QUIT_APP) color = g_chrome_theme.danger;
+            else if (entries[i].kind == CTX_APP_KERNEL || entries[i].kind == CTX_APP_USER) color = g_chrome_theme.accent;
+            else color = hov ? g_chrome_theme.text : item_text;
+            if (hov) fb_fill_rect(fb, r.x + 4, ry - 1, r.width - 8, 20,
+                                  mix_color(g_chrome_theme.accent, dbg, 1u, 6u));
+            draw_text(fb, r.x + 14, ry + 2, entries[i].label, color, 1);
+        }
     }
+    (void)y;
 }
 
 static int context_menu_item_at(struct desktop_state *desktop, int x, int y) {
@@ -1605,6 +1620,7 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
     desktop->context_menu_x = 0;
     desktop->context_menu_y = 0;
     desktop->context_menu_window = -1;
+    desktop->context_menu_hover = -1;
     desktop->topbar_menu_open = -1;
     desktop->topbar_menu_hover = -1;
     desktop->launcher_count = 0;

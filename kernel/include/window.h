@@ -133,6 +133,7 @@ struct desktop_state {
     int context_menu_x;
     int context_menu_y;
     int context_menu_window;
+    int context_menu_hover;
 
     /* Global top-bar menu (Page/Edit/View/…). -1 = none open. */
     int topbar_menu_open;

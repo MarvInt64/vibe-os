@@ -67,6 +67,9 @@ typedef struct vui_theme {
     vui_u32 ok;
     vui_u32 warn;
     vui_u32 danger;
+    vui_u32 menu_bg;
+    vui_u32 menu_item;
+    vui_u32 menu_muted;
     unsigned char radius;
     unsigned char padding;
 } vui_theme;
