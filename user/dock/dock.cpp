@@ -40,7 +40,8 @@ int main() {
     vui_window *win = vui_window_open_ex(
         "Dock", width, height,
         VUI_WINDOW_FRAMELESS | VUI_WINDOW_NO_DOCK |
-            VUI_WINDOW_POSITIONED | VUI_WINDOW_ALWAYS_ON_TOP,
+            VUI_WINDOW_POSITIONED | VUI_WINDOW_ALWAYS_ON_TOP |
+            VUI_WINDOW_TRANSLUCENT,
         x, y);
     vui_set_clear_color(win, VUI_COLOR_TRANSPARENT);
 

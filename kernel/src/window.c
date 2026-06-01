@@ -40,6 +40,9 @@ struct desktop_theme {
     uint32_t menu_bg;
     uint32_t menu_item;
     uint32_t menu_muted;
+    /* Opacity (0–255) applied when compositing window surfaces. 255 = opaque;
+     * lower values let the wallpaper show through for a glass look. */
+    uint32_t window_alpha;
 };
 
 static struct desktop_theme g_chrome_theme = {
@@ -51,7 +54,9 @@ static struct desktop_theme g_chrome_theme = {
     /* ok          warn         danger */
     0x0063d9a5u, 0x00e6b65cu, 0x00e36c7au,
     /* menu_bg     menu_item    menu_muted */
-    0x000c1b2au, 0x00d6e3efu, 0x007f93a8u
+    0x000c1b2au, 0x00d6e3efu, 0x007f93a8u,
+    /* window_alpha: slight glass translucency for app windows */
+    243u
 };
 
 static const char *const INFO_LINES[] = {
@@ -195,6 +200,8 @@ static uint32_t parse_hex_color(const char *s, uint32_t fallback) {
     return i == 6 ? v : fallback;
 }
 
+static int parse_decimal(const char *s, int fallback);
+
 static void desktop_theme_apply_color(const char *data, const char *key, uint32_t *slot) {
     char value[16];
 
@@ -224,6 +231,14 @@ static void desktop_theme_load(void) {
     desktop_theme_apply_color(data, "menu_bg", &g_chrome_theme.menu_bg);
     desktop_theme_apply_color(data, "menu_item", &g_chrome_theme.menu_item);
     desktop_theme_apply_color(data, "menu_muted", &g_chrome_theme.menu_muted);
+    {
+        char value[16];
+        if (line_value(data, "window_alpha", value, sizeof(value))) {
+            int a = parse_decimal(value, (int)g_chrome_theme.window_alpha);
+            if (a < 0) a = 0; if (a > 255) a = 255;
+            g_chrome_theme.window_alpha = (uint32_t)a;
+        }
+    }
 }
 
 static int parse_decimal(const char *s, int fallback) {
@@ -1363,7 +1378,7 @@ static void render_window_surface(struct desktop_state *desktop, int index) {
     desktop->window_dirty_rects[index] = rect_from_bounds(0, 0, 0, 0);
 }
 
-static void blit_window_surface_region(struct framebuffer *dest, const struct framebuffer *src, int dest_x, int dest_y, const struct rect *clip_rect) {
+static void blit_window_surface_region(struct framebuffer *dest, const struct framebuffer *src, int dest_x, int dest_y, const struct rect *clip_rect, uint32_t alpha) {
     int x0 = dest_x > clip_rect->x ? dest_x : clip_rect->x;
     int y0 = dest_y > clip_rect->y ? dest_y : clip_rect->y;
     int x1 = dest_x + (int)src->width < clip_rect->x + clip_rect->width ? dest_x + (int)src->width : clip_rect->x + clip_rect->width;
@@ -1381,7 +1396,17 @@ static void blit_window_surface_region(struct framebuffer *dest, const struct fr
         for (x = x0; x < x1; ++x) {
             uint32_t px = src_row[x - dest_x];
             /* Skip transparent-key pixels so rounded corners reveal the desktop. */
-            if (px != WINDOW_TRANSPARENT_KEY) {
+            if (px == WINDOW_TRANSPARENT_KEY) continue;
+            if (alpha < 255u) {
+                /* Blend the surface over the desktop for a translucent window. */
+                uint32_t d = dest_row[x];
+                uint32_t sr=(px>>16)&255u, sg=(px>>8)&255u, sb=px&255u;
+                uint32_t dr=(d>>16)&255u, dg=(d>>8)&255u, db=d&255u;
+                uint32_t r=(sr*alpha + dr*(255u-alpha))/255u;
+                uint32_t g=(sg*alpha + dg*(255u-alpha))/255u;
+                uint32_t b=(sb*alpha + db*(255u-alpha))/255u;
+                dest_row[x] = (r<<16)|(g<<8)|b;
+            } else {
                 dest_row[x] = px;
             }
         }
@@ -1571,7 +1596,9 @@ static void compose_scene_rect(struct desktop_state *desktop, struct framebuffer
          * dragging a window never forces a full-screen background re-render,
          * which was the main source of flicker during motion. */
         draw_shadow_block(fb, window->x, window->y, window->width, window->height);
-        blit_window_surface_region(fb, &desktop->window_fbs[index], window->x, window->y, rect);
+        blit_window_surface_region(fb, &desktop->window_fbs[index], window->x, window->y, rect,
+                                   (window->flags & WINSYS_WINDOW_TRANSLUCENT) ? 210u
+                                                                               : g_chrome_theme.window_alpha);
     }
 
     draw_context_menu(desktop, fb);

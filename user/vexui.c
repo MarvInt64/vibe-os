@@ -265,17 +265,25 @@ static void fill_round_rect(struct vui_window *w,int x,int y,int wid,int hgt,int
     if (r<0) r=0;
     if (r>hgt/2) r=hgt/2;
     if (r>wid/2) r=wid/2;
+    /* Fill interior row by row; corner rows are inset by the circle profile.
+     * Each corner row also gets a 2px border stroke at its fill boundary so the
+     * rounded edge reads as a defined outline rather than a raw fill staircase
+     * (which jaggies badly against a high-contrast window behind it). */
     for (iy=0; iy<hgt; ++iy){
-        int dy=0, inset=0, x0, x1, py=y+iy;
+        int dy=0, inset=0, py=y+iy;
         if (iy<r) dy=r-iy; else if (iy>=hgt-r) dy=iy-(hgt-r)+1;
         if (dy>0){ int ch=isqrt_i(r*r-dy*dy); inset=r-ch; }
-        x0=x+inset; x1=x+wid-inset;
-        rect(w, x0, py, x1-x0, 1, fill);
-        put(w, x0, py, border);
-        put(w, x1-1, py, border);
+        rect(w, x+inset, py, wid-2*inset, 1, fill);
+        if (dy>0){
+            rect(w, x+inset,       py, 2, 1, border);
+            rect(w, x+wid-inset-2, py, 2, 1, border);
+        }
     }
-    line_h(w, x+r, y, wid-2*r, border);
-    line_h(w, x+r, y+hgt-1, wid-2*r, border);
+    /* Border on the straight edges. */
+    line_h(w, x+r, y,         wid-2*r, border);
+    line_h(w, x+r, y+hgt-1,   wid-2*r, border);
+    line_v(w, x,         y+r, hgt-2*r, border);
+    line_v(w, x+wid-1,   y+r, hgt-2*r, border);
 }
 static void glass_box(struct vui_window *w, int x, int y, int wid, int hgt, vui_u32 fill, int strong) {
     vui_u32 top = strong ? g_theme.border_hi : mix(g_theme.border_hi, fill, 1u, 2u);
@@ -1031,7 +1039,8 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
          * bar reads as a stadium/pill (per the reference), with a faint border. */
         uint32_t fill = wd->color ? wd->color : g_theme.surface;
         uint32_t bd = mix(fill, 0x00cfe2f5u, 1u, 3u);
-        int r = wd->h / 2 - 6; if (r > 28) r = 28; if (r < 8) r = 8;
+        int r = 16;   /* moderate corner radius (per reference — not a full stadium) */
+        if (r > wd->h / 2) r = wd->h / 2;
         fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, r, fill, bd);
         break; }
     case W_SPARK: {

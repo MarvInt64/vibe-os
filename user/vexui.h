@@ -46,6 +46,7 @@ typedef unsigned int vui_u32;
 #define VUI_WINDOW_NO_DOCK    0x00000002u
 #define VUI_WINDOW_POSITIONED 0x00000004u
 #define VUI_WINDOW_ALWAYS_ON_TOP 0x00000008u
+#define VUI_WINDOW_TRANSLUCENT   0x00000010u
 
 typedef struct vui_window vui_window;
 typedef struct vui_widget vui_widget;
