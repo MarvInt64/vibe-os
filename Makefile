@@ -138,14 +138,18 @@ apps: $(DISK_IMG) $(LIBC_A)
 		build/user/taskmgr_task_manager.o build/user/vexui.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/taskmgr.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/taskmgr.elf /bin/taskmgr
-	$(UCC) $(UCFLAGS) -c user/weblayout.c -o build/user/weblayout.o
-	$(UCC) $(UCFLAGS) -c user/dom.c -o build/user/dom.o
-	$(UCC) $(UCFLAGS) -c user/css.c -o build/user/css.o
-	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ithird_party/stb -c user/appfont.c -o build/user/appfont.o
-	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ithird_party/stb -c user/appimage.c -o build/user/appimage.o
-	$(CC) $(ASFLAGS) -c user/font_data.S -o build/user/font_data.o
-	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/browser.c -o build/user/browser.o
-	$(LD) -nostdlib -static -T user/linker.ld -o build/user/browser.elf $(LIBC_CRT0) build/user/browser.o build/user/weblayout.o build/user/dom.o build/user/css.o build/user/appfont.o build/user/appimage.o build/user/font_data.o $(LIBC_A)
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/browser -c user/browser/weblayout.c  -o build/user/weblayout.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/browser -c user/browser/dom.c        -o build/user/dom.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/browser -c user/browser/css.c        -o build/user/css.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/browser -Ithird_party/stb -c user/browser/appfont.c   -o build/user/appfont.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/browser -Ithird_party/stb -c user/browser/appimage.c  -o build/user/appimage.o
+	$(CC)  $(ASFLAGS)                             -c user/browser/font_data.S  -o build/user/font_data.o
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -c user/browser/layout_engine.cpp -o build/user/browser_layout_engine.o
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -c user/browser/browser.cpp       -o build/user/browser_main.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/browser.elf \
+		$(LIBC_CRT0) build/user/browser_main.o build/user/browser_layout_engine.o \
+		build/user/weblayout.o build/user/dom.o build/user/css.o \
+		build/user/appfont.o build/user/appimage.o build/user/font_data.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/browser.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/browser.elf /bin/browser
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/hello.c -o build/user/hello.o

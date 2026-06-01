@@ -11,6 +11,10 @@
 #ifndef VIBEOS_WEBLAYOUT_H
 #define VIBEOS_WEBLAYOUT_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef unsigned int wl_u32;
 
 enum { WL_TEXT = 0, WL_RULE = 1, WL_BULLET = 2, WL_RECT = 3, WL_IMAGE = 4 };
@@ -53,5 +57,9 @@ int wl_layout(struct wl_doc *d, const char *html, int n, int viewport_w);
 /* Lay out a parsed DOM tree (the proper path). `root` is a struct dom_node*. */
 struct dom_node;
 int wl_layout_dom(struct wl_doc *d, struct dom_node *root, int viewport_w);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -13,6 +13,10 @@
 #ifndef VIBEOS_UMALLOC_H
 #define VIBEOS_UMALLOC_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef unsigned long umsize_t;
 
 void *umalloc(umsize_t size);
@@ -22,5 +26,9 @@ void *urealloc(void *ptr, umsize_t size);
 /* Diagnostics / coarse control. */
 umsize_t umalloc_used(void);      /* bytes currently handed out (payload, rounded) */
 umsize_t umalloc_capacity(void);  /* total arena size */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

@@ -13,6 +13,10 @@
 #ifndef VIBEOS_DOM_H
 #define VIBEOS_DOM_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 enum dom_type { DOM_ELEMENT = 0, DOM_TEXT = 1 };
 
 struct dom_attr {
@@ -51,5 +55,9 @@ struct dom_node *dom_parse(struct dom_doc *d, const char *html, int n);
 
 /* Attribute lookup (case-insensitive). Returns value or 0. */
 const char *dom_attr(const struct dom_node *node, const char *name);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

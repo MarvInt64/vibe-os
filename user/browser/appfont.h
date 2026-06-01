@@ -6,6 +6,10 @@
 #ifndef VIBEOS_APPFONT_H
 #define VIBEOS_APPFONT_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct af_glyph {
     int w, h;             /* coverage bitmap size */
     int xoff, yoff;       /* offset from pen/baseline (yoff negative = above baseline) */
@@ -18,5 +22,9 @@ int appfont_advance(int codepoint, int px);      /* advance width at pixel size 
 int appfont_ascent(int px);                      /* baseline offset from line top */
 int appfont_line_height(int px);                 /* full line height */
 const struct af_glyph *appfont_get(int codepoint, int px);  /* cached AA glyph */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

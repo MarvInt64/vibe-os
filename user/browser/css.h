@@ -13,6 +13,10 @@
 #ifndef VIBEOS_CSS_H
 #define VIBEOS_CSS_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 struct dom_node;
 struct css_sheet;
 
@@ -25,5 +29,9 @@ void css_free(struct css_sheet *s);
  * left-to-right property parser lets higher-specificity rules win) into out[],
  * NUL-terminated. Returns the number of matching rules. */
 int css_match(struct css_sheet *s, const struct dom_node *node, char *out, int cap);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

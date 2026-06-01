@@ -3,6 +3,14 @@
  * (unsupported format like WebP, or decode error). */
 #ifndef VIBEOS_APPIMAGE_H
 #define VIBEOS_APPIMAGE_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 unsigned int *appimage_decode(const unsigned char *data, int len, int *w, int *h);
 void appimage_free(unsigned int *px);
+#ifdef __cplusplus
+}
+#endif
+
 #endif
