@@ -1281,20 +1281,16 @@ static void render_background_surface(struct desktop_state *desktop) {
     sx += 7 * 8 + 16;
     fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
     sx += 14;
-    /* Power glyph: an open ring with a stem at the top. */
-    {
-        int pr = 7, pcx = sx + pr, pcy = 28, xx, yy;
-        for (yy = -pr; yy <= pr; ++yy) {
-            for (xx = -pr; xx <= pr; ++xx) {
-                int d2 = xx * xx + yy * yy;
-                if (d2 <= pr * pr && d2 >= (pr - 2) * (pr - 2)) {
-                    if (yy < -pr + 4 && xx >= -1 && xx <= 1) continue;  /* top gap */
-                    fb_fill_rect(fb, pcx + xx, pcy + yy, 1, 1, g_chrome_theme.text_dim);
-                }
-            }
-        }
-        fb_fill_rect(fb, pcx, pcy - pr - 1, 2, 7, g_chrome_theme.text_dim);  /* stem */
-    }
+static const uint8_t s_power_glyph[15] = {
+    0b00011100, 0b00100000,
+    0b00100010, 0b00100000,
+    0b01000001, 0b00100000,
+    0b01000001, 0b00100000,
+    0b01000001, 0b00100000,
+    0b01000001, 0b00100000,
+    0b00100010, 0b00000000,
+    0b00011100, 0b00000000,
+};
 
     for (order = 0; order < desktop->launcher_count; ++order) {
         struct desktop_icon icon = launcher_icon_at(desktop, order);
@@ -1340,11 +1336,19 @@ static void render_window_surface(struct desktop_state *desktop, int index) {
         int row;
         if (cw > app_ctx.content_width) cw = app_ctx.content_width;
         if (ch > app_ctx.content_height) ch = app_ctx.content_height;
+        /* memcpy each row straight into the surface fb instead of a bounds-checked
+         * fb_put_pixel per pixel — the content area is in-bounds by construction
+         * (clamped here), so this is the same result far cheaper. */
         for (row = 0; row < ch; ++row) {
-            const uint32_t *src = &desktop->user_apps[s].content_storage[(size_t)row * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH];
-            int col;
-            for (col = 0; col < cw; ++col) {
-                fb_put_pixel(fb, cx + col, cy + row, src[col]);
+            int py = cy + row;
+            int n = cw;
+            if (py < 0 || py >= (int)fb->height || cx < 0) continue;
+            if (cx + n > (int)fb->width) n = (int)fb->width - cx;
+            if (n <= 0) continue;
+            {
+                uint32_t *dst = (uint32_t *)((uint8_t *)fb->base + (size_t)py * fb->pitch) + cx;
+                const uint32_t *src = &desktop->user_apps[s].content_storage[(size_t)row * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH];
+                memcpy(dst, src, (size_t)n * sizeof(uint32_t));
             }
         }
     } else {
@@ -2292,10 +2296,7 @@ int desktop_app_present(struct desktop_state *desktop, uint32_t pid, int win_id,
     for (row = 0; row < copy_h; ++row) {
         uint32_t *dst = &desktop->user_apps[slot].content_storage[(size_t)row * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH];
         const uint32_t *s = &src[(size_t)row * (size_t)src_w];
-        int col;
-        for (col = 0; col < copy_w; ++col) {
-            dst[col] = s[col];
-        }
+        memcpy(dst, s, (size_t)copy_w * sizeof(uint32_t));
     }
 
     mark_window_dirty(desktop, win_idx);
