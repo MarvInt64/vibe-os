@@ -45,7 +45,7 @@ int main() {
     vui_set_clear_color(win, VUI_COLOR_TRANSPARENT);
 
     vui_widget *surface = vui_card(win, 0, 0, width, height, "");
-    vui_set_color(surface, 0x00122232u);   /* spec dock glass background */
+    vui_set_color(surface, 0x00263a54u);   /* dock glass bar (medium slate, per reference) */
 
     vui_widget *row = vui_hbox(win, 20, 14, width - 40, height - 28);
     vui_set_gap(row, 22);

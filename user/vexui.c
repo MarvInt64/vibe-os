@@ -920,28 +920,40 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         text(w, tx, ty, wd->text, VUI_TEXT);
         break; }
     case W_TILE: {
-        /* Dock icon: a large thin outline glyph sitting directly on the dock bar
-         * (no tile box), matching the reference. Hover/active brightens the glyph
-         * and shows a short accent indicator line below it; faint vertical
-         * separators sit in the gaps between icons. */
+        /* Dock icon: a thin-outlined rounded-square tile (transparent interior)
+         * with a line-art glyph inside — matching the reference. Hover/active
+         * brightens the outline to the accent and shows a short blue indicator
+         * line just below the tile; faint separators sit in the gaps. */
         uint32_t accent = wd->color ? wd->color : g_theme.accent;
         int cx = wd->x + wd->w / 2;
         int cy = wd->y + wd->h / 2 - 2;
         int active = (wd->hover || wd->pressed);
+        int pad = 4;
+        int tx = wd->x + pad, ty = wd->y + pad;
+        int tw = wd->w - 2 * pad, th = wd->h - 2 * pad;
+        uint32_t bd = active ? mix(g_theme.surface, accent, 1u, 1u)
+                             : mix(g_theme.surface, 0x00cfe2f5u, 1u, 2u);
         uint32_t ic = active ? g_theme.text : g_theme.text_dim;
+        /* Rounded-square outline (corners rounded by skipping the extreme pixel). */
+        rect(w, tx + 2, ty,          tw - 4, 1, bd);
+        rect(w, tx + 2, ty + th - 1, tw - 4, 1, bd);
+        rect(w, tx,          ty + 2, 1, th - 4, bd);
+        rect(w, tx + tw - 1, ty + 2, 1, th - 4, bd);
+        put(w, tx + 1, ty + 1, bd); put(w, tx + tw - 2, ty + 1, bd);
+        put(w, tx + 1, ty + th - 2, bd); put(w, tx + tw - 2, ty + th - 2, bd);
         if (wd->value > 0) {
             tile_icon(w, cx, cy, wd->value, ic);
         } else {
             int glyph_w = slen(wd->text) * 8;
-            int tx = wd->x + (wd->w - glyph_w) / 2;
-            int ty = wd->y + (wd->h - 16) / 2 - 2;
-            if (tx < wd->x + 6) tx = wd->x + 6;
-            text(w, tx, ty, wd->text, ic);
+            int gx = wd->x + (wd->w - glyph_w) / 2;
+            int gy = wd->y + (wd->h - 16) / 2 - 2;
+            if (gx < wd->x + 6) gx = wd->x + 6;
+            text(w, gx, gy, wd->text, ic);
         }
-        /* Faint vertical separator in the gap to the right of the icon. */
-        rect(w, wd->x + wd->w + 11, wd->y + 4, 1, wd->h - 8,
+        /* Faint vertical separator in the gap to the right of the tile. */
+        rect(w, wd->x + wd->w + 11, wd->y + 6, 1, wd->h - 12,
              mix(g_theme.surface, 0x00cfe2f5u, 1u, 6u));
-        if (active) rect(w, cx - 9, wd->y + wd->h + 4, 18, 2, accent);
+        if (active) rect(w, cx - 7, ty + th + 3, 14, 2, accent);
         break; }
     case W_INPUT: {
         int tx = wd->x + 28;
