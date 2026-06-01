@@ -1,0 +1,19 @@
+#ifndef VIBEOS_CSTDLIB
+#define VIBEOS_CSTDLIB
+
+#include <stdlib.h>
+
+namespace std {
+using ::malloc;
+using ::calloc;
+using ::realloc;
+using ::free;
+using ::atoi;
+using ::strtol;
+using ::strtoul;
+using ::abs;
+using ::exit;
+using ::abort;
+}
+
+#endif

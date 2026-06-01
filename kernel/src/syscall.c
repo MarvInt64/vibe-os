@@ -1,0 +1,31 @@
+#include "syscall.h"
+
+int64_t syscall_dispatch(struct syscall_context *context, uint64_t number, uint64_t arg0, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5) {
+    (void)arg3;
+    (void)arg4;
+    (void)arg5;
+
+    if (context == 0) {
+        return -SYSCALL_EINVAL;
+    }
+
+    switch (number) {
+        case SYS_READ:
+            return fd_read(context->fd_table, (int)arg0, (void *)(uintptr_t)arg1, (size_t)arg2);
+        case SYS_WRITE:
+            return fd_write(context->fd_table, (int)arg0, (const void *)(uintptr_t)arg1, (size_t)arg2);
+        case SYS_IOCTL:
+            return fd_ioctl(context->fd_table, (int)arg0, (uint32_t)arg1, (uintptr_t)arg2);
+        case SYS_WINDOW_CREATE:
+        case SYS_WINDOW_PRESENT:
+        case SYS_EVENT_POLL:
+        case SYS_WINDOW_SET_MENU:
+        case SYS_JOURNAL_READ:
+        case SYS_LOG:
+        case SYS_TIMER_SLEEP:
+            return -SYSCALL_ENOSYS;
+        default:
+            return -SYSCALL_ENOSYS;
+    }
+}
+

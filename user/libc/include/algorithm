@@ -1,0 +1,250 @@
+#ifndef VIBEOS_ALGORITHM
+#define VIBEOS_ALGORITHM
+
+#include <utility>
+#include <initializer_list>
+
+namespace std {
+
+/* --- min / max ----------------------------------------------------------- */
+template <typename T>
+constexpr const T &min(const T &a, const T &b) {
+    return b < a ? b : a;
+}
+template <typename T>
+constexpr const T &max(const T &a, const T &b) {
+    return a < b ? b : a;
+}
+template <typename T>
+constexpr T min(initializer_list<T> il) {
+    const T *p = il.begin();
+    const T *best = p;
+    while (++p != il.end()) if (*p < *best) best = p;
+    return *best;
+}
+template <typename T>
+constexpr T max(initializer_list<T> il) {
+    const T *p = il.begin();
+    const T *best = p;
+    while (++p != il.end()) if (*best < *p) best = p;
+    return *best;
+}
+
+/* --- clamp --------------------------------------------------------------- */
+template <typename T>
+constexpr const T &clamp(const T &v, const T &lo, const T &hi) {
+    return v < lo ? lo : (hi < v ? hi : v);
+}
+
+/* --- fill ---------------------------------------------------------------- */
+template <typename It, typename T>
+void fill(It first, It last, const T &v) {
+    while (first != last) { *first = v; ++first; }
+}
+
+template <typename It, typename Size, typename T>
+It fill_n(It first, Size n, const T &v) {
+    while (n-- > 0) { *first = v; ++first; }
+    return first;
+}
+
+/* --- copy ---------------------------------------------------------------- */
+template <typename In, typename Out>
+Out copy(In first, In last, Out d) {
+    while (first != last) { *d = *first; ++d; ++first; }
+    return d;
+}
+
+template <typename In, typename Size, typename Out>
+Out copy_n(In first, Size n, Out d) {
+    while (n-- > 0) { *d = *first; ++d; ++first; }
+    return d;
+}
+
+template <typename In, typename Out>
+Out move(In first, In last, Out d) {
+    while (first != last) { *d = std::move(*first); ++d; ++first; }
+    return d;
+}
+
+/* --- find ---------------------------------------------------------------- */
+template <typename It, typename T>
+It find(It first, It last, const T &v) {
+    while (first != last && !(*first == v)) ++first;
+    return first;
+}
+
+template <typename It, typename Pred>
+It find_if(It first, It last, Pred p) {
+    while (first != last && !p(*first)) ++first;
+    return first;
+}
+
+template <typename It, typename Pred>
+It find_if_not(It first, It last, Pred p) {
+    while (first != last && p(*first)) ++first;
+    return first;
+}
+
+/* --- count --------------------------------------------------------------- */
+template <typename It, typename T>
+long count(It first, It last, const T &v) {
+    long n = 0;
+    while (first != last) { if (*first == v) ++n; ++first; }
+    return n;
+}
+
+template <typename It, typename Pred>
+long count_if(It first, It last, Pred p) {
+    long n = 0;
+    while (first != last) { if (p(*first)) ++n; ++first; }
+    return n;
+}
+
+/* --- any_of / all_of / none_of ------------------------------------------- */
+template <typename It, typename Pred>
+bool any_of(It first, It last, Pred p) {
+    while (first != last) { if (p(*first)) return true; ++first; }
+    return false;
+}
+
+template <typename It, typename Pred>
+bool all_of(It first, It last, Pred p) {
+    while (first != last) { if (!p(*first)) return false; ++first; }
+    return true;
+}
+
+template <typename It, typename Pred>
+bool none_of(It first, It last, Pred p) {
+    while (first != last) { if (p(*first)) return false; ++first; }
+    return true;
+}
+
+/* --- for_each ------------------------------------------------------------ */
+template <typename It, typename F>
+F for_each(It first, It last, F f) {
+    while (first != last) { f(*first); ++first; }
+    return f;
+}
+
+/* --- equal --------------------------------------------------------------- */
+template <typename It1, typename It2>
+bool equal(It1 f1, It1 l1, It2 f2) {
+    while (f1 != l1) { if (!(*f1 == *f2)) return false; ++f1; ++f2; }
+    return true;
+}
+
+/* --- reverse ------------------------------------------------------------- */
+template <typename It>
+void reverse(It first, It last) {
+    while (first != last && first != --last)
+        std::swap(*first++, *last);
+}
+
+/* --- rotate -------------------------------------------------------------- */
+template <typename It>
+It rotate(It first, It middle, It last) {
+    if (first == middle) return last;
+    if (middle == last)  return first;
+    It ret = last;
+    It next = middle;
+    while (true) {
+        std::swap(*first++, *next++);
+        if (first == middle) {
+            if (next == last) return ret;
+            middle = next;
+        } else if (next == last) {
+            next = middle;
+        }
+    }
+}
+
+/* --- sort (insertion sort — simple, no heap needed) ---------------------- */
+template <typename It, typename Cmp>
+void sort(It first, It last, Cmp cmp) {
+    if (first == last) return;
+    for (It i = first + 1; i != last; ++i) {
+        auto key = std::move(*i);
+        It j = i;
+        while (j != first && cmp(key, *(j - 1))) {
+            *j = std::move(*(j - 1));
+            --j;
+        }
+        *j = std::move(key);
+    }
+}
+
+template <typename It>
+void sort(It first, It last) {
+    sort(first, last, [](const auto &a, const auto &b) { return a < b; });
+}
+
+/* --- lower_bound (binary search) ---------------------------------------- */
+template <typename It, typename T, typename Cmp>
+It lower_bound(It first, It last, const T &v, Cmp cmp) {
+    auto len = last - first;
+    while (len > 0) {
+        auto half = len / 2;
+        It mid = first + half;
+        if (cmp(*mid, v)) { first = mid + 1; len -= half + 1; }
+        else              { len = half; }
+    }
+    return first;
+}
+
+template <typename It, typename T>
+It lower_bound(It first, It last, const T &v) {
+    return lower_bound(first, last, v,
+                       [](const auto &a, const auto &b) { return a < b; });
+}
+
+/* --- upper_bound --------------------------------------------------------- */
+template <typename It, typename T, typename Cmp>
+It upper_bound(It first, It last, const T &v, Cmp cmp) {
+    auto len = last - first;
+    while (len > 0) {
+        auto half = len / 2;
+        It mid = first + half;
+        if (!cmp(v, *mid)) { first = mid + 1; len -= half + 1; }
+        else               { len = half; }
+    }
+    return first;
+}
+
+template <typename It, typename T>
+It upper_bound(It first, It last, const T &v) {
+    return upper_bound(first, last, v,
+                       [](const auto &a, const auto &b) { return a < b; });
+}
+
+/* --- remove / remove_if -------------------------------------------------- */
+template <typename It, typename T>
+It remove(It first, It last, const T &v) {
+    It out = first;
+    while (first != last) {
+        if (!(*first == v)) { if (out != first) *out = std::move(*first); ++out; }
+        ++first;
+    }
+    return out;
+}
+
+template <typename It, typename Pred>
+It remove_if(It first, It last, Pred p) {
+    It out = first;
+    while (first != last) {
+        if (!p(*first)) { if (out != first) *out = std::move(*first); ++out; }
+        ++first;
+    }
+    return out;
+}
+
+/* --- transform ----------------------------------------------------------- */
+template <typename In, typename Out, typename F>
+Out transform(In first, In last, Out d, F f) {
+    while (first != last) { *d = f(*first); ++d; ++first; }
+    return d;
+}
+
+} /* namespace std */
+
+#endif

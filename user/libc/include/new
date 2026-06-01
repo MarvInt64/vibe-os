@@ -1,0 +1,39 @@
+#ifndef VIBEOS_NEW
+#define VIBEOS_NEW
+
+#include <cstddef>
+
+namespace std {
+
+struct nothrow_t {
+    explicit nothrow_t() = default;
+};
+
+extern const nothrow_t nothrow;
+
+} /* namespace std */
+
+void *operator new(std::size_t size);
+void *operator new[](std::size_t size);
+void operator delete(void *ptr) noexcept;
+void operator delete[](void *ptr) noexcept;
+void operator delete(void *ptr, std::size_t size) noexcept;
+void operator delete[](void *ptr, std::size_t size) noexcept;
+
+void *operator new(std::size_t size, const std::nothrow_t &) noexcept;
+void *operator new[](std::size_t size, const std::nothrow_t &) noexcept;
+void operator delete(void *ptr, const std::nothrow_t &) noexcept;
+void operator delete[](void *ptr, const std::nothrow_t &) noexcept;
+
+inline void *operator new(std::size_t, void *ptr) noexcept {
+    return ptr;
+}
+
+inline void *operator new[](std::size_t, void *ptr) noexcept {
+    return ptr;
+}
+
+inline void operator delete(void *, void *) noexcept {}
+inline void operator delete[](void *, void *) noexcept {}
+
+#endif

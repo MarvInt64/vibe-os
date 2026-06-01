@@ -1,0 +1,97 @@
+#ifndef VIBEOS_ARRAY
+#define VIBEOS_ARRAY
+
+#include <cstddef>
+#include <utility>
+#include <initializer_list>
+
+namespace std {
+
+template <typename T, size_t N>
+struct array {
+    using value_type             = T;
+    using size_type              = size_t;
+    using difference_type        = long;
+    using reference              = T &;
+    using const_reference        = const T &;
+    using pointer                = T *;
+    using const_pointer          = const T *;
+    using iterator               = T *;
+    using const_iterator         = const T *;
+
+    T _data[N];
+
+    /* element access */
+    constexpr reference       operator[](size_type i)       { return _data[i]; }
+    constexpr const_reference operator[](size_type i) const { return _data[i]; }
+
+    constexpr reference       front()       { return _data[0]; }
+    constexpr const_reference front() const { return _data[0]; }
+    constexpr reference       back()        { return _data[N - 1]; }
+    constexpr const_reference back()  const { return _data[N - 1]; }
+    constexpr pointer         data()        { return _data; }
+    constexpr const_pointer   data()  const { return _data; }
+
+    /* capacity */
+    constexpr bool   empty()    const noexcept { return N == 0; }
+    constexpr size_t size()     const noexcept { return N; }
+    constexpr size_t max_size() const noexcept { return N; }
+
+    /* iterators */
+    constexpr iterator       begin()        noexcept { return _data; }
+    constexpr const_iterator begin()  const noexcept { return _data; }
+    constexpr const_iterator cbegin() const noexcept { return _data; }
+    constexpr iterator       end()          noexcept { return _data + N; }
+    constexpr const_iterator end()    const noexcept { return _data + N; }
+    constexpr const_iterator cend()   const noexcept { return _data + N; }
+
+    /* fill */
+    void fill(const T &v) {
+        for (size_t i = 0; i < N; ++i) _data[i] = v;
+    }
+
+    /* swap */
+    void swap(array &o) noexcept {
+        for (size_t i = 0; i < N; ++i) std::swap(_data[i], o._data[i]);
+    }
+};
+
+/* Deduction guide */
+template <typename T, typename... U>
+array(T, U...) -> array<T, 1 + sizeof...(U)>;
+
+/* Comparison */
+template <typename T, size_t N>
+constexpr bool operator==(const array<T,N> &a, const array<T,N> &b) {
+    for (size_t i = 0; i < N; ++i)
+        if (!(a[i] == b[i])) return false;
+    return true;
+}
+template <typename T, size_t N>
+constexpr bool operator!=(const array<T,N> &a, const array<T,N> &b) {
+    return !(a == b);
+}
+
+/* get<I> for structured bindings */
+template <size_t I, typename T, size_t N>
+constexpr T &get(array<T,N> &a) noexcept { return a._data[I]; }
+
+template <size_t I, typename T, size_t N>
+constexpr const T &get(const array<T,N> &a) noexcept { return a._data[I]; }
+
+template <size_t I, typename T, size_t N>
+constexpr T &&get(array<T,N> &&a) noexcept { return std::move(a._data[I]); }
+
+/* tuple_size / tuple_element for structured bindings */
+template <typename T> struct tuple_size;
+template <typename T, size_t N>
+struct tuple_size<array<T,N>>
+    : integral_constant<size_t, N> {};
+
+template <size_t I, typename T> struct tuple_element;
+template <size_t I, typename T, size_t N>
+struct tuple_element<I, array<T,N>> { using type = T; };
+
+} /* namespace std */
+
+#endif

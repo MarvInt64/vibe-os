@@ -1,0 +1,34 @@
+#ifndef VIBEOS_TYPEINFO
+#define VIBEOS_TYPEINFO
+
+namespace std {
+
+class type_info {
+public:
+    virtual ~type_info();
+
+    const char *name() const {
+        return __type_name;
+    }
+
+    bool operator==(const type_info &other) const {
+        return this == &other || __type_name == other.__type_name;
+    }
+
+    bool operator!=(const type_info &other) const {
+        return !(*this == other);
+    }
+
+protected:
+    explicit type_info(const char *name) : __type_name(name) {}
+
+private:
+    const char *__type_name;
+
+    type_info(const type_info &) = delete;
+    type_info &operator=(const type_info &) = delete;
+};
+
+} /* namespace std */
+
+#endif

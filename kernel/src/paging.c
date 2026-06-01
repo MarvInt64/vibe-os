@@ -1,0 +1,131 @@
+#include "paging.h"
+
+extern uint64_t pml4_table[512];
+extern uint64_t pdp_table[512];
+extern uint64_t pd_table0[512];
+extern uint64_t pd_table1[512];
+extern uint64_t pd_table2[512];
+extern uint64_t pd_table3[512];
+extern uint64_t framebuffer_pt0[512];
+extern uint64_t framebuffer_pt1[512];
+extern uint64_t framebuffer_pt2[512];
+extern uint64_t framebuffer_pt3[512];
+
+#define PAGE_TABLE_BYTES 0x200000u
+#define FRAMEBUFFER_PAGE_TABLE_COUNT 4u
+
+/* This function returns a pointer to the page directory table corresponding to the given PDP index. 
+The PDP index is derived from the virtual address being mapped. The function uses a switch statement to return the appropriate page directory table based on the index.
+If the index is out of range (greater than 3), it returns a null pointer. 
+*/
+static uint64_t *pd_table_for_index(uint64_t pdp_index) {
+    switch (pdp_index) {
+        case 0: return pd_table0;
+        case 1: return pd_table1;
+        case 2: return pd_table2;
+        case 3: return pd_table3;
+        default: return 0;
+    }
+}
+
+/* This function fills a 4KB page table with entries mapping consecutive physical addresses starting from the given base address. 
+Each entry is marked as present, writable, and user-accessible. */
+static void fill_4k_page_table(uint64_t *page_table, uintptr_t base_addr, uint64_t flags) {
+    size_t i;
+
+    for (i = 0; i < 512; ++i) {
+        page_table[i] = (uint64_t)(base_addr + (i * 0x1000u)) | flags;
+    }
+}
+
+/* This function installs a 4KB page table for the given region base address. 
+It calculates the PDP and PD indices from the region base address and updates the corresponding page directory entry. */
+static void install_page_table(uintptr_t region_base, uint64_t *page_table) {
+    uint64_t pdp_index = (region_base >> 30) & 0x1ffu;
+    uint64_t pd_index = (region_base >> 21) & 0x1ffu;
+    uint64_t *pd = pd_table_for_index(pdp_index);
+
+    if (pd == 0) {
+        return;
+    }
+
+    pd[pd_index] = ((uint64_t)(uintptr_t)page_table) | 0x03u;
+}
+
+static void flush_tlb(void) {
+    uintptr_t cr3;
+
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    __asm__ volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
+}
+
+/* This function remaps the framebuffer to a new set of page tables. 
+It calculates the base and end addresses of the framebuffer region and iterates through the page tables, filling and installing them as needed. */
+void paging_remap_framebuffer(uintptr_t framebuffer_addr, size_t framebuffer_size) {
+    uintptr_t region_base = framebuffer_addr & ~((uintptr_t)0x1fffffu);
+    uintptr_t region_end = framebuffer_addr + framebuffer_size;
+    uintptr_t next_region = region_base;
+    uint64_t *page_tables[FRAMEBUFFER_PAGE_TABLE_COUNT] = {
+        framebuffer_pt0,
+        framebuffer_pt1,
+        framebuffer_pt2,
+        framebuffer_pt3
+    };
+    size_t i;
+
+    for (i = 0; i < FRAMEBUFFER_PAGE_TABLE_COUNT && next_region < region_end; ++i) {
+        fill_4k_page_table(page_tables[i], next_region, 0x1bu);
+        install_page_table(next_region, page_tables[i]);
+        next_region += PAGE_TABLE_BYTES;
+    }
+
+    flush_tlb();
+}
+
+void paging_map_user_process(uintptr_t user_virtual_base, uintptr_t user_stack_top, uintptr_t code_physical, size_t code_size, uintptr_t stack_physical, size_t stack_size, uint64_t *page_tables, size_t page_table_count) {
+    size_t i;
+    size_t code_pages = (code_size + 0xfffu) / 0x1000u;
+    size_t stack_pages = (stack_size + 0xfffu) / 0x1000u;
+    size_t stack_base_page = ((user_stack_top - stack_size) - user_virtual_base) / 0x1000u;
+
+    for (i = 0; i < page_table_count * 512u; ++i) {
+        page_tables[i] = 0;
+    }
+
+    for (i = 0; i < code_pages; ++i) {
+        size_t page = i;
+        size_t table = page / 512u;
+        size_t entry = page % 512u;
+        if (table >= page_table_count) break;
+        page_tables[(table * 512u) + entry] = (uint64_t)(code_physical + (i * 0x1000u)) | 0x07u;
+    }
+
+    for (i = 0; i < stack_pages; ++i) {
+        size_t page = stack_base_page + i;
+        size_t table = page / 512u;
+        size_t entry = page % 512u;
+        if (table >= page_table_count) break;
+        page_tables[(table * 512u) + entry] = (uint64_t)(stack_physical + (i * 0x1000u)) | 0x07u;
+    }
+
+    /* Mark the user region's upper-level tables as user-accessible. The page
+     * table is only made live in pd_table0 when the process is activated, so
+     * multiple processes can share one virtual base without clobbering each
+     * other at load time. */
+    pml4_table[0] |= 0x04u;
+    pdp_table[0] |= 0x04u;
+}
+
+void paging_activate_user_table(uintptr_t user_virtual_base, uint64_t *page_tables, size_t page_table_count) {
+    uint64_t pd_index = (user_virtual_base >> 21) & 0x1ffu;
+    size_t i;
+
+    if (page_tables == 0) {
+        return;
+    }
+
+    for (i = 0; i < page_table_count; ++i) {
+        pd_table0[pd_index + i] = ((uint64_t)(uintptr_t)&page_tables[i * 512u]) | 0x07u;
+    }
+    flush_tlb();
+}

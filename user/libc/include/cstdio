@@ -1,0 +1,17 @@
+#ifndef VIBEOS_CSTDIO
+#define VIBEOS_CSTDIO
+
+#include <stdio.h>
+
+namespace std {
+using ::printf;
+using ::fprintf;
+using ::snprintf;
+using ::vsnprintf;
+using ::vdprintf;
+using ::puts;
+using ::putchar;
+using ::fputs;
+}
+
+#endif

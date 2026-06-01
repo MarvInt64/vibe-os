@@ -1,0 +1,60 @@
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include "umalloc.h"
+
+void *malloc(size_t size) { return umalloc((umsize_t)size); }
+void  free(void *ptr) { ufree(ptr); }
+void *realloc(void *ptr, size_t size) { return urealloc(ptr, (umsize_t)size); }
+
+void *calloc(size_t nmemb, size_t size) {
+    size_t total = nmemb * size;
+    void *p;
+    if (nmemb && total / nmemb != size) return 0;   /* overflow */
+    p = umalloc((umsize_t)total);
+    if (p) memset(p, 0, total);
+    return p;
+}
+
+int abs(int v) { return v < 0 ? -v : v; }
+
+void exit(int code) { _exit(code); }
+void abort(void) { _exit(134); }
+
+static int digit_val(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'Z') return c - 'A' + 10;
+    return -1;
+}
+
+unsigned long strtoul(const char *s, char **end, int base) {
+    unsigned long v = 0;
+    const char *p = s;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') ++p;
+    if (*p == '+') ++p;
+    if ((base == 0 || base == 16) && p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) { p += 2; base = 16; }
+    else if (base == 0 && p[0] == '0') { base = 8; }
+    else if (base == 0) { base = 10; }
+    for (;;) {
+        int d = digit_val((unsigned char)*p);
+        if (d < 0 || d >= base) break;
+        v = v * (unsigned long)base + (unsigned long)d;
+        ++p;
+    }
+    if (end) *end = (char *)p;
+    return v;
+}
+
+long strtol(const char *s, char **end, int base) {
+    const char *p = s;
+    int neg = 0;
+    unsigned long v;
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') ++p;
+    if (*p == '-') { neg = 1; ++p; }
+    else if (*p == '+') { ++p; }
+    v = strtoul(p, end, base);
+    return neg ? -(long)v : (long)v;
+}
+
+int atoi(const char *s) { return (int)strtol(s, 0, 10); }

@@ -1,0 +1,51 @@
+# ---- Build output --------------------------------------------------------
+build/
+
+# ---- Generated disk and ISO images ---------------------------------------
+# vibeos-disk.img is large (32 MB), user-specific, and gets modified at
+# runtime by the OS itself — no point committing it.
+vibeos-disk.img
+*.iso
+
+# ---- Object / dependency files that might escape build/ ------------------
+*.o
+*.d
+*.a
+*.elf
+
+# ---- Rust build artefacts ------------------------------------------------
+target/
+Cargo.lock
+
+# ---- macOS metadata ------------------------------------------------------
+.DS_Store
+**/.DS_Store
+
+# ---- Python cache --------------------------------------------------------
+__pycache__/
+*.pyc
+*.pyo
+
+# ---- Editor / IDE --------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ---- Claude Code session data --------------------------------------------
+.claude/
+.claw/
+.claw-todos.json
+.codesharp/
+
+# ---- QEMU / sandbox scratch dirs -----------------------------------------
+.sandbox-home/
+.sandbox-tmp/
+
+# ---- Backup / scratch files ----------------------------------------------
+Makefile.backup
+Makefile.disk
+test_wm.sh
+test_wm2.sh
+test_term.sh

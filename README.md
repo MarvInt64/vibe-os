@@ -1,0 +1,227 @@
+# VibeOS
+
+A hobby x86_64 operating system written from scratch in C, C++20 and x86 assembly.
+It boots via GRUB/Multiboot2, runs entirely bare-metal, and includes a working graphical desktop, networking stack, persistent ext2 file system, and a userspace with a shell, text editor, browser and GUI apps.
+
+---
+
+## Features
+
+| Area | Status |
+|---|---|
+| Boot | GRUB Multiboot2 → 32-bit protected mode → 64-bit long mode |
+| Memory | Physical frame allocator, 4-level paging, kernel heap (`kmalloc`/`kfree`) |
+| Interrupts | IDT, PIC remapping, IRQ handlers, syscall interface (`int 0x80`) |
+| Scheduler | Round-robin preemptive multi-process (per-process page tables) |
+| Storage | IDE/PIO driver, persistent raw disk image formatted as ext2 |
+| File system | ext2 read/write — `ls`, `cd`, `cat`, `touch`, `mkdir`, `rm`, `cp`, `mv`, `echo >` |
+| Networking | Intel e1000 NIC, ARP, IPv4, ICMP (`ping`), UDP, DNS, TCP, TLS (BearSSL) |
+| GUI | Framebuffer renderer, window server, drag/resize/close, multi-window desktop |
+| VexUI toolkit | Retained-mode widget library — labels, buttons, panels, progress bars, VBox/HBox layout containers, in-window menu bar |
+| Userspace | Freestanding libc (stdio/stdlib/string/ctype), C++20 runtime (vtable, RTTI, global/local ctors, `new`/`delete`) |
+| Apps | `sh` shell, `edit` text editor, `browser` (HTTP reader), `taskmgr` process manager, `uidemo`, `hello`, `cpptest` |
+| Kernel events | `dmesg` journal, serial debug output, crash persistence to `/journal.log` |
+
+---
+
+## Prerequisites
+
+### macOS
+
+```sh
+brew install llvm qemu xorriso
+```
+
+Make sure the LLVM tools are on your `PATH` or that `clang`/`clang++`/`ld.lld` from the brew prefix are reachable. The Makefile auto-detects common Homebrew paths.
+
+You also need `grub-mkrescue`. The easiest way on macOS is via a cross-compilation tap:
+
+```sh
+brew install --cask mxe   # or use i686-elf-grub from a cross-toolchain
+# alternative: build grub from source with --target=x86_64-elf
+```
+
+> **Tip:** If `grub-mkrescue` is not in `PATH`, set `GRUB_MKRESCUE=/path/to/grub-mkrescue` when invoking `make`.
+
+### Linux (Debian / Ubuntu)
+
+```sh
+sudo apt install clang lld llvm qemu-system-x86 grub-pc-bin xorriso python3
+```
+
+### Linux (Arch)
+
+```sh
+sudo pacman -S clang lld llvm qemu grub xorriso python
+```
+
+### All platforms
+
+- Python 3 is required for `scripts/ext2_put.py` (installs apps onto the disk image).
+- `make` (GNU Make).
+
+---
+
+## Building
+
+```sh
+# 1. Build the kernel ELF and all userspace apps, create the bootable ISO
+make all
+
+# 2. Create the persistent disk image (only needed once)
+make disk        # creates vibeos-disk.img (32 MB ext2, survives reboots)
+
+# 3. Install userspace apps onto the disk image
+make apps
+
+# 4. Boot in QEMU
+make run
+```
+
+**All-in-one first build:**
+
+```sh
+make all && make disk && make apps && make run
+```
+
+On subsequent builds, `make run` is enough — it rebuilds whatever changed.
+
+### Individual targets
+
+| Command | Description |
+|---|---|
+| `make kernel` | Compile kernel + userspace blobs → `build/vibeos.elf` |
+| `make iso` | Wrap ELF in a GRUB ISO → `build/vibeos.iso` |
+| `make disk` | Create blank `vibeos-disk.img` (ext2, formatted on first boot) |
+| `make apps` | Build all userspace binaries and `ext2_put` them onto the disk |
+| `make run` | Boot ISO in QEMU with HVF/KVM acceleration and e1000 networking |
+| `make run-serial` | Same, but pipe serial port to stdout (for kernel log) |
+| `make run-debug` | Same as `run` but with `-no-shutdown` (QEMU stays open on triple fault) |
+| `make clean` | Remove `build/` (disk image and ISO are kept) |
+
+---
+
+## Running
+
+QEMU launches with:
+- **256 MB RAM**, `vga std` framebuffer
+- **HVF** acceleration on macOS / **KVM** on Linux (falls back to TCG)
+- **Intel e1000** NIC with SLIRP user networking (guest IP `10.0.2.15`, DNS at `10.0.2.3`)
+- Persistent **IDE disk** backed by `vibeos-disk.img`
+
+The desktop starts automatically. Click the **TERM** icon on the taskbar to open a terminal.
+
+### Shell commands
+
+```
+help          — list available commands
+ls / cd / cat / mkdir / rm / cp / mv / touch / echo
+ping <host>   — ICMP ping (e.g. ping 8.8.8.8)
+curl <url>    — plain-text HTTP GET
+dmesg         — kernel event journal
+gui           — start the graphical desktop (if not already running)
+taskmgr       — open the process manager window
+edit <file>   — open the text editor
+browser       — open the web reader
+cpptest       — run the C++ runtime smoke test
+```
+
+---
+
+## Project Layout
+
+```
+VibeOS/
+├── kernel/
+│   ├── include/          — kernel headers
+│   └── src/              — kernel C/C++ and assembly source
+│       ├── boot.S        — Multiboot2 entry, long-mode switch
+│       ├── kernel.c      — main kernel init
+│       ├── process.c     — scheduler + process management
+│       ├── paging.c      — virtual memory / page tables
+│       ├── net.c         — networking stack (ARP/IP/ICMP/UDP/TCP)
+│       ├── ext2_fs.c     — ext2 file system
+│       ├── window.c      — window server
+│       ├── cxx_runtime.cpp — kernel-side C++ ABI
+│       └── ...
+├── user/
+│   ├── libc/             — freestanding libc + C++20 runtime + crt0
+│   │   └── include/      — standard headers (stdio, stdlib, string, new, …)
+│   ├── taskmgr/          — Task Manager (C++20, VexUI)
+│   ├── vexui.c/h         — retained-mode GUI toolkit
+│   ├── sh.c              — interactive shell
+│   ├── browser.c         — HTTP text browser
+│   ├── edit.c            — text editor
+│   └── ...
+├── third_party/
+│   ├── bearssl/          — TLS library (freestanding port)
+│   └── stb/              — stb_truetype / stb_image
+├── boot/grub/grub.cfg    — GRUB menu config
+├── linker.ld             — kernel linker script
+├── scripts/              — build helper scripts (ext2_put.py, …)
+└── Makefile
+```
+
+---
+
+## Architecture overview
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Userspace (ring 3)                                     │
+│  sh  edit  browser  taskmgr  uidemo  hello  cpptest     │
+│  ↑                                                      │
+│  user/libc  (stdio/stdlib/string, crt0, C++20 ABI)      │
+│  user/vexui (retained-mode GUI toolkit, VBox/HBox)      │
+├─────────────────────────────────────────────────────────┤
+│  Kernel (ring 0)                                        │
+│  scheduler · paging · heap · VFS · ext2                 │
+│  e1000 · ARP/IP/ICMP/UDP/DNS/TCP · BearSSL TLS          │
+│  framebuffer renderer · window server · PS/2 input      │
+│  IDT · PIC · IRQ · syscall (int 0x80)                   │
+├─────────────────────────────────────────────────────────┤
+│  GRUB Multiboot2 → 32-bit → 64-bit long mode           │
+└─────────────────────────────────────────────────────────┘
+        QEMU  ·  x86_64 bare metal
+```
+
+---
+
+## Writing a userspace app
+
+Create `user/myapp/myapp.cpp`:
+
+```cpp
+#include <cstdio>
+#include "../vexui.h"
+
+int main() {
+    vui_window *win = vui_window_open("My App", 400, 300);
+
+    auto *mb  = vui_menubar(win);
+    auto *app = vui_menu(win, mb, "App");
+    vui_on_click(vui_menuitem(win, app, "Quit"),
+                 [](vui_widget *) { /* vui_quit */ });
+
+    vui_label(win, 20, 40, "Hello from C++20!");
+    vui_run(win);
+}
+```
+
+Add to `Makefile` (apps section):
+
+```makefile
+$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/myapp/myapp.cpp -o build/user/myapp.o
+$(LD) -nostdlib -static -T user/linker.ld -o build/user/myapp.elf \
+    $(LIBC_CRT0) build/user/myapp.o build/user/vexui.o $(LIBC_A)
+$(USTRIP) --strip-all build/user/myapp.elf
+python3 scripts/ext2_put.py $(DISK_IMG) build/user/myapp.elf /bin/myapp
+```
+
+Then `make apps && make run` and type `myapp` in the shell.
+
+---
+
+## License
+
+This project is experimental / educational. No license is attached; all rights reserved by the authors.

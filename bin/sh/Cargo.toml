@@ -1,0 +1,11 @@
+[package]
+name = "sh"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libvex = { path = "../../libvex" }
+
+[[bin]]
+name = "sh"
+path = "src/main.rs"
