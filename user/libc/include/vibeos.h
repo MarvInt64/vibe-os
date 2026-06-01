@@ -14,6 +14,7 @@ extern "C" {
 int  vos_spawn(const char *path);
 int  vos_spawn_arg(const char *path, const char *arg);
 void vos_yield(void);
+void vos_sleep_ticks(unsigned long ticks);
 
 /* ---- threads ----
  * Threads share the caller's address space. fn runs as fn(arg) on a freshly

@@ -116,7 +116,15 @@ void __attribute__((noreturn)) Browser::run() {
         if (images_dirty_.exchange(false, std::memory_order_acquire)) dirty = true;
 
         if (dirty) render();
-        vos_yield();
+
+        /* A plain yield makes the browser immediately runnable again. During
+         * page loads that meant repainting/presenting the full window as fast
+         * as the scheduler allowed, which starved the rest of the desktop.
+         * Sleep for a tick while idle and a few ticks during indeterminate
+         * progress animation; input latency stays low, but loading no longer
+         * turns into a compositor stress test. */
+        vos_sleep_ticks(fetch_state_.load(std::memory_order_acquire) ==
+                            (int)FetchState::Fetching ? 3u : 1u);
     }
 }
 
