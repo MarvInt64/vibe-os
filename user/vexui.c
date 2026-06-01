@@ -16,6 +16,7 @@ typedef unsigned char uint8_t;
 #define SYS_READ 0
 #define SYS_WRITE 1
 #define SYS_YIELD 3
+#define SYS_TIMER_SLEEP 20
 #define SYS_EXIT 4
 #define SYS_OPEN 7
 #define SYS_CLOSE 8
@@ -63,6 +64,10 @@ static inline ssize_t sc4(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uin
     ssize_t r; __asm__ volatile("mov %5,%%r10; int $0x80" : "=a"(r) : "a"(n),"D"(a0),"S"(a1),"d"(a2),"r"(a3) : "rcx","r8","r9","r10","r11","memory"); return r;
 }
 static void do_yield(void){ __asm__ volatile("int $0x80"::"a"((uint64_t)SYS_YIELD):"rcx","r11","memory"); }
+/* Sleep for `ticks` scheduler ticks — paces the UI loop so it doesn't busy-spin
+ * (which starved the rest of the desktop and made periodic refreshers present
+ * far faster than intended). */
+static void nap(uint64_t ticks){ sc1(SYS_TIMER_SLEEP, ticks); }
 
 /* Print a message to the controlling terminal (stdout). */
 static void emit(const char *s) {
@@ -238,6 +243,7 @@ int vui_load_theme(const char *path) {
 /* ---- small helpers ---- */
 static int slen(const char *s){ int n=0; while(s&&s[n]) n++; return n; }
 static void scopy(char *dst, const char *src, int cap){ int i=0; for(;src&&src[i]&&i<cap-1;i++) dst[i]=src[i]; dst[i]=0; }
+static int sequal(const char *a, const char *b){ int i=0; if(!a||!b)return a==b; for(;a[i]&&a[i]==b[i];++i){} return a[i]==b[i]; }
 
 static uint32_t mix(uint32_t a, uint32_t b, unsigned step, unsigned total) {
     uint32_t ar = (a >> 16) & 0xffu, ag = (a >> 8) & 0xffu, ab = a & 0xffu;
@@ -466,6 +472,9 @@ vui_widget *vui_bar(vui_window *w, int x, int y, int width, int height, int max)
 void vui_on_click(vui_widget *b, vui_callback cb){ if(b) b->on_click=cb; }
 void vui_set_text(vui_widget *wd, const char *t){
     if(!wd)return;
+    /* Dirty-on-change: skip the repaint entirely when the text is unchanged, so
+     * periodic refreshers (e.g. the task manager) don't re-present every tick. */
+    if(sequal(wd->text, t?t:"")) return;
     scopy(wd->text,t,sizeof(wd->text));
     if(wd->type==W_BUTTON && !(wd->anchors & VUI_ANCHOR_RIGHT)) wd->w=slen(wd->text)*8+24;
     if(wd->type==W_LABEL) wd->w=slen(wd->text)*8;
@@ -482,11 +491,11 @@ void vui_set_int(vui_widget *wd, int v){
     vui_set_text(wd,b);
 }
 int vui_get_int(vui_widget *wd){ return wd ? wd->value : 0; }
-void vui_set_value(vui_widget *wd, int v){ if(!wd)return; wd->value=v; g_win.dirty=1; }
-void vui_set_color(vui_widget *wd, vui_u32 c){ if(!wd)return; wd->color=c; g_win.dirty=1; }
+void vui_set_value(vui_widget *wd, int v){ if(!wd||wd->value==v)return; wd->value=v; g_win.dirty=1; }
+void vui_set_color(vui_widget *wd, vui_u32 c){ if(!wd||wd->color==c)return; wd->color=c; g_win.dirty=1; }
 void vui_set_user(vui_widget *wd, void *u){ if(wd) wd->user=u; }
 void *vui_get_user(vui_widget *wd){ return wd?wd->user:0; }
-void vui_set_visible(vui_widget *wd, int visible){ if(!wd)return; wd->visible=(uint8_t)(visible?1:0); g_win.dirty=1; }
+void vui_set_visible(vui_widget *wd, int visible){ uint8_t v=(uint8_t)(visible?1:0); if(!wd||wd->visible==v)return; wd->visible=v; g_win.dirty=1; }
 void vui_set_bounds(vui_widget *wd, int x, int y, int width, int height){
     if(!wd)return;
     wd->x=x; wd->y=y; wd->w=width; wd->h=height;
@@ -1322,7 +1331,9 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
         }
 
         if (w->dirty) { repaint(w); w->dirty = 0; }
-        do_yield();
+        /* Pace the loop at the scheduler tick instead of busy-yielding: input
+         * stays responsive (~1 tick latency) while idle frames cost nothing. */
+        nap(1);
     }
     sc1(SYS_EXIT, 0);
     for(;;){}
