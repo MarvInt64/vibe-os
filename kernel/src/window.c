@@ -1005,6 +1005,172 @@ int desktop_set_wallpaper(struct desktop_state *desktop, const uint32_t *src, in
     return 0;
 }
 
+/* ---- Global top-bar menu (Page/Edit/View/…) ---------------------------- */
+#define MI_DIV    1u
+#define MI_DANGER 2u
+#define MI_CHECK  4u
+#define MI_ARROW  8u
+struct tb_item { const char *label; const char *sc; unsigned flags; };
+struct tb_menu { const char *title; const struct tb_item *items; int count; };
+
+static const struct tb_item TB_PAGE[] = {
+    {"New Tab","Ctrl+T",0},{"New Window","Ctrl+N",0},{"Open Location","Ctrl+L",0},{"Reload","Ctrl+R",0},
+    {0,0,MI_DIV},{"Save Page","Ctrl+S",0},{"Print","Ctrl+P",0},
+    {0,0,MI_DIV},{"Close Window","Ctrl+W",MI_DANGER},
+};
+static const struct tb_item TB_EDIT[] = {
+    {"Undo","Ctrl+Z",0},{"Redo","Ctrl+Shift+Z",0},{0,0,MI_DIV},
+    {"Cut","Ctrl+X",0},{"Copy","Ctrl+C",0},{"Paste","Ctrl+V",0},{"Select All","Ctrl+A",0},
+    {0,0,MI_DIV},{"Find in Page","Ctrl+F",0},
+};
+static const struct tb_item TB_VIEW[] = {
+    {"Show Toolbar",0,MI_CHECK},{"Show Status Bar",0,MI_CHECK},{0,0,MI_DIV},
+    {"Zoom In","Ctrl++",0},{"Zoom Out","Ctrl+-",0},{"Reset Zoom","Ctrl+0",0},
+    {0,0,MI_DIV},{"Developer Layout",0,MI_ARROW},
+};
+static const struct tb_item TB_NAV[] = {
+    {"Back","Alt+Left",0},{"Forward","Alt+Right",0},{"Home","Alt+Home",0},{"Reload","Ctrl+R",0},
+    {0,0,MI_DIV},{"Open VibeNet",0,0},{"Open Downloads",0,0},
+};
+static const struct tb_item TB_TOOLS[] = {
+    {"Developer Console","Ctrl+Shift+I",0},{"Network Inspector",0,0},{"Extensions",0,0},{"Settings",0,0},
+};
+static const struct tb_item TB_WINDOW[] = {
+    {"Minimize",0,0},{"Maximize",0,0},{"Tile Left",0,0},{"Tile Right",0,0},
+    {0,0,MI_DIV},{"Bring All to Front",0,0},
+};
+static const struct tb_item TB_HELP[] = {
+    {"VibeOS Help",0,0},{"Keyboard Shortcuts",0,0},{"Release Notes",0,0},{"About",0,0},
+};
+#define TB_M(a) (a), (int)(sizeof(a)/sizeof((a)[0]))
+static const struct tb_menu TB_MENUS[] = {
+    {"Page",     TB_M(TB_PAGE)},   {"Edit",   TB_M(TB_EDIT)},
+    {"View",     TB_M(TB_VIEW)},   {"Navigate", TB_M(TB_NAV)},
+    {"Tools",    TB_M(TB_TOOLS)},  {"Window", TB_M(TB_WINDOW)},
+    {"Help",     TB_M(TB_HELP)},
+};
+#define TB_MENU_COUNT ((int)(sizeof(TB_MENUS)/sizeof(TB_MENUS[0])))
+
+/* x (and width) of menu title `idx` in the top bar. Brand "VibeOS", a divider,
+ * the "Desktop" context label, then the menus — a fixed layout so the painted
+ * labels and the hit-test/dropdown geometry never disagree. */
+static int tb_menu_x(int idx, int *w_out) {
+    int adv = text_char_advance(1);
+    int x = 122 + 7 * adv + 24;   /* after "Desktop" + gap */
+    int i;
+    for (i = 0; i < idx; ++i) x += (int)strlen(TB_MENUS[i].title) * adv + 22;
+    if (w_out) *w_out = (int)strlen(TB_MENUS[idx].title) * adv;
+    return x;
+}
+
+static int tb_label_at(int x, int y) {
+    int i;
+    if (y < 8 || y > 42) return -1;
+    for (i = 0; i < TB_MENU_COUNT; ++i) {
+        int w, mx = tb_menu_x(i, &w);
+        if (x >= mx - 5 && x < mx + w + 5) return i;
+    }
+    return -1;
+}
+
+static struct rect tb_dropdown_rect(struct desktop_state *desktop, int idx) {
+    const struct tb_menu *m = &TB_MENUS[idx];
+    int adv = text_char_advance(1);
+    int i, longest = 0, w, h, mw, x;
+    for (i = 0; i < m->count; ++i) {
+        const struct tb_item *it = &m->items[i];
+        int len;
+        if (it->flags & MI_DIV) continue;
+        len = (int)strlen(it->label) + ((it->flags & MI_CHECK) ? 2 : 0);
+        if (it->sc) len += (int)strlen(it->sc) + 4;
+        if (len > longest) longest = len;
+    }
+    w = longest * adv + 40; if (w < 200) w = 200; if (w > 360) w = 360;
+    h = m->count * 22 + 12;
+    x = tb_menu_x(idx, &mw) - 6;
+    if (x + w > (int)desktop->screen_width - 8) x = (int)desktop->screen_width - w - 8;
+    if (x < 6) x = 6;
+    return rect_from_bounds(x, 50, w, h);
+}
+
+static int tb_item_at(struct desktop_state *desktop, int idx, int x, int y) {
+    struct rect r = tb_dropdown_rect(desktop, idx);
+    const struct tb_menu *m = &TB_MENUS[idx];
+    int row;
+    if (!point_in_rect(x, y, r.x, r.y, r.width, r.height)) return -1;
+    row = (y - (r.y + 6)) / 22;
+    if (row < 0 || row >= m->count) return -1;
+    if (m->items[row].flags & MI_DIV) return -1;
+    return row;
+}
+
+/* Painted into the (cached) background: brand divider, the context label and
+ * the plain menu titles. */
+static void draw_topbar_menu_labels(struct framebuffer *fb) {
+    int i;
+    fb_fill_rect(fb, 110, 16, 1, 22, g_chrome_theme.border);
+    draw_text(fb, 122, 20, "Desktop", g_chrome_theme.text, 1);
+    for (i = 0; i < TB_MENU_COUNT; ++i) {
+        int w, mx = tb_menu_x(i, &w);
+        draw_text(fb, mx, 20, TB_MENUS[i].title, g_chrome_theme.text_dim, 1);
+    }
+}
+
+/* Live overlay (drawn above windows each compose): open-label underline and
+ * the floating dropdown panel. */
+static void draw_topbar_menu_overlay(struct desktop_state *desktop, struct framebuffer *fb) {
+    int idx = desktop->topbar_menu_open;
+    const struct tb_menu *m;
+    struct rect r;
+    uint32_t dbg, item_text, muted;
+    int w, mx, i;
+
+    if (idx < 0 || idx >= TB_MENU_COUNT) return;
+
+    mx = tb_menu_x(idx, &w);
+    fb_fill_rect(fb, mx, 44, w, 2, g_chrome_theme.accent);   /* open-label underline */
+
+    m = &TB_MENUS[idx];
+    r = tb_dropdown_rect(desktop, idx);
+    dbg       = mix_color(g_chrome_theme.bg, 0x00000000u, 1u, 3u);   /* dark glass panel */
+    item_text = mix_color(g_chrome_theme.text, g_chrome_theme.text_dim, 1u, 2u);
+    muted     = mix_color(g_chrome_theme.text_dim, g_chrome_theme.bg, 1u, 2u);
+
+    draw_soft_shadow(fb, r.x, r.y, r.width, r.height, 10, 5, 0x00060a12u);
+    draw_rounded_panel(fb, r.x, r.y, r.width, r.height, 10, dbg, dbg, g_chrome_theme.border, dbg);
+
+    for (i = 0; i < m->count; ++i) {
+        const struct tb_item *it = &m->items[i];
+        int ry = r.y + 6 + i * 22;
+        int hov, tx;
+        uint32_t col;
+        if (it->flags & MI_DIV) {
+            fb_fill_rect(fb, r.x + 10, ry + 10, r.width - 20, 1,
+                         mix_color(g_chrome_theme.border, dbg, 1u, 2u));
+            continue;
+        }
+        hov = (i == desktop->topbar_menu_hover);
+        col = (it->flags & MI_DANGER) ? g_chrome_theme.danger
+                                      : (hov ? g_chrome_theme.text : item_text);
+        if (hov) fb_fill_rect(fb, r.x + 4, ry + 1, r.width - 8, 20,
+                              mix_color(g_chrome_theme.accent, dbg, 1u, 6u));
+        tx = r.x + 14;
+        if (it->flags & MI_CHECK) {
+            fb_fill_rect(fb, r.x + 11, ry + 11, 2, 4, g_chrome_theme.accent);
+            fb_fill_rect(fb, r.x + 13, ry + 13, 4, 2, g_chrome_theme.accent);
+            fb_fill_rect(fb, r.x + 16, ry + 6, 2, 8, g_chrome_theme.accent);
+            tx = r.x + 26;
+        }
+        draw_text(fb, tx, ry + 3, it->label, col, 1);
+        if (it->sc) {
+            int sw = (int)strlen(it->sc) * text_char_advance(1);
+            draw_text(fb, r.x + r.width - 12 - sw, ry + 3, it->sc,
+                      hov ? g_chrome_theme.text_dim : muted, 1);
+        }
+        if (it->flags & MI_ARROW) draw_text(fb, r.x + r.width - 16, ry + 3, ">", muted, 1);
+    }
+}
+
 static void render_background_surface(struct desktop_state *desktop) {
     struct framebuffer *fb = &desktop->background_fb;
     int order;
@@ -1058,8 +1224,7 @@ static void render_background_surface(struct desktop_state *desktop) {
         }
     }
     draw_text(fb, 50, 20, "VibeOS", g_chrome_theme.text, 1);
-    fb_fill_rect(fb, 154, 16, 1, 22, g_chrome_theme.border);
-    draw_text(fb, 170, 20, "DESKTOP", g_chrome_theme.text_dim, 1);
+    draw_topbar_menu_labels(fb);
 
     sx = w - 400;
     {
@@ -1362,6 +1527,7 @@ static void compose_scene_rect(struct desktop_state *desktop, struct framebuffer
     }
 
     draw_context_menu(desktop, fb);
+    draw_topbar_menu_overlay(desktop, fb);
 }
 
 void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t screen_height) {
@@ -1406,6 +1572,8 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
     desktop->context_menu_x = 0;
     desktop->context_menu_y = 0;
     desktop->context_menu_window = -1;
+    desktop->topbar_menu_open = -1;
+    desktop->topbar_menu_hover = -1;
     desktop->launcher_count = 0;
     desktop->dragging_launcher = -1;
     desktop->launcher_drag_offset_x = 0;
@@ -1620,6 +1788,58 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
         clamp_window_to_screen(desktop, window);
         mark_dirty_rect(desktop, before);
         mark_dirty_rect(desktop, window_rect(window));
+    }
+
+    /* ---- Global top-bar menu interaction ---- */
+    {
+        size_t ki;
+        int esc = 0;
+        for (ki = 0; ki < keyboard->count; ++ki)
+            if (keyboard->chars[ki] == 0x1b) esc = 1;
+        if (esc && desktop->topbar_menu_open >= 0) {
+            mark_dirty_rect(desktop, tb_dropdown_rect(desktop, desktop->topbar_menu_open));
+            mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
+            desktop->topbar_menu_open = -1;
+            desktop->topbar_menu_hover = -1;
+        }
+    }
+    if (desktop->topbar_menu_open >= 0 && !mouse->left_pressed) {
+        int tl = tb_label_at(mouse->x, mouse->y);
+        if (tl >= 0 && tl != desktop->topbar_menu_open) {
+            mark_dirty_rect(desktop, tb_dropdown_rect(desktop, desktop->topbar_menu_open));
+            desktop->topbar_menu_open = tl;
+            desktop->topbar_menu_hover = -1;
+            mark_dirty_rect(desktop, tb_dropdown_rect(desktop, tl));
+            mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
+        } else {
+            int it = tb_item_at(desktop, desktop->topbar_menu_open, mouse->x, mouse->y);
+            if (it != desktop->topbar_menu_hover) {
+                desktop->topbar_menu_hover = it;
+                mark_dirty_rect(desktop, tb_dropdown_rect(desktop, desktop->topbar_menu_open));
+            }
+        }
+    }
+    if (mouse->left_pressed) {
+        int tl = tb_label_at(mouse->x, mouse->y);
+        if (tl >= 0) {
+            int prev = desktop->topbar_menu_open;
+            if (prev >= 0) mark_dirty_rect(desktop, tb_dropdown_rect(desktop, prev));
+            desktop->topbar_menu_open = (prev == tl) ? -1 : tl;
+            desktop->topbar_menu_hover = -1;
+            if (desktop->topbar_menu_open >= 0)
+                mark_dirty_rect(desktop, tb_dropdown_rect(desktop, desktop->topbar_menu_open));
+            mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
+            return;
+        }
+        if (desktop->topbar_menu_open >= 0) {
+            int it = tb_item_at(desktop, desktop->topbar_menu_open, mouse->x, mouse->y);
+            mark_dirty_rect(desktop, tb_dropdown_rect(desktop, desktop->topbar_menu_open));
+            mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
+            desktop->topbar_menu_open = -1;
+            desktop->topbar_menu_hover = -1;
+            (void)it;   /* item activation: reserved (no app-menu protocol yet) */
+            return;
+        }
     }
 
     if (mouse->left_pressed) {

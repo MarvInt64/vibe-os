@@ -132,6 +132,10 @@ struct desktop_state {
     int context_menu_y;
     int context_menu_window;
 
+    /* Global top-bar menu (Page/Edit/View/…). -1 = none open. */
+    int topbar_menu_open;
+    int topbar_menu_hover;
+
     /* User desktop launchers loaded from .desktop files in /home/user/Desktop.
      * Each launcher is a small text file with Name= and Exec= keys. */
     char launcher_names[DESKTOP_LAUNCHER_MAX][32];
