@@ -15,7 +15,7 @@ struct desktop_icon {
     int launcher_index;
 };
 
-#define WINDOW_SHADOW_SPREAD 3
+#define WINDOW_SHADOW_SPREAD 6
 
 static struct desktop_icon launcher_icon_at(const struct desktop_state *desktop, int index);
 
@@ -23,6 +23,29 @@ static struct desktop_icon launcher_icon_at(const struct desktop_state *desktop,
  * when the surface is composited, so the rounded corners show the desktop
  * behind them instead of an ugly black block. */
 #define WINDOW_TRANSPARENT_KEY 0x00ff00ffu
+
+struct desktop_theme {
+    uint32_t bg;
+    uint32_t surface;
+    uint32_t surface_hi;
+    uint32_t border;
+    uint32_t border_hi;
+    uint32_t text;
+    uint32_t text_dim;
+    uint32_t accent;
+    uint32_t ok;
+    uint32_t warn;
+    uint32_t danger;
+};
+
+static struct desktop_theme g_chrome_theme = {
+    /* bg          surface      surface_hi   border */
+    0x001a2740u, 0x00243650u, 0x002e435du, 0x003c526eu,
+    /* border_hi   text         text_dim     accent */
+    0x006f86a6u, 0x00e8f0f8u, 0x00aebbd0u, 0x006eb6ffu,
+    /* ok          warn         danger */
+    0x0076e0b5u, 0x00f4c36bu, 0x00ff7f8fu
+};
 
 static const char *const INFO_LINES[] = {
     "MOUSE READY",
@@ -65,32 +88,28 @@ static int large_ui(const struct desktop_state *desktop) {
 	return desktop->screen_width >= 1920u || desktop->screen_height >= 1080u;
 }
 
+static int window_frameless(const struct window_state *window) {
+    return (window->flags & WINSYS_WINDOW_FRAMELESS) != 0u;
+}
+
+static int window_always_on_top(const struct window_state *window) {
+    return (window->flags & WINSYS_WINDOW_ALWAYS_ON_TOP) != 0u;
+}
+
 static int ui_titlebar_height(const struct desktop_state *desktop) {
     return large_ui(desktop) ? 38 : 30;
 }
 
-/* Vertical space reserved at the bottom for the macOS-style dock. */
+/* Work-area reservation for the userspace shell dock. The dock itself is no
+ * longer rendered by the kernel; this keeps maximized/initial windows from
+ * covering the always-on-top dock app until shell-owned work-area hints exist. */
 static int ui_taskbar_height(const struct desktop_state *desktop) {
     return large_ui(desktop) ? 104 : 80;
 }
 
-/* Small left margin (the dock is now at the bottom, not on the left). */
-static int ui_dock_width(const struct desktop_state *desktop) {
+static int ui_left_work_area_inset(const struct desktop_state *desktop) {
     (void)desktop;
     return 12;
-}
-
-static int ui_icon_box_width(const struct desktop_state *desktop) {
-    return large_ui(desktop) ? 50 : 38;
-}
-
-static int ui_icon_box_height(const struct desktop_state *desktop) {
-    return large_ui(desktop) ? 38 : 30;
-}
-
-static int ui_icon_label_scale(const struct desktop_state *desktop) {
-    /* 8x16 font: scale 1 == 16px, a normal crisp UI size (was a huge 3x). */
-    return large_ui(desktop) ? 1 : 1;
 }
 
 static int ui_window_text_scale(const struct desktop_state *desktop) {
@@ -169,6 +188,34 @@ static uint32_t parse_hex_color(const char *s, uint32_t fallback) {
     return i == 6 ? v : fallback;
 }
 
+static void desktop_theme_apply_color(const char *data, const char *key, uint32_t *slot) {
+    char value[16];
+
+    if (line_value(data, key, value, sizeof(value))) {
+        *slot = parse_hex_color(value, *slot);
+    }
+}
+
+static void desktop_theme_load(void) {
+    char data[1024];
+    ssize_t n = vfs_read("/home/user/.config/vibeos.theme", 0, data, sizeof(data) - 1u);
+
+    if (n <= 0) return;
+    data[n] = '\0';
+
+    desktop_theme_apply_color(data, "bg", &g_chrome_theme.bg);
+    desktop_theme_apply_color(data, "surface", &g_chrome_theme.surface);
+    desktop_theme_apply_color(data, "surface_hi", &g_chrome_theme.surface_hi);
+    desktop_theme_apply_color(data, "border", &g_chrome_theme.border);
+    desktop_theme_apply_color(data, "border_hi", &g_chrome_theme.border_hi);
+    desktop_theme_apply_color(data, "text", &g_chrome_theme.text);
+    desktop_theme_apply_color(data, "text_dim", &g_chrome_theme.text_dim);
+    desktop_theme_apply_color(data, "accent", &g_chrome_theme.accent);
+    desktop_theme_apply_color(data, "ok", &g_chrome_theme.ok);
+    desktop_theme_apply_color(data, "warn", &g_chrome_theme.warn);
+    desktop_theme_apply_color(data, "danger", &g_chrome_theme.danger);
+}
+
 static int parse_decimal(const char *s, int fallback) {
     int sign = 1;
     int v = 0;
@@ -245,6 +292,7 @@ static void desktop_refresh_launchers(struct desktop_state *desktop) {
 
         if (!vfs_readdir("/home/user/Desktop", index++, &entry)) break;
         if (entry.kind != VFS_NODE_FILE || !text_ends_with(entry.name, ".desktop")) continue;
+        if (strcmp(entry.name, "Dock.desktop") == 0) continue;
 
         copy_text(path, sizeof(path), "/home/user/Desktop/");
         append_text(path, sizeof(path), entry.name);
@@ -275,142 +323,11 @@ static void desktop_refresh_launchers(struct desktop_state *desktop) {
     }
 }
 
-static struct desktop_icon desktop_icon_at_size(int index, int screen_width, int screen_height) {
-    struct desktop_icon icon;
-    int dense = screen_width >= 1200 || screen_height >= 900;
-    int base_x = dense ? 52 : 36;
-    int base_y = dense ? 148 : 126;
-    int step_y = dense ? 120 : 102;
-
-    (void)screen_width;
-    (void)screen_height;
-
-    icon.x = base_x;
-    icon.y = base_y + (index * step_y);
-    icon.launcher_index = -1;
-
-    if (index == 0) {
-        icon.window_index = WINDOW_FILES;
-        icon.color = 0x0036b8ffu;
-        icon.label = "FILES";
-    } else if (index == 1) {
-        icon.window_index = WINDOW_TERMINAL;
-        icon.color = 0x0063e6beu;
-        icon.label = "TERM";
-    } else if (index == 2) {
-        icon.window_index = WINDOW_TASK_MANAGER;
-        icon.color = 0x00ef7f7fu;
-        icon.label = "TASKS";
-    } else {
-        icon.window_index = WINDOW_INFO;
-        icon.color = 0x00f5ad4eu;
-        icon.label = "INFO";
-    }
-
-    return icon;
-}
-
-/* macOS-style dock geometry: a centred, rounded bar along the bottom. */
-static int ui_dock_icon_size(const struct desktop_state *desktop) { return large_ui(desktop) ? 52 : 40; }
-static int ui_dock_icon_gap(const struct desktop_state *desktop) { return large_ui(desktop) ? 18 : 14; }
-static int ui_dock_pad(const struct desktop_state *desktop) { return large_ui(desktop) ? 14 : 10; }
-
-static int dock_icon_count(const struct desktop_state *desktop) {
-    int i;
-    int n = DESKTOP_ICON_COUNT;
-    for (i = 0; i < MAX_USER_APPS; i++)
-        if (desktop->user_apps[i].created) n++;
-    return n;
-}
-
-static void ui_dock_metrics(const struct desktop_state *desktop, int *dx, int *dy, int *dw, int *dh) {
-    int isz = ui_dock_icon_size(desktop);
-    int gap = ui_dock_icon_gap(desktop);
-    int pad = ui_dock_pad(desktop);
-    int count = dock_icon_count(desktop);
-    int inner = count * isz + (count - 1) * gap;
-    int w = inner + 2 * pad;
-    int h = isz + 2 * pad;
-    *dw = w;
-    *dh = h;
-    *dx = ((int)desktop->screen_width - w) / 2;
-    *dy = (int)desktop->screen_height - h - (large_ui(desktop) ? 16 : 12);
-}
-
-static struct desktop_icon desktop_icon_at(const struct desktop_state *desktop, int index) {
-    struct desktop_icon icon;
-    int dx, dy, dw, dh;
-    int isz = ui_dock_icon_size(desktop);
-    int gap = ui_dock_icon_gap(desktop);
-    int pad = ui_dock_pad(desktop);
-
-    ui_dock_metrics(desktop, &dx, &dy, &dw, &dh);
-    icon.x = dx + pad + index * (isz + gap);
-    icon.y = dy + pad;
-    icon.launcher_index = -1;
-
-    if (index == 0) {
-        icon.window_index = WINDOW_FILES;
-        icon.color = 0x0036b8ffu;
-        icon.label = "FILES";
-    } else if (index == 1) {
-        icon.window_index = WINDOW_TERMINAL;
-        icon.color = 0x0063e6beu;
-        icon.label = "TERM";
-    } else if (index == 2) {
-        icon.window_index = WINDOW_TASK_MANAGER;
-        icon.color = 0x00ef7f7fu;
-        icon.label = "TASKS";
-    } else {
-        icon.window_index = WINDOW_INFO;
-        icon.color = 0x00f5ad4eu;
-        icon.label = "INFO";
-    }
-
-    return icon;
-}
-
-static struct desktop_icon dock_icon_at(const struct desktop_state *desktop, int index) {
-    struct desktop_icon icon;
-    int dx, dy, dw, dh;
-    int isz = ui_dock_icon_size(desktop);
-    int gap = ui_dock_icon_gap(desktop);
-    int pad = ui_dock_pad(desktop);
-
-    if (index < DESKTOP_ICON_COUNT) {
-        return desktop_icon_at(desktop, index);
-    }
-
-    /* Map dock position to a created user-app slot (in slot order). */
-    {
-        int app_pos = index - DESKTOP_ICON_COUNT;
-        int i;
-        int found = -1;
-        int count = 0;
-        for (i = 0; i < MAX_USER_APPS; i++) {
-            if (desktop->user_apps[i].created) {
-                if (count == app_pos) { found = i; break; }
-                count++;
-            }
-        }
-        if (found < 0) found = 0; /* fallback */
-
-        ui_dock_metrics(desktop, &dx, &dy, &dw, &dh);
-        (void)dw;
-        (void)dh;
-        icon.x = dx + pad + index * (isz + gap);
-        icon.y = dy + pad;
-        icon.window_index = WINDOW_APP_FIRST + found;
-        icon.color = 0x008f7bf0u;
-        icon.label = desktop->user_apps[found].title[0] ? desktop->user_apps[found].title : "APP";
-        icon.launcher_index = -1;
-        return icon;
-    }
-}
+static int ui_launcher_icon_size(const struct desktop_state *desktop) { return large_ui(desktop) ? 52 : 40; }
 
 static struct desktop_icon launcher_icon_at(const struct desktop_state *desktop, int index) {
     struct desktop_icon icon;
-    int sz = ui_dock_icon_size(desktop);
+    int sz = ui_launcher_icon_size(desktop);
     int col = index % 2;
     int row = index / 2;
     icon.x = (large_ui(desktop) ? 48 : 32) + col * (sz + (large_ui(desktop) ? 86 : 70));
@@ -507,21 +424,6 @@ static void mark_background_dirty(struct desktop_state *desktop) {
     desktop->background_dirty = 1;
 }
 
-static struct rect dock_dirty_rect(const struct desktop_state *desktop) {
-    int dx;
-    int dy;
-    int dw;
-    int dh;
-
-    ui_dock_metrics(desktop, &dx, &dy, &dw, &dh);
-    return rect_from_bounds(dx - 10, dy - 10, dw + 20, dh + 24);
-}
-
-static void mark_dock_dirty(struct desktop_state *desktop) {
-    mark_background_dirty(desktop);
-    mark_dirty_rect(desktop, dock_dirty_rect(desktop));
-}
-
 static void mark_window_dirty(struct desktop_state *desktop, int index) {
     struct window_state *window;
 
@@ -588,10 +490,17 @@ static void build_app_draw_context(struct desktop_state *desktop, const struct w
     app_ctx->window_width = window->width;
     app_ctx->window_height = window->height;
     app_ctx->focused = focused;
-    app_ctx->content_x = large_ui(desktop) ? 22 : 16;
-    app_ctx->content_y = large_ui(desktop) ? 58 : 48;
-    app_ctx->content_width = window->width - (large_ui(desktop) ? 44 : 32);
-    app_ctx->content_height = window->height - (large_ui(desktop) ? 82 : 66);
+    if (window_frameless(window)) {
+        app_ctx->content_x = 0;
+        app_ctx->content_y = 0;
+        app_ctx->content_width = window->width;
+        app_ctx->content_height = window->height;
+    } else {
+        app_ctx->content_x = large_ui(desktop) ? 22 : 16;
+        app_ctx->content_y = large_ui(desktop) ? 58 : 48;
+        app_ctx->content_width = window->width - (large_ui(desktop) ? 44 : 32);
+        app_ctx->content_height = window->height - (large_ui(desktop) ? 82 : 66);
+    }
     app_ctx->text_scale = window->app_slot == WINDOW_TERMINAL ? ui_terminal_text_scale(desktop) : ui_window_text_scale(desktop);
     app_ctx->line_step = window->app_slot == WINDOW_TERMINAL ? ui_terminal_line_step(desktop) : text_line_height(app_ctx->text_scale) + (large_ui(desktop) ? 10 : 7);
     app_ctx->large_ui = large_ui(desktop);
@@ -608,11 +517,6 @@ static struct rect surface_rect_to_screen(const struct window_state *window, con
 static struct rect cursor_rect(const struct desktop_state *desktop, int x, int y) {
     int size = large_ui(desktop) ? 24 : 18;
     return rect_from_bounds(x, y, 12, size);
-}
-
-static struct rect taskbar_rect(const struct desktop_state *desktop) {
-    int taskbar_height = ui_taskbar_height(desktop);
-    return rect_from_bounds(0, (int)desktop->screen_height - taskbar_height, (int)desktop->screen_width, taskbar_height);
 }
 
 static int point_in_icon(int px, int py, const struct desktop_icon *icon, int size) {
@@ -655,6 +559,28 @@ static int find_free_slot(struct desktop_state *d) {
     return 0; /* reuse slot 0 if all full */
 }
 
+static void normalize_z_order(struct desktop_state *desktop) {
+    int next[WINDOW_COUNT];
+    int n = 0;
+    int order;
+
+    for (order = 0; order < WINDOW_COUNT; ++order) {
+        int index = desktop->z_order[order];
+        if (index >= 0 && index < WINDOW_COUNT && !window_always_on_top(&desktop->windows[index])) {
+            next[n++] = index;
+        }
+    }
+    for (order = 0; order < WINDOW_COUNT; ++order) {
+        int index = desktop->z_order[order];
+        if (index >= 0 && index < WINDOW_COUNT && window_always_on_top(&desktop->windows[index])) {
+            next[n++] = index;
+        }
+    }
+    for (order = 0; order < WINDOW_COUNT && order < n; ++order) {
+        desktop->z_order[order] = next[order];
+    }
+}
+
 
 /* Which traffic-light control (if any) is under the cursor. Geometry mirrors
  * the buttons drawn in draw_window_frame so the hit-testing actually lines up. */
@@ -669,6 +595,8 @@ static int window_button_hit(const struct desktop_state *desktop, const struct w
     int x_min = xr - (gap * 3) - (large ? 8 : 0);
     int pad = 4;
 
+    if (window_frameless(window)) return WIN_BTN_NONE;
+
     if (point_in_rect(px, py, x_close - pad, by - pad, size + 2 * pad, size + 2 * pad)) {
         return WIN_BTN_CLOSE;
     }
@@ -682,6 +610,7 @@ static int window_button_hit(const struct desktop_state *desktop, const struct w
 }
 
 static int titlebar_hit(const struct desktop_state *desktop, const struct window_state *window, int px, int py) {
+    if (window_frameless(window)) return 0;
     return point_in_rect(px, py, window->x, window->y, window->width, ui_titlebar_height(desktop));
 }
 
@@ -690,7 +619,7 @@ static int resize_hit(const struct desktop_state *desktop, const struct window_s
     int corner_grip = large_ui(desktop) ? 26 : 20;
     int edges = 0;
 
-    if (!point_in_rect(px, py, window->x, window->y, window->width, window->height)) {
+    if (window_frameless(window) || !point_in_rect(px, py, window->x, window->y, window->width, window->height)) {
         return 0;
     }
     if (px < window->x + edge_grip) edges |= RESIZE_LEFT;
@@ -716,6 +645,11 @@ static int resize_hit(const struct desktop_state *desktop, const struct window_s
 }
 
 static void app_content_size_for_window(struct desktop_state *desktop, const struct window_state *window, int *cw, int *ch) {
+    if (window_frameless(window)) {
+        *cw = window->width;
+        *ch = window->height;
+        return;
+    }
     int ix = large_ui(desktop) ? 44 : 32;
     int iy = large_ui(desktop) ? 82 : 66;
     *cw = window->width - ix;
@@ -746,8 +680,8 @@ static void update_app_content_size_slot(struct desktop_state *desktop, int slot
 }
 
 static void clamp_window_to_screen(struct desktop_state *desktop, struct window_state *window) {
-    /* Allow windows to be dragged right up to the screen edge (they may cover
-     * the icon dock on purpose). Only the initial placement avoids the dock. */
+    /* Allow windows to be dragged close to the screen edge. Initial placement
+     * still avoids the shell work area. */
     if (window->x < 6) {
         window->x = 6;
     }
@@ -788,6 +722,7 @@ static void focus_window(struct desktop_state *desktop, int index) {
         desktop->z_order[order] = desktop->z_order[order + 1];
     }
     desktop->z_order[WINDOW_COUNT - 1] = index;
+    normalize_z_order(desktop);
 
     if (previous_focus >= 0 && previous_focus < WINDOW_COUNT && previous_focus != index) {
         mark_window_dirty(desktop, previous_focus);
@@ -816,39 +751,75 @@ static int topmost_window_at(struct desktop_state *desktop, int px, int py) {
 
 static void draw_window_frame(struct desktop_state *desktop, struct framebuffer *fb, const struct window_state *window, int focused) {
     int titlebar_height = ui_titlebar_height(desktop);
-    int button_y = window->y + (large_ui(desktop) ? 12 : 10);
-    int button_size = large_ui(desktop) ? 16 : 12;
+    int button_y = window->y + (large_ui(desktop) ? 13 : 10);
+    int button_size = large_ui(desktop) ? 14 : 11;
     int button_gap = large_ui(desktop) ? 24 : 18;
-    uint32_t border = focused ? 0x004c5f7cu : 0x002b384eu;
-    uint32_t panel_top = mix_color(window->body, 0x00ffffffu, 1u, 20u);
-    uint32_t panel_bottom = mix_color(window->body, 0x00000000u, 1u, 16u);
-    uint32_t title_top = mix_color(window->titlebar, 0x00ffffffu, 1u, 16u);
-    uint32_t title_bottom = window->titlebar;
-    int radius = large_ui(desktop) ? 18 : 12;
+    int icon_size = large_ui(desktop) ? 22 : 18;
+    int icon_x = window->x + (large_ui(desktop) ? 16 : 12);
+    int icon_y = window->y + (titlebar_height - icon_size) / 2;
+    int x_close = window->x + window->width - button_gap - (large_ui(desktop) ? 4 : 0);
+    int x_max = window->x + window->width - (button_gap * 2) - (large_ui(desktop) ? 6 : 0);
+    int x_min = window->x + window->width - (button_gap * 3) - (large_ui(desktop) ? 8 : 0);
+    uint32_t border = focused ? g_chrome_theme.border_hi : g_chrome_theme.border;
+    /* Flat, modern chrome: a single body colour and a single (slightly lighter)
+     * title colour — no vertical gradient ("dark wave") and no glossy top band.
+     * Passing highlight == fill suppresses draw_rounded_panel's gloss highlight. */
+    uint32_t body_fill  = g_chrome_theme.surface;
+    uint32_t title_fill = g_chrome_theme.surface_hi;
+    int radius = large_ui(desktop) ? 8 : 5;
 
-    draw_rounded_panel(fb, window->x, window->y, window->width, window->height, radius, panel_top, panel_bottom, border, 0x00ffffffu);
-    draw_rounded_panel(fb, window->x + 2, window->y + 2, window->width - 4, titlebar_height, radius > 2 ? radius - 2 : radius, title_top, title_bottom, mix_color(window->titlebar, 0x00ffffffu, 1u, 12u), 0x00ffffffu);
-    /* thin, subtle accent line separating the title bar from the body */
-    fb_fill_rect(fb, window->x + (large_ui(desktop) ? 16 : 12), window->y + titlebar_height, window->width - (large_ui(desktop) ? 32 : 24), 2, window->accent);
+    draw_rounded_panel(fb, window->x, window->y, window->width, window->height,
+                       radius, body_fill, body_fill, border, body_fill);
+    draw_rounded_panel(fb, window->x + 1, window->y + 1, window->width - 2, titlebar_height,
+                       radius > 2 ? radius - 2 : radius, title_fill, title_fill,
+                       title_fill, title_fill);
+    /* Thin, neutral hairline under the title bar (no accent glow). */
+    fb_fill_rect(fb, window->x + 1, window->y + titlebar_height, window->width - 2, 1,
+                 g_chrome_theme.border);
 
-    /* traffic-light controls (positions kept stable for hit-testing) */
-    draw_rounded_panel(fb, window->x + window->width - (button_gap * 3) - (large_ui(desktop) ? 8 : 0), button_y, button_size, button_size, button_size / 2, 0x00ffd166u, 0x00d99a2bu, 0x00ffe4a3u, 0x00ffffffu);
-    draw_rounded_panel(fb, window->x + window->width - (button_gap * 2) - (large_ui(desktop) ? 6 : 0), button_y, button_size, button_size, button_size / 2, 0x00ff9e64u, 0x00d06a30u, 0x00ffc9a3u, 0x00ffffffu);
-    draw_rounded_panel(fb, window->x + window->width - button_gap - (large_ui(desktop) ? 4 : 0), button_y, button_size, button_size, button_size / 2, 0x00ff6b81u, 0x00d23b52u, 0x00ffb3c0u, 0x00ffffffu);
-
-    draw_text(fb, window->x + (large_ui(desktop) ? 18 : 14), window->y + (titlebar_height - 16) / 2 + 1, window->title, focused ? 0x00f3f7fdu : 0x00b9c4d4u, 1);
-    if (!window->maximized && window->width > 80 && window->height > 80) {
-        int gx = window->x + window->width - (large_ui(desktop) ? 20 : 16);
-        int gy = window->y + window->height - (large_ui(desktop) ? 20 : 16);
-        uint32_t grip = focused ? mix_color(window->accent, 0x00ffffffu, 1u, 4u) : 0x00506476u;
-        fb_fill_rect(fb, gx + 10, gy + 4, 2, 10, grip);
-        fb_fill_rect(fb, gx + 6, gy + 8, 2, 6, grip);
-        fb_fill_rect(fb, gx + 2, gy + 12, 2, 2, grip);
+    /* App icon: dark rounded square with an accent outline and a monochrome
+     * glyph — matches the reference (no bright filled colour chip). */
+    {
+        uint32_t acc = window->accent ? window->accent : g_chrome_theme.accent;
+        uint32_t chip = mix_color(g_chrome_theme.surface, acc, 1u, 5u);
+        char icon_label[2];
+        /* Flat dark chip (top == bottom == highlight) with an accent outline. */
+        draw_rounded_panel(fb, icon_x, icon_y, icon_size, icon_size, 4,
+                           chip, chip,
+                           focused ? mix_color(acc, g_chrome_theme.surface, 1u, 3u)
+                                   : mix_color(acc, g_chrome_theme.surface, 1u, 1u),
+                           chip);
+        icon_label[0] = window->title && window->title[0] ? window->title[0] : 'A';
+        icon_label[1] = '\0';
+        draw_text(fb, icon_x + 6, icon_y + 2, icon_label,
+                  focused ? mix_color(acc, 0x00ffffffu, 1u, 3u) : g_chrome_theme.text_dim, 1);
     }
+
+    /* Thin monochrome line controls: minimize, maximize, close. */
+    {
+        uint32_t ctrl = focused ? g_chrome_theme.text : g_chrome_theme.text_dim;
+        int cyl = button_y + button_size / 2;
+        int i;
+        /* minimize: a horizontal dash */
+        fb_fill_rect(fb, x_min, cyl, button_size, 2, ctrl);
+        /* maximize: a hollow square */
+        fb_fill_rect(fb, x_max, button_y, button_size, 1, ctrl);
+        fb_fill_rect(fb, x_max, button_y + button_size - 1, button_size, 1, ctrl);
+        fb_fill_rect(fb, x_max, button_y, 1, button_size, ctrl);
+        fb_fill_rect(fb, x_max + button_size - 1, button_y, 1, button_size, ctrl);
+        /* close: an X */
+        for (i = 0; i < button_size; ++i) {
+            fb_fill_rect(fb, x_close + i, button_y + i, 2, 1, ctrl);
+            fb_fill_rect(fb, x_close + (button_size - 1 - i), button_y + i, 2, 1, ctrl);
+        }
+    }
+
+    draw_text(fb, icon_x + icon_size + 14, window->y + (titlebar_height - 16) / 2 + 1, window->title,
+              focused ? g_chrome_theme.text : g_chrome_theme.text_dim, 1);
 }
 
 static void draw_icon(struct desktop_state *desktop, struct framebuffer *fb, const struct desktop_icon *icon) {
-    int sz = ui_dock_icon_size(desktop);
+    int sz = ui_launcher_icon_size(desktop);
     int radius = large_ui(desktop) ? 13 : 10;
     uint32_t icon_top = mix_color(icon->color, 0x00ffffffu, 3u, 10u);
     uint32_t icon_bottom = mix_color(icon->color, 0x00000000u, 1u, 6u);
@@ -879,7 +850,7 @@ static void draw_icon(struct desktop_state *desktop, struct framebuffer *fb, con
 }
 
 static void draw_desktop_launcher_icon(struct desktop_state *desktop, struct framebuffer *fb, const struct desktop_icon *icon) {
-    int sz = ui_dock_icon_size(desktop);
+    int sz = ui_launcher_icon_size(desktop);
     int len = (int)string_length(icon->label);
     int max_chars = large_ui(desktop) ? 14 : 12;
     char label[16];
@@ -903,26 +874,6 @@ static void draw_desktop_launcher_icon(struct desktop_state *desktop, struct fra
     /* Small dark backing keeps labels readable on the gradient desktop. */
     fb_fill_rect(fb, label_x - 4, label_y - 2, label_w + 8, 18, 0x66000000u);
     draw_text(fb, label_x, label_y, label, 0x00eef6ffu, 1);
-}
-
-/* macOS-style dock: a centred, rounded, translucent bar holding the app
- * tiles, with running-app indicator dots. Replaces the old full-width
- * taskbar and left icon column. */
-static void draw_dock(struct desktop_state *desktop, struct framebuffer *fb) {
-    int dx, dy, dw, dh;
-    int i;
-
-    ui_dock_metrics(desktop, &dx, &dy, &dw, &dh);
-
-    draw_soft_shadow(fb, dx, dy, dw, dh, 22, 5, 0x000a0f18u);
-    draw_rounded_panel(fb, dx, dy, dw, dh, 22, 0x00263247u, 0x00161f30u, 0x003a4a66u, 0x00ffffffu);
-    /* glossy top highlight line */
-    fb_fill_rect(fb, dx + 14, dy + 2, dw - 28, 1, 0x00415574u);
-
-    for (i = 0; i < dock_icon_count(desktop); ++i) {
-        struct desktop_icon icon = dock_icon_at(desktop, i);
-        draw_icon(desktop, fb, &icon);
-    }
 }
 
 static void draw_cursor(struct desktop_state *desktop, struct framebuffer *fb, int x, int y) {
@@ -980,7 +931,7 @@ static void window_toggle_maximize(struct desktop_state *desktop, int index) {
     if (!w->maximized) {
         int maxw;
         int maxh;
-        int availw = (int)desktop->screen_width - ui_dock_width(desktop) - 24;
+        int availw = (int)desktop->screen_width - ui_left_work_area_inset(desktop) - 24;
         int availh = (int)desktop->screen_height - ui_taskbar_height(desktop) - 24;
 
         if (is_user_app_slot(index)) {
@@ -994,7 +945,7 @@ static void window_toggle_maximize(struct desktop_state *desktop, int index) {
         w->restore_height = w->height;
         w->width = maxw < availw ? maxw : availw;
         w->height = maxh < availh ? maxh : availh;
-        w->x = ui_dock_width(desktop) + 12;
+        w->x = ui_left_work_area_inset(desktop) + 12;
         w->y = 12;
         w->maximized = 1;
     } else {
@@ -1014,20 +965,116 @@ static void window_toggle_maximize(struct desktop_state *desktop, int index) {
 
 static void draw_shadow_block(struct framebuffer *fb, int x, int y, int width, int height);
 
+/* A faint diagonal light streak for the desktop backdrop (opaque, but only a
+ * touch lighter than the background — evokes the reference's soft topo glow). */
+static void draw_glow_streak(struct framebuffer *fb, int x0, int y0, int len, int thick, uint32_t c) {
+    int i;
+    for (i = 0; i < len; ++i) {
+        fb_fill_rect(fb, x0 + i, y0 + (i * 5) / 8, 1, thick, c);
+    }
+}
+
+int desktop_set_wallpaper(struct desktop_state *desktop, const uint32_t *src, int src_w, int src_h) {
+    int sw, sh, x, y;
+
+    if (desktop == 0 || src == 0 || src_w <= 0 || src_h <= 0) {
+        return -1;
+    }
+    sw = (int)desktop->screen_width;
+    sh = (int)desktop->screen_height;
+    if (sw <= 0 || sh <= 0 || (uint32_t)sw > DESKTOP_MAX_WIDTH || (uint32_t)sh > DESKTOP_MAX_HEIGHT) {
+        return -1;
+    }
+    /* Nearest-neighbour scale the source image to fill the screen. */
+    for (y = 0; y < sh; ++y) {
+        int syi = (int)((long)y * src_h / sh);
+        const uint32_t *srow = src + (long)syi * src_w;
+        uint32_t *drow = desktop->wallpaper_storage + (long)y * sw;
+        for (x = 0; x < sw; ++x) {
+            int sxi = (int)((long)x * src_w / sw);
+            drow[x] = srow[sxi] & 0x00ffffffu;
+        }
+    }
+    desktop->wallpaper_active = 1;
+    desktop->background_dirty = 1;
+    /* Repaint the whole screen: background_dirty alone only re-renders the
+     * offscreen background_fb; without a full-screen dirty rect the compositor
+     * would blit just a sub-region and leave the old backdrop on screen. */
+    mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, (int)desktop->screen_height));
+    return 0;
+}
+
 static void render_background_surface(struct desktop_state *desktop) {
     struct framebuffer *fb = &desktop->background_fb;
     int order;
+    int x;
+    int y;
+
+    int w = (int)desktop->screen_width;
+    int sx;
 
     fb_reset_clip(fb);
-    draw_gradient_background(fb, 0x000b1120u, 0x00162338u);
-    draw_text(fb, large_ui(desktop) ? 42 : 34, large_ui(desktop) ? 30 : 28, "VIBEOS DESKTOP", 0x00dfe8f5u, 2);
+
+    if (desktop->wallpaper_active) {
+        /* Wallpaper backdrop: copy the screen-sized image straight into the
+         * background framebuffer (both are screen_width x screen_height). */
+        memcpy(fb->base, desktop->wallpaper_storage,
+               (size_t)w * (size_t)desktop->screen_height * sizeof(uint32_t));
+    } else {
+        /* Brighter, calmer procedural backdrop: lighter at the top, gently
+         * deeper at the bottom — no near-black band. */
+        draw_gradient_background(fb, mix_color(g_chrome_theme.bg, g_chrome_theme.surface, 1u, 4u),
+                                 mix_color(g_chrome_theme.bg, 0x00000000u, 1u, 8u));
+
+        /* Soft diagonal glow streaks (very subtle) for depth, upper-left → centre. */
+        {
+            uint32_t glow = mix_color(g_chrome_theme.bg, g_chrome_theme.surface_hi, 1u, 2u);
+            int span = w * 2 / 3;
+            draw_glow_streak(fb, -40, 70, span, 60, glow);
+            draw_glow_streak(fb, -40, 150, span, 30, glow);
+            draw_glow_streak(fb, w / 6, 60, span / 2, 24, glow);
+        }
+
+        /* Faint grid (fainter and wider than before). */
+        for (x = 0; x < w; x += 56) {
+            fb_fill_rect(fb, x, 54, 1, (int)desktop->screen_height - 54, mix_color(g_chrome_theme.surface, g_chrome_theme.bg, 1u, 7u));
+        }
+        for (y = 54; y < (int)desktop->screen_height; y += 56) {
+            fb_fill_rect(fb, 0, y, w, 1, mix_color(g_chrome_theme.surface, g_chrome_theme.bg, 1u, 8u));
+        }
+    }
+
+    /* ---- Top bar: thin, dense, right-aligned indicators with a sparkline. ---- */
+    fb_fill_rect(fb, 0, 0, w, 54, mix_color(g_chrome_theme.surface, g_chrome_theme.bg, 1u, 3u));
+    fb_fill_rect(fb, 0, 53, w, 1, g_chrome_theme.border);
+    draw_text(fb, 28, 20, "VibeOS", g_chrome_theme.text, 1);
+    fb_fill_rect(fb, 132, 16, 1, 22, g_chrome_theme.border);
+    draw_text(fb, 148, 20, "DESKTOP", g_chrome_theme.text_dim, 1);
+
+    sx = w - 360;
+    {
+        static const int hs[16] = {4, 6, 5, 8, 6, 10, 7, 9, 12, 8, 6, 9, 11, 7, 5, 8};
+        int i;
+        for (i = 0; i < 16; ++i) {
+            fb_fill_rect(fb, sx + i * 3, 31 - hs[i], 2, hs[i],
+                         mix_color(g_chrome_theme.accent, g_chrome_theme.surface_hi, 1u, 2u));
+        }
+    }
+    sx += 16 * 3 + 16;
+    draw_text(fb, sx, 20, "NET 10.0.2.16", g_chrome_theme.text_dim, 1);
+    sx += 13 * 8 + 14;
+    fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
+    sx += 12;
+    draw_text(fb, sx, 20, "CPU 12%", g_chrome_theme.text, 1);
+    sx += 7 * 8 + 14;
+    fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
+    sx += 12;
+    draw_text(fb, sx, 20, "MEM 42%", g_chrome_theme.text, 1);
 
     for (order = 0; order < desktop->launcher_count; ++order) {
         struct desktop_icon icon = launcher_icon_at(desktop, order);
         draw_desktop_launcher_icon(desktop, fb, &icon);
     }
-
-    draw_dock(desktop, fb);
 
     /* Window shadows are NOT baked in here anymore; they are composited live
      * in compose_scene_rect so the background can stay static during drags. */
@@ -1054,7 +1101,9 @@ static void render_window_surface(struct desktop_state *desktop, int index) {
     app_ctx.fb = fb;
     fb_reset_clip(fb);
     fb_fill_rect(fb, 0, 0, window->width, window->height, WINDOW_TRANSPARENT_KEY);
-    draw_window_frame(desktop, fb, &local_window, focused);
+    if (!window_frameless(window)) {
+        draw_window_frame(desktop, fb, &local_window, focused);
+    }
 
     if (is_user_app_slot(index)) {
         /* Content comes from the userspace app's last-presented pixel buffer. */
@@ -1106,7 +1155,9 @@ static void blit_window_surface_region(struct framebuffer *dest, const struct fr
 }
 
 static void draw_shadow_block(struct framebuffer *fb, int x, int y, int width, int height) {
-    draw_soft_shadow(fb, x, y, width, height, 12, WINDOW_SHADOW_SPREAD, 0x0009131eu);
+    /* Soft, subtle shadow: only marginally darker than the desktop so windows
+     * float without a hard black outline. Radius matches the window corners. */
+    draw_soft_shadow(fb, x, y, width, height, 8, WINDOW_SHADOW_SPREAD, 0x000e1828u);
 }
 
 /* Context-menu entries are built dynamically: the standard Show/Hide (plus
@@ -1217,13 +1268,15 @@ static void draw_context_menu(struct desktop_state *desktop, struct framebuffer 
     count = build_context_entries(desktop, desktop->context_menu_window, entries);
     r = context_menu_rect(desktop);
     draw_soft_shadow(fb, r.x, r.y, r.width, r.height, 12, 5, 0x00070b12u);
-    draw_rounded_panel(fb, r.x, r.y, r.width, r.height, 10, 0x0029364du, 0x00182335u, 0x00425370u, 0x00ffffffu);
+    draw_rounded_panel(fb, r.x, r.y, r.width, r.height, 10,
+                       g_chrome_theme.surface_hi, g_chrome_theme.surface,
+                       g_chrome_theme.border_hi, 0x00ffffffu);
     y = r.y + 12;
     for (i = 0; i < count; ++i) {
-        uint32_t color = 0x00c7d3e2u;
-        if (entries[i].kind == CTX_SHOW) color = 0x00edf6ffu;
-        else if (entries[i].kind == CTX_QUIT_APP) color = 0x00ff9aa8u;
-        else if (entries[i].kind == CTX_APP_KERNEL || entries[i].kind == CTX_APP_USER) color = 0x008fe0c8u;
+        uint32_t color = g_chrome_theme.text_dim;
+        if (entries[i].kind == CTX_SHOW) color = g_chrome_theme.text;
+        else if (entries[i].kind == CTX_QUIT_APP) color = g_chrome_theme.danger;
+        else if (entries[i].kind == CTX_APP_KERNEL || entries[i].kind == CTX_APP_USER) color = g_chrome_theme.accent;
         draw_text(fb, r.x + 14, y, entries[i].label, color, 1);
         y += 22;
     }
@@ -1289,47 +1342,29 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
     int info_height = clamp_value((int)screen_height / 3, 250, 320);
     int files_width = clamp_value((int)screen_width / 4, 300, 420);
     int files_height = clamp_value((int)screen_height / 3, 240, 320);
-    int terminal_width = clamp_value((int)screen_width - 520, 640, 1180);
-    int terminal_height = clamp_value((int)screen_height - 360, 330, 700);
-    int tasks_width = clamp_value((int)screen_width / 3, 460, 640);
-    int tasks_height = clamp_value((int)screen_height / 2, 340, 560);
+    int terminal_width = clamp_value((int)screen_width / 2 - 40, 620, 720);
+    int terminal_height = clamp_value((int)screen_height / 2 - 30, 360, 440);
+    int tasks_width = clamp_value((int)screen_width / 2 - 40, 560, 720);
+    int tasks_height = clamp_value((int)screen_height / 2 - 80, 340, 430);
     int right_margin = screen_width >= 1600u ? 120 : 60;
     int top_margin = screen_height >= 1000u ? 104 : 88;
-    size_t i;
 
-    serial_write("DESKTOP_INIT: screen=");
-    serial_write_hex_u64(screen_width);
-    serial_write("x");
-    serial_write_hex_u64(screen_height);
-    serial_write("\n");
-
-    for (i = 0; i < 3; ++i) {
-        struct desktop_icon icon = desktop_icon_at_size((int)i, screen_width, screen_height);
-        serial_write("ICON[");
-        serial_write_hex_u64(i);
-        serial_write("]: x=");
-        serial_write_hex_u64(icon.x);
-        serial_write(" y=");
-        serial_write_hex_u64(icon.y);
-        serial_write(" label=");
-        serial_write(icon.label);
-        serial_write("\n");
-    }
+    desktop_theme_load();
 
     desktop->screen_width = screen_width;
     desktop->screen_height = screen_height;
-    /* Cohesive dark "glass" theme: all windows share a dark slate body and
-     * header, each keeping its own accent hue. */
-    desktop->windows[WINDOW_INFO] = (struct window_state){"SYSTEM", (screen_width >= 1920u || screen_height >= 1080u) ? 232 : 168, top_margin, info_width, info_height, 0x001a2233u, 0x00222d42u, 0x0035d0b9u, WINDOW_INFO, 1, 0, 0, 0, 0, 0};
-    desktop->windows[WINDOW_FILES] = (struct window_state){"FILES", (int)screen_width - files_width - right_margin, top_margin + 36, files_width, files_height, 0x001a2233u, 0x00222d42u, 0x00f5b15au, WINDOW_FILES, 1, 0, 0, 0, 0, 0};
-    desktop->windows[WINDOW_TERMINAL] = (struct window_state){"TERMINAL", clamp_value(((int)screen_width - terminal_width) / 2 + 40, 220, 340), clamp_value((int)screen_height / 5, 160, 240), terminal_width, terminal_height, 0x000e1622u, 0x00222d42u, 0x0064f2ccu, WINDOW_TERMINAL, 0, 0, 0, 0, 0, 0};
-    desktop->windows[WINDOW_TASK_MANAGER] = (struct window_state){"TASK MANAGER", clamp_value((int)screen_width - tasks_width - 150, 260, 1320), clamp_value(top_margin + 92, 160, 320), tasks_width, tasks_height, 0x001a2233u, 0x00222d42u, 0x00ef7f7fu, WINDOW_TASK_MANAGER, 0, 0, 0, 0, 0, 0};
+    /* Kernel demo windows stay available, but the initial scene is now the
+     * desktop-shell layout from the design reference. */
+    desktop->windows[WINDOW_INFO] = (struct window_state){"SYSTEM", (screen_width >= 1920u || screen_height >= 1080u) ? 232 : 168, top_margin, info_width, info_height, 0x001a2233u, 0x00222d42u, 0x0035d0b9u, 0, WINDOW_INFO, 0, 0, 0, 0, 0, 0};
+    desktop->windows[WINDOW_FILES] = (struct window_state){"FILES", (int)screen_width - files_width - right_margin, top_margin + 36, files_width, files_height, 0x001a2233u, 0x00222d42u, 0x00f5b15au, 0, WINDOW_FILES, 0, 0, 0, 0, 0, 0};
+    desktop->windows[WINDOW_TERMINAL] = (struct window_state){"TERMINAL", (int)screen_width - terminal_width - right_margin, top_margin, terminal_width, terminal_height, 0x000e1622u, 0x00222d42u, 0x0064f2ccu, 0, WINDOW_TERMINAL, 0, 0, 0, 0, 0, 0};
+    desktop->windows[WINDOW_TASK_MANAGER] = (struct window_state){"TASK MANAGER", (int)screen_width - tasks_width - right_margin, top_margin + terminal_height + 22, tasks_width, tasks_height, 0x001a2233u, 0x00222d42u, 0x00ef7f7fu, 0, WINDOW_TASK_MANAGER, 0, 0, 0, 0, 0, 0};
     /* Userspace app windows: hidden until an app creates them. */
     {
         int i;
         for (i = 0; i < MAX_USER_APPS; i++) {
             int win_idx = WINDOW_APP_FIRST + i;
-            desktop->windows[win_idx] = (struct window_state){"APP", 320 + i * 24, 160 + i * 24, 480, 320, 0x001a2233u, 0x00222d42u, 0x008f7bf0u, (uint8_t)win_idx, 0, 0, 0, 0, 0, 0};
+            desktop->windows[win_idx] = (struct window_state){"APP", 320 + i * 24, 160 + i * 24, 480, 320, 0x001a2233u, 0x00222d42u, 0x008f7bf0u, 0, (uint8_t)win_idx, 0, 0, 0, 0, 0, 0};
             desktop->user_apps[i].created = 0;
             desktop->user_apps[i].pid = 0;
             desktop->user_apps[i].content_width = 0;
@@ -1363,7 +1398,7 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
             desktop->z_order[4 + i] = WINDOW_APP_FIRST + i;
         }
     }
-    desktop->focused_window = WINDOW_FILES;
+    desktop->focused_window = WINDOW_TERMINAL;
     desktop->dragging_window = -1;
     desktop->drag_offset_x = 0;
     desktop->drag_offset_y = 0;
@@ -1431,8 +1466,13 @@ static void app_enqueue_event_slot(struct desktop_state *desktop, int slot, uint
 /* Content-area origin of a user-app window, in screen coordinates. */
 static void app_content_origin_for_window(struct desktop_state *desktop, int win_idx, int *ox, int *oy) {
     struct window_state *w = &desktop->windows[win_idx];
-    *ox = w->x + (large_ui(desktop) ? 22 : 16);
-    *oy = w->y + (large_ui(desktop) ? 58 : 48);
+    if (window_frameless(w)) {
+        *ox = w->x;
+        *oy = w->y;
+    } else {
+        *ox = w->x + (large_ui(desktop) ? 22 : 16);
+        *oy = w->y + (large_ui(desktop) ? 58 : 48);
+    }
 }
 
 static void apply_window_resize(struct desktop_state *desktop, int index, int mouse_x, int mouse_y) {
@@ -1481,8 +1521,8 @@ static void apply_window_resize(struct desktop_state *desktop, int index, int mo
         if (desktop->resize_edges & RESIZE_TOP) y -= max_h - h;
         h = max_h;
     }
-    if (x < ui_dock_width(desktop) + 6) {
-        int delta = ui_dock_width(desktop) + 6 - x;
+    if (x < ui_left_work_area_inset(desktop) + 6) {
+        int delta = ui_left_work_area_inset(desktop) + 6 - x;
         x += delta;
         if (desktop->resize_edges & RESIZE_LEFT) w -= delta;
     }
@@ -1521,20 +1561,6 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
     desktop->mouse_y = mouse->y;
     desktop->mouse_buttons = mouse->buttons;
 
-    if (mouse->right_pressed) {
-        for (i = 0; i < (size_t)dock_icon_count(desktop); ++i) {
-            struct desktop_icon icon = dock_icon_at(desktop, (int)i);
-            if (point_in_icon(mouse->x, mouse->y, &icon, ui_dock_icon_size(desktop))) {
-                desktop->context_menu_open = 1;
-                desktop->context_menu_x = mouse->x;
-                desktop->context_menu_y = mouse->y;
-                desktop->context_menu_window = icon.window_index;
-                mark_dirty_rect(desktop, context_menu_rect(desktop));
-                return;
-            }
-        }
-    }
-
     if (desktop->resizing_window >= 0 && (mouse->buttons & 0x01u) != 0u) {
         apply_window_resize(desktop, desktop->resizing_window, mouse->x, mouse->y);
         return;
@@ -1542,7 +1568,7 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
 
     if (desktop->dragging_launcher >= 0 && (mouse->buttons & 0x01u) != 0u) {
         int li = desktop->dragging_launcher;
-        int sz = ui_dock_icon_size(desktop);
+        int sz = ui_launcher_icon_size(desktop);
         struct rect before = rect_from_bounds(desktop->launcher_x[li] - 8, desktop->launcher_y[li] - 8, sz + 80, sz + 34);
         desktop->launcher_x[li] = mouse->x - desktop->launcher_drag_offset_x;
         desktop->launcher_y[li] = mouse->y - desktop->launcher_drag_offset_y;
@@ -1612,7 +1638,7 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
                         app_enqueue_event_slot(desktop, slot_index(menu_window), WINSYS_EVENT_MENU_ACTION, 0, 0, 0, e->action);
                     }
                 }
-                mark_dock_dirty(desktop);
+                
             }
             return;
         }
@@ -1631,13 +1657,13 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
                 if (btn == WIN_BTN_CLOSE && is_user_app_slot(index) && desktop->user_apps[slot_index(index)].created) {
                     app_enqueue_event_slot(desktop, slot_index(index), WINSYS_EVENT_CLOSE, 0, 0, 0, 0);
                 }
-                /* Minimise and close both hide the window; reopen from its dock
-                 * icon. Repaint the dock so the running-dot updates. */
+                /* Minimise and close hide the window. Userspace shell policy
+                 * decides how hidden windows are surfaced again. */
                 window->visible = 0;
                 if (desktop->focused_window == index) {
                     desktop->focused_window = -1;
                 }
-                mark_dock_dirty(desktop);
+                
                 mark_dirty_rect(desktop, before);
             } else if (btn == WIN_BTN_MAX) {
                 window_toggle_maximize(desktop, index);
@@ -1663,7 +1689,7 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
         } else {
             for (i = 0; i < (size_t)desktop->launcher_count; ++i) {
                 struct desktop_icon icon = launcher_icon_at(desktop, (int)i);
-                if (point_in_icon(mouse->x, mouse->y, &icon, ui_dock_icon_size(desktop))) {
+                if (point_in_icon(mouse->x, mouse->y, &icon, ui_launcher_icon_size(desktop))) {
                     desktop->dragging_launcher = (int)i;
                     desktop->launcher_drag_offset_x = mouse->x - icon.x;
                     desktop->launcher_drag_offset_y = mouse->y - icon.y;
@@ -1674,21 +1700,6 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
                 }
             }
 
-            for (i = 0; i < (size_t)dock_icon_count(desktop); ++i) {
-                struct desktop_icon icon = dock_icon_at(desktop, (int)i);
-
-                if (point_in_icon(mouse->x, mouse->y, &icon, ui_dock_icon_size(desktop))) {
-                    struct window_state *window = &desktop->windows[icon.window_index];
-                    window->visible = 1;
-                    mark_window_dirty(desktop, icon.window_index);
-                    mark_dock_dirty(desktop);
-                    focus_window(desktop, icon.window_index);
-                    if (icon.window_index < DESKTOP_ICON_COUNT) {
-                        app_activate(&desktop->apps[window->app_slot]);
-                    }
-                    break;
-                }
-            }
         }
     }
 
@@ -1776,7 +1787,7 @@ void desktop_poll_apps(struct desktop_state *desktop) {
 
 	/* A kernel app whose owning process (e.g. the terminal's /bin/sh) has died
 	 * gets its window cleanly closed here. The app drops its session state and
-	 * only restarts on an explicit user gesture (dock click / context menu). */
+	 * only restarts on an explicit user gesture. */
 	for (i = 0; i < DESKTOP_ICON_COUNT; ++i) {
 		struct window_state *window = &desktop->windows[i];
 		uint32_t owner = app_window_owner_pid(&desktop->apps[window->app_slot]);
@@ -1789,7 +1800,7 @@ void desktop_poll_apps(struct desktop_state *desktop) {
 					desktop->focused_window = -1;
 				}
 				mark_dirty_rect(desktop, before);
-				mark_dock_dirty(desktop);
+				
 			}
 			app_window_closed(&desktop->apps[window->app_slot]);
 		}
@@ -1856,16 +1867,28 @@ int desktop_take_dirty_rect(struct desktop_state *desktop, struct rect *rect) {
 
 /* ---- Window server (userspace GUI apps) ---- */
 
-int desktop_app_create(struct desktop_state *desktop, uint32_t pid, const char *title, int width, int height) {
+int desktop_app_create_ex(struct desktop_state *desktop, uint32_t pid, const struct winsys_window_options *options) {
     int slot;
     int win_idx;
     struct window_state *w;
     int frame_w;
     int frame_h;
+    int width;
+    int height;
+    uint32_t flags;
     size_t i;
 
-    if (width < 80) width = 80;
-    if (height < 60) height = 60;
+    if (options == 0) return -1;
+    width = options->width;
+    height = options->height;
+    flags = options->flags;
+
+    if (width < 16) width = 16;
+    if (height < 16) height = 16;
+    if ((flags & WINSYS_WINDOW_FRAMELESS) == 0u) {
+        if (width < 80) width = 80;
+        if (height < 60) height = 60;
+    }
     if (width > (int)WINDOW_APP_CONTENT_MAX_WIDTH) width = (int)WINDOW_APP_CONTENT_MAX_WIDTH;
     if (height > (int)WINDOW_APP_CONTENT_MAX_HEIGHT) height = (int)WINDOW_APP_CONTENT_MAX_HEIGHT;
 
@@ -1876,23 +1899,36 @@ int desktop_app_create(struct desktop_state *desktop, uint32_t pid, const char *
     w = &desktop->windows[win_idx];
 
     /* Window size = content size + frame insets (matches build_app_draw_context). */
-    frame_w = width + (large_ui(desktop) ? 44 : 32);
-    frame_h = height + (large_ui(desktop) ? 82 : 66);
-
-    for (i = 0; i + 1 < sizeof(desktop->user_apps[slot].title) && title && title[i]; ++i) {
-        desktop->user_apps[slot].title[i] = title[i];
+    if ((flags & WINSYS_WINDOW_FRAMELESS) != 0u) {
+        frame_w = width;
+        frame_h = height;
+    } else {
+        frame_w = width + (large_ui(desktop) ? 44 : 32);
+        frame_h = height + (large_ui(desktop) ? 82 : 66);
     }
-    desktop->user_apps[slot].title[(title) ? i : 0] = '\0';
+
+    for (i = 0; i + 1 < sizeof(desktop->user_apps[slot].title) && options->title && options->title[i]; ++i) {
+        desktop->user_apps[slot].title[i] = options->title[i];
+    }
+    desktop->user_apps[slot].title[(options->title) ? i : 0] = '\0';
 
     w->title = desktop->user_apps[slot].title;
     w->width = frame_w;
     w->height = frame_h;
-    w->x = (int)desktop->screen_width / 2 - frame_w / 2 + slot * 24;
-    w->y = (int)desktop->screen_height / 2 - frame_h / 2 + slot * 24;
+    w->flags = flags;
+    if ((flags & WINSYS_WINDOW_POSITIONED) != 0u) {
+        w->x = options->x;
+        w->y = options->y;
+    } else {
+        w->x = (int)desktop->screen_width / 2 - frame_w / 2 + slot * 24;
+        w->y = (int)desktop->screen_height / 2 - frame_h / 2 + slot * 24;
+    }
     w->visible = 1;
     w->maximized = 0;
-    if (w->x < ui_dock_width(desktop) + 16) w->x = ui_dock_width(desktop) + 16;
-    if (w->y < 16) w->y = 16;
+    if ((flags & WINSYS_WINDOW_POSITIONED) == 0u) {
+        if (w->x < ui_left_work_area_inset(desktop) + 16) w->x = ui_left_work_area_inset(desktop) + 16;
+        if (w->y < 16) w->y = 16;
+    }
 
     desktop->user_apps[slot].created = 1;
     desktop->user_apps[slot].pid = pid;
@@ -1905,10 +1941,21 @@ int desktop_app_create(struct desktop_state *desktop, uint32_t pid, const char *
     fb_init(&desktop->window_fbs[win_idx], (uintptr_t)desktop->user_apps[slot].surface_storage, w->width, w->height, w->width * 4u, 32u);
 
     focus_window(desktop, win_idx);
-    mark_dock_dirty(desktop);
+    
     mark_window_dirty(desktop, win_idx);
     mark_dirty_rect(desktop, window_rect(w));
     return win_idx;
+}
+
+int desktop_app_create(struct desktop_state *desktop, uint32_t pid, const char *title, int width, int height) {
+    struct winsys_window_options options;
+    options.title = title;
+    options.width = width;
+    options.height = height;
+    options.flags = 0;
+    options.x = 0;
+    options.y = 0;
+    return desktop_app_create_ex(desktop, pid, &options);
 }
 
 int desktop_app_present(struct desktop_state *desktop, uint32_t pid, int win_id, const uint32_t *src, int src_w, int src_h) {
@@ -2011,7 +2058,6 @@ void desktop_app_close_for_pid(struct desktop_state *desktop, uint32_t pid) {
     int win_idx;
     struct window_state *w;
     struct rect before;
-    struct rect old_dock;
 
     if (desktop == 0) return;
 
@@ -2021,7 +2067,6 @@ void desktop_app_close_for_pid(struct desktop_state *desktop, uint32_t pid) {
     win_idx = WINDOW_APP_FIRST + slot;
     w = &desktop->windows[win_idx];
     before = window_rect(w);
-    old_dock = dock_dirty_rect(desktop);
     w->visible = 0;
     desktop->user_apps[slot].created = 0;
     desktop->user_apps[slot].pid = 0;
@@ -2033,7 +2078,17 @@ void desktop_app_close_for_pid(struct desktop_state *desktop, uint32_t pid) {
     if (desktop->focused_window == win_idx) {
         desktop->focused_window = -1;
     }
-    mark_dirty_rect(desktop, old_dock);
-    mark_dock_dirty(desktop);
     mark_dirty_rect(desktop, before);
+}
+
+int desktop_shell_dock_active(const struct desktop_state *desktop) {
+    int slot;
+    if (desktop == 0) return 0;
+    for (slot = 0; slot < MAX_USER_APPS; ++slot) {
+        if (desktop->user_apps[slot].created &&
+            strcmp(desktop->user_apps[slot].title, "Dock") == 0) {
+            return 1;
+        }
+    }
+    return 0;
 }

@@ -1374,6 +1374,29 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         return 0;
     }
 
+    if (number == SYS_WINDOW_CREATE_EX) {
+        struct desktop_state *d = desktop_active();
+        const struct winsys_window_options *user_options =
+            (const struct winsys_window_options *)(uintptr_t)frame->rdi;
+        struct winsys_window_options options;
+        char title[64];
+        if (d == 0) {
+            frame->rax = (uint64_t)(-SYSCALL_EPERM);
+            return 0;
+        }
+        if (user_options == 0) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+            return 0;
+        }
+        options = *user_options;
+        if (!process_copy_user_string(title, sizeof(title), options.title)) {
+            title[0] = '\0';
+        }
+        options.title = title;
+        frame->rax = (uint64_t)(int64_t)desktop_app_create_ex(d, process->pid, &options);
+        return 0;
+    }
+
     if (number == SYS_WINDOW_PRESENT) {
         /* rdi = win id, rsi = pixel buffer (XRGB), rdx = w, r10 = h. */
         struct desktop_state *d = desktop_active();
@@ -1394,6 +1417,21 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             g_current_process = 0;
             return 1;
         }
+        return 0;
+    }
+
+    if (number == SYS_SET_WALLPAPER) {
+        /* rdi = pixel buffer (XRGB, user ptr), rsi = width, rdx = height.
+         * The calling app's address space is active, so the buffer is directly
+         * readable; desktop_set_wallpaper scales it into kernel storage. */
+        struct desktop_state *d = desktop_active();
+        if (d == 0) {
+            frame->rax = (uint64_t)(-SYSCALL_EPERM);
+            return 0;
+        }
+        frame->rax = (uint64_t)(int64_t)desktop_set_wallpaper(d,
+            (const uint32_t *)(uintptr_t)frame->rdi, (int)frame->rsi, (int)frame->rdx);
+        d->background_dirty = 1;
         return 0;
     }
 

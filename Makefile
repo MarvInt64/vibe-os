@@ -138,20 +138,31 @@ apps: $(DISK_IMG) $(LIBC_A)
 		build/user/taskmgr_task_manager.o build/user/vexui.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/taskmgr.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/taskmgr.elf /bin/taskmgr
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/dock/dock.cpp -o build/user/dock.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/dock.elf \
+		$(LIBC_CRT0) build/user/dock.o build/user/vexui.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/dock.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/dock.elf /bin/dock
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/browser -c user/browser/weblayout.c  -o build/user/weblayout.o
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/browser -c user/browser/dom.c        -o build/user/dom.o
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/browser -c user/browser/css.c        -o build/user/css.o
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/browser -Ithird_party/stb -c user/browser/appfont.c   -o build/user/appfont.o
-	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/browser -Ithird_party/stb -c user/browser/appimage.c  -o build/user/appimage.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/libimage -Ithird_party/stb -c user/libimage/image.c  -o build/user/image.o
 	$(CC)  $(ASFLAGS)                             -c user/browser/font_data.S  -o build/user/font_data.o
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -c user/browser/layout_engine.cpp -o build/user/browser_layout_engine.o
-	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -c user/browser/browser.cpp       -o build/user/browser_main.o
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -Iuser/libimage -c user/browser/browser.cpp       -o build/user/browser_main.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/browser.elf \
 		$(LIBC_CRT0) build/user/browser_main.o build/user/browser_layout_engine.o \
 		build/user/weblayout.o build/user/dom.o build/user/css.o \
-		build/user/appfont.o build/user/appimage.o build/user/font_data.o $(LIBC_A)
+		build/user/appfont.o build/user/image.o build/user/font_data.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/browser.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/browser.elf /bin/browser
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/libimage -c user/wallpaper/wallpaper.c -o build/user/wallpaper.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/wallpaper.elf \
+		$(LIBC_CRT0) build/user/wallpaper.o build/user/image.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/wallpaper.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/wallpaper.elf /bin/wallpaper
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/wallpapers/default.png /wallpapers/default.png
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/hello.c -o build/user/hello.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/hello.elf $(LIBC_CRT0) build/user/hello.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/hello.elf

@@ -12,6 +12,20 @@
 #define WINSYS_MAX_WIDTH  900
 #define WINSYS_MAX_HEIGHT 640
 
+#define WINSYS_WINDOW_FRAMELESS 0x00000001u
+#define WINSYS_WINDOW_NO_DOCK   0x00000002u
+#define WINSYS_WINDOW_POSITIONED 0x00000004u
+#define WINSYS_WINDOW_ALWAYS_ON_TOP 0x00000008u
+
+struct winsys_window_options {
+    const char *title;
+    int32_t width;
+    int32_t height;
+    uint32_t flags;
+    int32_t x;
+    int32_t y;
+};
+
 /* Event types delivered to the focused window. */
 enum winsys_event_type {
     WINSYS_EVENT_NONE = 0,

@@ -44,7 +44,9 @@ enum {
     SYS_NET_HTTPS_GET = 31,
     SYS_JOURNAL_READ = 32,
     SYS_LOG = 33,
-    SYS_THREAD_CREATE = 34
+    SYS_THREAD_CREATE = 34,
+    SYS_WINDOW_CREATE_EX = 35,
+    SYS_SET_WALLPAPER = 36
 };
 
 static inline long __sc0(long n) {

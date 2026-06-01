@@ -29,13 +29,14 @@
 
 #include "browser.h"
 #include "appfont.h"
-#include "appimage.h"
+#include "image.h"
 #include "dom.h"
 #include "../vexui_font.h"
 
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
+#include <sys/syscall.h>
 
 /* The browser's identity, sent as the User-Agent on every request. The kernel
  * net layer stays generic and forwards whatever the app provides. */
@@ -68,7 +69,28 @@ Browser::Browser() {
 /* ---- entry point ------------------------------------------------------- */
 
 void __attribute__((noreturn)) Browser::run() {
-    win_id_ = vos_window_create("Browser", win_w_, win_h_);
+    vos_window_options opts{};
+    uint32_t mode = (uint32_t)__sc2(SYS_DISPLAY_MODE, 0, 0);
+    int screen_w = (int)((mode >> 16) & 0xffffu);
+    int screen_h = (int)(mode & 0xffffu);
+    int x = 96;
+    int y = 220;
+
+    if (screen_w > 0 && screen_h > 0) {
+        if (x + win_w_ > screen_w) x = screen_w - win_w_ - 28;
+        if (y + win_h_ > screen_h) y = screen_h - win_h_ - 132;
+        if (x < 20) x = 20;
+        if (y < 72) y = 72;
+    }
+
+    opts.title = "Browser";
+    opts.width = win_w_;
+    opts.height = win_h_;
+    opts.flags = VOS_WINDOW_POSITIONED;
+    opts.x = x;
+    opts.y = y;
+
+    win_id_ = vos_window_create_ex(&opts);
     if (win_id_ < 0) {
         vos_log(VOS_LOG_APP, "browser: no window server — start the desktop with 'gui'");
         exit(1);
@@ -375,6 +397,8 @@ void Browser::navigate(const char *url) {
     progress_phase_ = 0;
     scroll_ = 0;        /* new page starts at the top */
     editing_ = false;   /* UI thread: deselect the URL bar for the load */
+    focused_field_ = -1;
+    fields_seeded_ = false;
     fetch_state_.store((int)FetchState::Fetching, std::memory_order_release);
 
     /* Reap a previous finished worker handle before reusing it. */
@@ -538,6 +562,7 @@ void Browser::load_url(const char *start_url) {
          * so the page is readable at once instead of waiting for every image. */
         images_clear();
         layout_current();
+        seed_fields();   /* capture the form's initial field values for this page */
         __builtin_free(raw);
         push_history(cur);
         __builtin_snprintf(status_,sizeof status_,
@@ -556,7 +581,7 @@ void Browser::load_url(const char *start_url) {
 
 void Browser::images_clear() {
     for (int i = 0; i < n_imgs_; ++i)
-        if (images_[i].px) { appimage_free(images_[i].px); images_[i].px=nullptr; }
+        if (images_[i].px) { image_free(images_[i].px); images_[i].px=nullptr; }
     n_imgs_ = 0;
 }
 
@@ -631,7 +656,7 @@ int Browser::image_load(const char *rawsrc) {
         int blen = n - bodyoff;
         if (is_chunked(raw,n)) blen = dechunk(raw+bodyoff,blen);
         int w=0,h=0;
-        uint32_t *px = appimage_decode(
+        uint32_t *px = image_decode(
             reinterpret_cast<const unsigned char *>(raw+bodyoff), blen, &w, &h);
         if (!px || w<=0 || h<=0) return -1;
         /* Publish the decoded image into the cache under the layout lock so the
@@ -668,6 +693,76 @@ bool Browser::hit_link(int x, int y, char *out, int cap) const {
     if (li < 0) return false;
     resolve_href(layout_.hrefs[li], out, cap);
     return out[0] != '\0';
+}
+
+/* ---- form fields ------------------------------------------------------- */
+
+/* Copy the HTML's initial value= into the editable buffers, once per page. */
+void Browser::seed_fields() {
+    int n = layout_.field_count; if (n > MAX_FIELDS) n = MAX_FIELDS;
+    for (int i = 0; i < n; ++i) {
+        __builtin_strncpy(field_values_[i], layout_.fields[i].value, 127);
+        field_values_[i][127] = '\0';
+    }
+    fields_seeded_ = true;
+}
+
+/* Return the field index of the WL_FIELD box at (x,y), or -1. */
+int Browser::field_at(int x, int y) const {
+    if (y < CONTENT_TOP) return -1;
+    int content_x = MARGIN + PAGE_PAD;
+    int docx = x - content_x, docy = (y - CONTENT_TOP) + scroll_;
+    for (int i = 0; i < layout_.run_count; ++i) {
+        const wl_run &r = layout_.runs[i];
+        if (r.kind != WL_FIELD) continue;
+        if (docx>=r.x && docx<r.x+r.w && docy>=r.y && docy<r.y+r.h) return r.off;
+    }
+    return -1;
+}
+
+/* Build a GET query from every named field in the form and navigate to
+ * action?query. POST is treated as GET (no body support yet). */
+void Browser::submit_form(int field_idx) {
+    if (field_idx < 0 || field_idx >= layout_.field_count) return;
+
+    char query[1024]; int q = 0;
+    auto enc = [&](const char *s) {
+        const char *hex = "0123456789ABCDEF";
+        for (; s && *s && q + 3 < (int)sizeof query; ++s) {
+            char c = *s;
+            if ((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.')
+                query[q++] = c;
+            else if (c == ' ') query[q++] = '+';
+            else { query[q++]='%'; query[q++]=hex[(c>>4)&15]; query[q++]=hex[c&15]; }
+        }
+    };
+
+    bool first = true;
+    for (int i = 0; i < layout_.field_count && i < MAX_FIELDS; ++i) {
+        const wl_field &f = layout_.fields[i];
+        if (!f.name[0]) continue;
+        if (f.kind == WLF_SUBMIT || f.kind == WLF_BUTTON) continue;  /* skip buttons */
+        if (!first && q + 1 < (int)sizeof query) query[q++] = '&';
+        first = false;
+        enc(f.name);
+        if (q + 1 < (int)sizeof query) query[q++] = '=';
+        enc(field_values_[i]);
+    }
+    query[q] = '\0';
+
+    /* Resolve action (empty = current path) + query against the page base. */
+    const wl_field &btn = layout_.fields[field_idx];
+    char rel[1300], abs_url[1400];
+    const char *act = btn.action[0] ? btn.action : cur_path_;
+    __builtin_snprintf(rel, sizeof rel, "%s?%s", act, query);
+    resolve_href(rel, abs_url, sizeof abs_url);
+    if (abs_url[0]) {
+        __builtin_strncpy(url_, abs_url, sizeof url_);
+        url_[sizeof url_ - 1] = '\0';
+        url_len_ = (int)__builtin_strlen(url_);
+        focused_field_ = -1;
+        navigate(url_);
+    }
 }
 
 /* ---- rendering --------------------------------------------------------- */
@@ -786,6 +881,41 @@ void Browser::render() {
                             canvas_[(cy+yy)*win_w_+(cx+xx)] = r.color;
             continue;
         }
+        if (r.kind == WL_FIELD) {
+            if (sy < CONTENT_TOP) continue;
+            int kind = r.len;   /* WLF_* */
+            bool button = (kind == WLF_SUBMIT || kind == WLF_BUTTON);
+            bool focused = (r.off == focused_field_);
+            /* Box: buttons are filled with the accent; text fields are a white
+             * field with a border (brighter when focused). CSS bg overrides. */
+            uint32_t face = button ? (r.bg ? r.bg : 0x002a354du)
+                                   : (r.bg ? r.bg : 0x00ffffffu);
+            uint32_t border = focused ? COL_ACCENT : 0x00808a99u;
+            fill(rx, sy, r.w, r.h, face);
+            fill(rx, sy, r.w, 1, border);
+            fill(rx, sy + r.h - 1, r.w, 1, border);
+            fill(rx, sy, 1, r.h, border);
+            fill(rx + r.w - 1, sy, 1, r.h, border);
+            /* Label/value text. */
+            const char *text = button
+                ? ((r.off>=0 && r.off<layout_.field_count && layout_.fields[r.off].value[0])
+                       ? layout_.fields[r.off].value : "Submit")
+                : ((r.off>=0 && r.off<MAX_FIELDS) ? field_values_[r.off] : "");
+            uint32_t tcol = button ? 0x00ffffffu : (r.color ? r.color : 0x00202632u);
+            int ty = sy + (r.h - r.px) / 2;
+            int tx = rx + (button ? (r.w - (int)__builtin_strlen(text)*8)/2 : 6);
+            if (tx < rx + 4) tx = rx + 4;
+            /* clip text to the box width */
+            int maxchars = (r.w - 10) / 8; if (maxchars < 0) maxchars = 0;
+            draw_text_n(tx, ty, text, maxchars, tcol);
+            /* text cursor when focused */
+            if (focused && !button) {
+                int n = (int)__builtin_strlen(text); if (n > maxchars) n = maxchars;
+                int cx = rx + 6 + n*8;
+                fill(cx, sy+3, 2, r.h-6, COL_ACCENT);
+            }
+            continue;
+        }
         /* WL_TEXT */
         if (r.link >= 0 && r.link == hover_link_ && sy >= CONTENT_TOP)
             fill(rx-1, sy, r.w+2, r.h, COL_HOVER);
@@ -823,6 +953,16 @@ void Browser::on_key(uint32_t k) {
         } else if (k >= 0x20 && k < 0x7f) {
             url_putc(static_cast<char>(k));
         }
+        return;
+    }
+    /* Typing into a focused form field. */
+    if (focused_field_ >= 0 && focused_field_ < MAX_FIELDS) {
+        char *v = field_values_[focused_field_];
+        int n = (int)__builtin_strlen(v);
+        if (k == '\n' || k == '\r')      submit_form(focused_field_);
+        else if (k == 0x08) { if (n > 0) v[n-1] = '\0'; }   /* backspace */
+        else if (k == 0x1b) focused_field_ = -1;            /* escape unfocuses */
+        else if (k >= 0x20 && k < 0x7f && n < 126) { v[n]=(char)k; v[n+1]='\0'; }
         return;
     }
     switch (k) {
@@ -875,9 +1015,21 @@ void Browser::on_click(int x, int y) {
         load_url(url_); return;
     }
     /* Click on URL bar */
-    if (y >= 0 && y < BAR_H && x >= 2*BTN_W) { editing_ = true; return; }
-    /* Click on page */
-    if (!editing_) {
+    if (y >= 0 && y < BAR_H && x >= 2*BTN_W) { editing_ = true; focused_field_ = -1; return; }
+
+    /* Click on a form control: focus a text field, or submit on a button. */
+    int fi = field_at(x, y);
+    if (fi >= 0 && fi < layout_.field_count) {
+        editing_ = false;
+        int kind = layout_.fields[fi].kind;
+        if (kind == WLF_SUBMIT || kind == WLF_BUTTON) { focused_field_ = -1; submit_form(fi); }
+        else focused_field_ = fi;   /* text/textarea: take keyboard focus */
+        return;
+    }
+    focused_field_ = -1;   /* clicked elsewhere: drop field focus */
+
+    /* Click on a link. */
+    {
         char href[1024];
         if (hit_link(x, y, href, sizeof href)) {
             __builtin_strncpy(url_, href, sizeof url_);

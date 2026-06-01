@@ -5,12 +5,11 @@
 /* Widget geometry constants — keep them in one place so the whole row
  * can be adjusted without hunting through the code. */
 static constexpr int kTopRowHeight  = 18;
-static constexpr int kMetricHeight  = 14;
 static constexpr int kRamWidth      = 88;
 static constexpr int kThreadWidth   = 60;
 static constexpr int kStateWidth    = 72;
 static constexpr int kKillWidth     = 52;
-static constexpr int kRowPadding    = 6;
+static constexpr int kRowPadding    = 3;
 static constexpr int kRowGap        = 6;
 
 /* RAM colour thresholds (bytes): green under 8 MB, amber under 20 MB, red above.
@@ -24,8 +23,9 @@ static vui_u32 ram_color(unsigned long bytes) {
 
 void ProcessRow::init(vui_window *win, vui_widget *rows_vbox, int slot,
                       void (*kill_cb)(vui_widget *)) {
-    /* ---- Outer row: vertical stack of top-bar + metric line -------------- */
+    /* ---- Outer row: compact table row ------------------------------------ */
     row_vbox_ = vui_vbox(win, 0, 0, 0, 0);
+    vui_set_color(row_vbox_, (slot & 1) ? 0x00141f30u : 0x00182334u);
     vui_set_padding(row_vbox_, kRowPadding);
     vui_set_gap(row_vbox_, 2);
     vui_set_expand(row_vbox_); /* each row shares the outer VBox's height evenly */
@@ -51,7 +51,7 @@ void ProcessRow::init(vui_window *win, vui_widget *rows_vbox, int slot,
     vui_set_size(thread_label_, kThreadWidth, 0);
     vui_box_add(top_hbox, thread_label_);
 
-    state_label_ = vui_label(win, 0, 0, "");
+    state_label_ = vui_badge(win, 0, 0, "");
     vui_set_size(state_label_, kStateWidth, 0);
     vui_box_add(top_hbox, state_label_);
 
@@ -63,12 +63,9 @@ void ProcessRow::init(vui_window *win, vui_widget *rows_vbox, int slot,
     vui_on_click(kill_button_, kill_cb);
     vui_box_add(top_hbox, kill_button_);
 
-    /* ---- Metric line ----------------------------------------------------- */
     metric_label_ = vui_label(win, 0, 0, "");
-    vui_set_size(metric_label_, 0, kMetricHeight);
     vui_set_color(metric_label_, VUI_TEXT_DIM);
-    vui_set_fill(metric_label_);
-    vui_box_add(row_vbox_, metric_label_);
+    vui_set_visible(metric_label_, 0);
 
     pid_ = 0;
 }
@@ -87,11 +84,6 @@ void ProcessRow::update(const vui_process_info &p) {
     StringBuilder<16> threads;
     threads.append(p.thread_count).append(" thr");
 
-    StringBuilder<80> metric;
-    metric.append("ticks ").append(p.runtime_ticks)
-          .append("  |  sw ").append(p.switch_count)
-          .append("  |  parent ").append(p.parent_pid);
-
     vui_set_text(name_label_,   name.c_str());
     vui_set_color(name_label_,  s == ProcessState::Running ? VUI_TEXT : VUI_TEXT_DIM);
 
@@ -104,8 +96,6 @@ void ProcessRow::update(const vui_process_info &p) {
     vui_set_text(state_label_,  state_name(s));
     vui_set_color(state_label_, state_color(s));
 
-    vui_set_text(metric_label_, metric.c_str());
-
     /* The running process is the scheduler — disallow killing it. */
     vui_set_visible(kill_button_, s != ProcessState::Running ? 1 : 0);
 
@@ -114,7 +104,7 @@ void ProcessRow::update(const vui_process_info &p) {
     vui_set_visible(ram_label_,    1);
     vui_set_visible(thread_label_, 1);
     vui_set_visible(state_label_,  1);
-    vui_set_visible(metric_label_, 1);
+    vui_set_visible(metric_label_, 0);
 }
 
 void ProcessRow::hide() {

@@ -271,12 +271,14 @@ void wl_init(struct wl_doc *d){
     d->pool=0; d->pool_len=0; d->pool_cap=0;
     d->runs=0; d->run_count=0; d->run_cap=0;
     d->hrefs=0; d->href_count=0; d->href_cap=0;
+    d->fields=0; d->field_count=0; d->field_cap=0;
     d->height=0;
 }
 void wl_free(struct wl_doc *d){
     if(d->pool) ufree(d->pool);
     if(d->runs) ufree(d->runs);
     if(d->hrefs) ufree(d->hrefs);
+    if(d->fields) ufree(d->fields);
     wl_init(d);
 }
 

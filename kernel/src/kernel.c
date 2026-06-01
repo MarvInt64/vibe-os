@@ -14,6 +14,7 @@
 #include "ramdisk_demo.h"
 #include "serial.h"
 #include "string.h"
+#include "timer.h"
 #include "tty.h"
 #include "vfs.h"
 #include "vga_text.h"
@@ -23,6 +24,12 @@ static struct framebuffer g_framebuffer;
 static struct framebuffer g_backbuffer;
 static struct desktop_state g_desktop;
 static int g_wm_active = 0;
+static uint32_t g_shell_dock_pid = 0;
+static uint64_t g_shell_dock_next_launch_tick = 0;
+static uint8_t g_desktop_scene_started = 0;
+static uint8_t g_scene_stage = 0;        /* 0 = spawn wallpaper, 1 = wait then apps */
+static uint32_t g_wallpaper_pid = 0;
+static uint64_t g_scene_deadline = 0;
 
 /* Exposed to the syscall layer so userspace GUI apps can reach the compositor. */
 struct desktop_state *desktop_active(void) {
@@ -121,6 +128,54 @@ static int start_window_manager(int *presented_cursor_x, int *presented_cursor_y
     *presented_cursor_y = g_desktop.mouse_y;
     serial_write("VIBEOS: desktop ready\n");
     return 1;
+}
+
+static void ensure_shell_dock_running(void) {
+    uint64_t now = timer_tick_count();
+
+    if (!g_wm_active) {
+        return;
+    }
+    if (desktop_shell_dock_active(&g_desktop)) {
+        return;
+    }
+    if (g_shell_dock_pid != 0 && process_pid_alive(g_shell_dock_pid)) {
+        return;
+    }
+    if (now < g_shell_dock_next_launch_tick) {
+        return;
+    }
+
+    g_shell_dock_pid = (uint32_t)process_spawn_path("/bin/dock", 0, 0);
+    g_shell_dock_next_launch_tick = now + timer_frequency_hz();
+}
+
+static void start_desktop_scene_apps(void) {
+    /* Two-stage start (polled once per frame): first load the wallpaper so the
+     * backdrop is in place, then bring up the app windows. Without this the
+     * heavy app loads win the scheduler and the wallpaper only appears well
+     * after the windows. A timeout keeps the apps from being held hostage if
+     * the wallpaper setter ever stalls. */
+    if (g_desktop_scene_started || !g_wm_active) {
+        return;
+    }
+
+    if (g_scene_stage == 0) {
+        int pid = process_spawn_path("/bin/wallpaper", 0, 0);
+        g_wallpaper_pid = pid > 0 ? (uint32_t)pid : 0;
+        g_scene_deadline = timer_tick_count() + timer_frequency_hz() * 6u;
+        g_scene_stage = 1;
+        return;
+    }
+
+    if (g_wallpaper_pid != 0 && process_pid_alive(g_wallpaper_pid) &&
+        timer_tick_count() < g_scene_deadline) {
+        return;   /* let the wallpaper paint first (bounded wait) */
+    }
+
+    (void)process_spawn_path("/bin/browser", 0, 0);
+    (void)process_spawn_path("/bin/taskmgr", 0, 0);
+    g_desktop_scene_started = 1;
 }
 
 /* IDE disk wrapper functions for ramdisk interface */
@@ -299,15 +354,24 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
                 if (window_manager_active) {
                     struct rect initial_rect;
                     (void)desktop_take_dirty_rect(&g_desktop, &initial_rect);
+                    ensure_shell_dock_running();
+                    start_desktop_scene_apps();
                 }
             }
         } else {
             /* Apply a runtime resolution change by re-initialising the WM. */
             if (g_resolution_change_requested) {
                 g_resolution_change_requested = 0;
+                if (g_shell_dock_pid != 0 && process_pid_alive(g_shell_dock_pid)) {
+                    (void)process_kill(g_shell_dock_pid);
+                }
+                g_shell_dock_pid = 0;
+                g_desktop_scene_started = 0;
                 if (start_window_manager(&presented_cursor_x, &presented_cursor_y)) {
                     struct rect r;
                     (void)desktop_take_dirty_rect(&g_desktop, &r);
+                    ensure_shell_dock_running();
+                    start_desktop_scene_apps();
                 }
                 continue;
             }
@@ -315,6 +379,8 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
             cursor_moved = presented_cursor_x != g_desktop.mouse_x || presented_cursor_y != g_desktop.mouse_y;
             run_result = process_run_ready_slice();
             desktop_poll_apps(&g_desktop);
+            ensure_shell_dock_running();
+            start_desktop_scene_apps();
 
             /* Flicker-free presentation: the cursor is composited INTO the
              * back buffer and the whole frame is pushed to the visible

@@ -31,8 +31,8 @@ static constexpr int BROW_MAX_W = 900;
 static constexpr int BROW_MAX_H = 640;
 
 /* Initial window size. */
-static constexpr int BROW_INIT_W = 600;
-static constexpr int BROW_INIT_H = 400;
+static constexpr int BROW_INIT_W = 760;
+static constexpr int BROW_INIT_H = 560;
 
 /* Chrome dimensions. */
 static constexpr int BAR_H       = 30;  /* URL bar height            */
@@ -98,6 +98,14 @@ private:
     int       scroll_   = 0;
     int       hover_link_ = -1;
 
+    /* ---- form fields --------------------------------------------------- */
+    /* Editable values persist across re-layouts (keyed by field index, which
+     * is stable for a given page); seeded once from the HTML's value=. */
+    static constexpr int MAX_FIELDS = 32;
+    char field_values_[MAX_FIELDS][128] = {};
+    bool fields_seeded_ = false;
+    int  focused_field_ = -1;   /* index into layout_.fields, or -1 */
+
     LayoutEngine layout_engine_;
 
     /* ---- image cache --------------------------------------------------- */
@@ -150,6 +158,11 @@ private:
     /* ---- link hit-test ------------------------------------------------- */
     int  link_at(int x, int y) const;
     bool hit_link(int x, int y, char *out, int cap) const;
+
+    /* ---- form fields --------------------------------------------------- */
+    void seed_fields();              /* copy initial value= into field_values_ */
+    int  field_at(int x, int y) const;   /* WL_FIELD run index at point, or -1 */
+    void submit_form(int field_idx); /* build query from the field's form + go */
 
     /* ---- rendering ----------------------------------------------------- */
     void render();

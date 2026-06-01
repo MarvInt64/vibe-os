@@ -918,6 +918,11 @@ static void execute_command(void) {
 		if (pid <= 0) {
 			write_str("browser: "); write_line(strerror(pid));
 		}
+	} else if (strcmp(cmd, "dock") == 0) {
+		int pid = spawn("/bin/dock");
+		if (pid <= 0) {
+			write_str("dock: "); write_line(strerror(pid));
+		}
 	} else if (strcmp(cmd, "dmesg") == 0 || strcmp(cmd, "journal") == 0) {
 		cmd_dmesg();
 	} else if (strcmp(cmd, "hello") == 0) {

@@ -54,6 +54,7 @@ struct window_state {
     uint32_t body;
     uint32_t titlebar;
     uint32_t accent;
+    uint32_t flags;
     uint8_t app_slot;
     uint8_t visible;
     uint8_t maximized;
@@ -110,7 +111,13 @@ struct desktop_state {
     uint8_t dirty;
     struct rect dirty_rect;
     struct rect window_dirty_rects[WINDOW_COUNT];
+    /* Optional desktop wallpaper. wallpaper_active=0 => procedural gradient.
+     * Stored in a static buffer inside desktop_state (like background_storage)
+     * so it is mapped in every page-table context the compositor may run under
+     * — a kmalloc heap buffer is not guaranteed to be. */
+    int       wallpaper_active;
     uint32_t background_storage[DESKTOP_MAX_WIDTH * DESKTOP_MAX_HEIGHT];
+    uint32_t wallpaper_storage[DESKTOP_MAX_WIDTH * DESKTOP_MAX_HEIGHT];
     uint32_t info_surface_storage[WINDOW_INFO_MAX_WIDTH * WINDOW_INFO_MAX_HEIGHT];
     uint32_t files_surface_storage[WINDOW_FILES_MAX_WIDTH * WINDOW_FILES_MAX_HEIGHT];
     uint32_t terminal_surface_storage[WINDOW_TERMINAL_MAX_WIDTH * WINDOW_TERMINAL_MAX_HEIGHT];
@@ -156,16 +163,23 @@ int desktop_take_dirty_rect(struct desktop_state *desktop, struct rect *rect);
 /* Create (or reset) the app window with the given title and content size.
  * Returns a window id (>=0) or negative on error. */
 int desktop_app_create(struct desktop_state *desktop, uint32_t pid, const char *title, int width, int height);
+int desktop_app_create_ex(struct desktop_state *desktop, uint32_t pid, const struct winsys_window_options *options);
 
 /* Copy a presented XRGB8888 pixel buffer (src, src_w x src_h) into the app
  * window content and mark it dirty. Called while the app's address space is
  * active so src is directly readable. Returns 0 on success. */
 int desktop_app_present(struct desktop_state *desktop, uint32_t pid, int win_id, const uint32_t *src, int src_w, int src_h);
 
+/* Replace the desktop backdrop with a wallpaper image. src is an XRGB pixel
+ * buffer (0x00RRGGBB) of src_w x src_h, scaled to fill the screen. Returns 0 on
+ * success, <0 on error. */
+int desktop_set_wallpaper(struct desktop_state *desktop, const uint32_t *src, int src_w, int src_h);
+
 /* Dequeue one input event for the app window into *out. Returns 1 if an event
  * was returned, 0 if the queue is empty. */
 int desktop_app_poll_event(struct desktop_state *desktop, uint32_t pid, int win_id, struct winsys_event *out);
 void desktop_app_close_for_pid(struct desktop_state *desktop, uint32_t pid);
+int desktop_shell_dock_active(const struct desktop_state *desktop);
 
 /* Replace the WINDOW_APP context-menu entries with `count` items read from the
  * calling app's address space. Returns 0 on success, negative on error. */

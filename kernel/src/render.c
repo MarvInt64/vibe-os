@@ -438,15 +438,17 @@ void draw_soft_shadow(struct framebuffer *fb, int x, int y, int width, int heigh
 	int i;
 	int iy;
 	int outer_x0, outer_x1;
-	int inner_x0, inner_x1;
 
 	if (spread < 1) {
 		return;
 	}
 
+	/* Concentric ring outlines, each alpha-blended over the *existing* backdrop
+	 * (not stamped opaque over black), so the result is a soft falloff that
+	 * darkens the desktop slightly — never a hard near-black outline. Rings
+	 * closest to the window are most opaque and fade out with distance. */
 	for (i = spread; i >= 1; --i) {
-		uint8_t alpha = (uint8_t)(i == spread ? 22u : 10u);
-		uint32_t shadow_color = blend_color(0x00000000u, color, alpha);
+		uint8_t alpha = (uint8_t)((uint32_t)(spread - i + 1) * 34u / (uint32_t)spread);
 		int sx = x - i;
 		int sy = y - i;
 		int sw = width + (i * 2);
@@ -456,27 +458,17 @@ void draw_soft_shadow(struct framebuffer *fb, int x, int y, int width, int heigh
 		for (iy = 0; iy < sh; ++iy) {
 			int abs_y = sy + iy;
 			get_rounded_rect_scanline_bounds(abs_y, sx, sy, sw, sh, sr, &outer_x0, &outer_x1);
-
+			if (outer_x0 > outer_x1) {
+				continue;
+			}
 			if (iy == 0 || iy == sh - 1) {
-				if (outer_x0 <= outer_x1) {
-					int draw_x = outer_x0;
-					int draw_w = outer_x1 - outer_x0 + 1;
-					if (draw_x < 0) { draw_w += draw_x; draw_x = 0; }
-					if (draw_x + draw_w > (int)fb->width) draw_w = (int)fb->width - draw_x;
-					if (draw_w > 0) fb_fill_rect(fb, draw_x, abs_y, draw_w, 1, shadow_color);
+				int k;
+				for (k = outer_x0; k <= outer_x1; ++k) {
+					fb_blend_pixel(fb, k, abs_y, color, alpha);
 				}
 			} else {
-				if (outer_x0 <= outer_x1) {
-					int draw_x = outer_x0;
-					int draw_w = 1;
-					if (draw_x >= 0 && draw_x < (int)fb->width) {
-						fb_put_pixel(fb, draw_x, abs_y, shadow_color);
-					}
-					draw_x = outer_x1;
-					if (draw_x >= 0 && draw_x < (int)fb->width) {
-						fb_put_pixel(fb, draw_x, abs_y, shadow_color);
-					}
-				}
+				fb_blend_pixel(fb, outer_x0, abs_y, color, alpha);
+				fb_blend_pixel(fb, outer_x1, abs_y, color, alpha);
 			}
 		}
 	}

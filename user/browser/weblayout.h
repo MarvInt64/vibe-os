@@ -17,7 +17,11 @@ extern "C" {
 
 typedef unsigned int wl_u32;
 
-enum { WL_TEXT = 0, WL_RULE = 1, WL_BULLET = 2, WL_RECT = 3, WL_IMAGE = 4 };
+enum { WL_TEXT = 0, WL_RULE = 1, WL_BULLET = 2, WL_RECT = 3, WL_IMAGE = 4,
+       WL_FIELD = 5 /* form control: run->off = index into doc->fields */ };
+
+/* Form-control kinds (wl_field.kind). */
+enum { WLF_TEXT = 0, WLF_SUBMIT = 1, WLF_BUTTON = 2, WLF_TEXTAREA = 3 };
 
 struct wl_run {
     int kind;            /* WL_TEXT, WL_RULE, WL_BULLET, WL_RECT, WL_IMAGE */
@@ -41,10 +45,22 @@ void wl_set_image_sizer(int (*fn)(const char *src, int maxw, int *w, int *h));
 
 #define WL_HREF_MAX 256
 
+/* A form control discovered during layout. Positions live in the WL_FIELD run;
+ * this carries the metadata needed to submit the owning form. The editable
+ * value is kept by the browser (keyed by name) so it survives re-layouts. */
+struct wl_field {
+    int  kind;            /* WLF_TEXT / WLF_SUBMIT / WLF_BUTTON / WLF_TEXTAREA */
+    char name[64];        /* control name=                                     */
+    char value[128];      /* initial value= (submit label for buttons)         */
+    char action[256];     /* owning form's resolved action URL                 */
+    int  method_post;     /* 1 = POST, 0 = GET                                 */
+};
+
 struct wl_doc {
     char *pool; int pool_len, pool_cap;
     struct wl_run *runs; int run_count, run_cap;
     char (*hrefs)[WL_HREF_MAX]; int href_count, href_cap;
+    struct wl_field *fields; int field_count, field_cap;
     int height;
 };
 

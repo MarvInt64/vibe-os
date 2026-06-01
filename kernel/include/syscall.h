@@ -43,7 +43,12 @@ enum syscall_number {
 	 * rdi = entry function (user ptr), rsi = stack top (user ptr, owned by
 	 * caller, e.g. malloc'd), rdx = argument passed to the entry in rdi.
 	 * Returns the new thread's tid (a pid), or <0 on error. */
-	SYS_THREAD_CREATE = 34
+	SYS_THREAD_CREATE = 34,
+	SYS_WINDOW_CREATE_EX = 35,
+	/* Set the desktop wallpaper from a userspace XRGB pixel buffer.
+	 * rdi = pixels (user ptr, 0x00RRGGBB), rsi = width, rdx = height.
+	 * The kernel scales it to the screen and uses it as the backdrop. */
+	SYS_SET_WALLPAPER = 36
 };
 
 enum syscall_error {

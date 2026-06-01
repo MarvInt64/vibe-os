@@ -17,6 +17,7 @@ int64_t syscall_dispatch(struct syscall_context *context, uint64_t number, uint6
         case SYS_IOCTL:
             return fd_ioctl(context->fd_table, (int)arg0, (uint32_t)arg1, (uintptr_t)arg2);
         case SYS_WINDOW_CREATE:
+        case SYS_WINDOW_CREATE_EX:
         case SYS_WINDOW_PRESENT:
         case SYS_EVENT_POLL:
         case SYS_WINDOW_SET_MENU:
@@ -28,4 +29,3 @@ int64_t syscall_dispatch(struct syscall_context *context, uint64_t number, uint6
             return -SYSCALL_ENOSYS;
     }
 }
-

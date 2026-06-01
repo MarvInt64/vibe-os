@@ -71,7 +71,24 @@ struct vos_event { uint32_t type; int32_t x; int32_t y; uint32_t buttons; uint32
 struct vos_menu_item { char label[24]; uint32_t action_id; };
 
 int vos_window_create(const char *title, int w, int h);   /* >=0 id, <0 = no server */
+#define VOS_WINDOW_FRAMELESS 0x00000001u
+#define VOS_WINDOW_NO_DOCK   0x00000002u
+#define VOS_WINDOW_POSITIONED 0x00000004u
+#define VOS_WINDOW_ALWAYS_ON_TOP 0x00000008u
+struct vos_window_options {
+    const char *title;
+    int32_t width;
+    int32_t height;
+    uint32_t flags;
+    int32_t x;
+    int32_t y;
+};
+int vos_window_create_ex(const struct vos_window_options *options);
 int vos_window_present(int id, const uint32_t *pixels, int w, int h);
+/* Set the desktop wallpaper from an XRGB buffer (0x00RRGGBB), scaled to screen. */
+int vos_set_wallpaper(const uint32_t *pixels, int w, int h);
+/* Copy this process's spawn argument (if any) into buf; returns its length. */
+int vos_getarg(char *buf, int size);
 int vos_event_poll(int id, struct vos_event *out);         /* 1 = got event, 0 = empty */
 int vos_window_set_menu(int id, const struct vos_menu_item *items, int count);
 

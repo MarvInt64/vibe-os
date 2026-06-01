@@ -37,8 +37,17 @@ int vos_https_get(struct vos_http_req *req) {
 int vos_window_create(const char *title, int w, int h) {
     return (int)__sc3(SYS_WINDOW_CREATE, (uint64_t)(size_t)title, (uint64_t)w, (uint64_t)h);
 }
+int vos_window_create_ex(const struct vos_window_options *options) {
+    return (int)__sc1(SYS_WINDOW_CREATE_EX, (uint64_t)(size_t)options);
+}
 int vos_window_present(int id, const uint32_t *pixels, int w, int h) {
     return (int)__sc4(SYS_WINDOW_PRESENT, (uint64_t)id, (uint64_t)(size_t)pixels, (uint64_t)w, (uint64_t)h);
+}
+int vos_set_wallpaper(const uint32_t *pixels, int w, int h) {
+    return (int)__sc3(SYS_SET_WALLPAPER, (uint64_t)(size_t)pixels, (uint64_t)w, (uint64_t)h);
+}
+int vos_getarg(char *buf, int size) {
+    return (int)__sc2(SYS_GETARG, (uint64_t)(size_t)buf, (uint64_t)size);
 }
 int vos_event_poll(int id, struct vos_event *out) {
     return (int)__sc2(SYS_EVENT_POLL, (uint64_t)id, (uint64_t)(size_t)out);

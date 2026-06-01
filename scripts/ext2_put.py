@@ -164,6 +164,33 @@ class Ext2:
                 off += rec_len
         die("no room in directory (no indirect-block support)")
 
+    def mkdir(self, parent_ino, name):
+        """Create an empty directory `name` under parent_ino; return its inode."""
+        ino = self.alloc_inode()
+        blk = self.alloc_block()
+        # Directory data block: '.' then '..' (which spans the rest of the block).
+        buf = bytearray(BS)
+        struct.pack_into("<IHBB", buf, 0, ino, 12, 1, 2)        # '.'
+        buf[8:9] = b"."
+        struct.pack_into("<IHBB", buf, 12, parent_ino, BS - 12, 2, 2)  # '..'
+        buf[20:22] = b".."
+        self.write_block(blk, bytes(buf))
+        # Inode: dir mode, one block of data, link count 2 (itself + '.').
+        node = bytearray(INODE_SIZE)
+        struct.pack_into("<H", node, 0, S_IFDIR | 0o755)
+        struct.pack_into("<I", node, 4, BS)
+        struct.pack_into("<H", node, 26, 2)
+        struct.pack_into("<I", node, 28, BS // 512)
+        struct.pack_into("<I", node, 40, blk)
+        self.write_inode(ino, node)
+        # Link into parent and bump the parent's link count for the new '..'.
+        self.dir_add(parent_ino, ino, name, 2)   # file_type 2 = directory
+        pnode = self.read_inode(parent_ino)
+        pl = struct.unpack_from("<H", pnode, 26)[0]
+        struct.pack_into("<H", pnode, 26, pl + 1)
+        self.write_inode(parent_ino, pnode)
+        return ino
+
     def flush_meta(self):
         # write bitmaps back
         self.write_block(2, bytes(self.block_bitmap))
@@ -190,13 +217,14 @@ def main():
     name = target.rsplit("/", 1)[1]
     fs = Ext2(img)
 
-    # resolve parent directory inode
+    # resolve parent directory inode, creating any missing components
     dir_ino = 2  # root
     if parent != "/":
         for comp in parent.strip("/").split("/"):
-            dir_ino = fs.dir_find(dir_ino, comp)
-            if dir_ino == 0:
-                die("parent directory %s not found" % parent)
+            nxt = fs.dir_find(dir_ino, comp)
+            if nxt == 0:
+                nxt = fs.mkdir(dir_ino, comp)
+            dir_ino = nxt
 
     # remove existing entry's inode reuse? Simple approach: if exists, overwrite
     existing = fs.dir_find(dir_ino, name)

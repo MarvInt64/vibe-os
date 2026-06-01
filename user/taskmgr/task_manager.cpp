@@ -1,6 +1,7 @@
 #include "task_manager.h"
 #include "process_state.h"
 #include "string_builder.h"
+#include <sys/syscall.h>
 
 TaskManager *TaskManager::s_instance_ = nullptr;
 
@@ -9,7 +10,20 @@ TaskManager::TaskManager() = default;
 /* ---- Public ------------------------------------------------------------ */
 
 void __attribute__((noreturn)) TaskManager::run() {
-    window_ = vui_window_open("Task Manager", 560, 340);
+    uint32_t mode = (uint32_t)__sc2(SYS_DISPLAY_MODE, 0, 0);
+    int screen_w = (int)((mode >> 16) & 0xffffu);
+    int screen_h = (int)(mode & 0xffffu);
+    int x = 780;
+    int y = 250;
+
+    if (screen_w > 0 && screen_h > 0) {
+        if (x + 680 > screen_w) x = screen_w - 700;
+        if (y + 520 > screen_h) y = screen_h - 560;
+        if (x < 20) x = 20;
+        if (y < 72) y = 72;
+    }
+
+    window_ = vui_window_open_ex("Task Manager", 680, 520, VUI_WINDOW_POSITIONED, x, y);
     build_ui();
     refresh();
     vui_on_tick(window_, on_tick_cb);
@@ -17,83 +31,41 @@ void __attribute__((noreturn)) TaskManager::run() {
 }
 
 /* ---- Private — UI construction ----------------------------------------- */
-/*
- * Layout tree:
- *
- *   Window (560 × 340)
- *   ├── "TASK MANAGER" label          absolute, top-left
- *   ├── subtitle label                absolute
- *   ├── Refresh button                absolute, right-anchored
- *   │
- *   ├── System panel  (resizes H)
- *   │   └── summary_hbox  (HBox, anchors L+T+R)
- *   │       ├── total_label  (expand)  — "PROCESSES n / 4"
- *   │       ├── ready_label  (expand)  — "READY n   SLEEP n"
- *   │       └── status_label           — last-action feedback
- *   │
- *   └── Processes panel  (resizes all)
- *       ├── header_hbox  (HBox, anchors L+T+R)
- *       │   ├── "PROCESS" label  (expand)
- *       │   ├── "STATE"   label
- *       │   └── "ACTION"  label
- *       └── rows_vbox_  (VBox, anchors all)
- *           └── ProcessRow × VUI_PROCESS_MAX
- *               └── (see process_row.h for internal structure)
- */
 void TaskManager::build_ui() {
-    /* ---- Menu bar ------------------------------------------------------- */
-    auto *mb        = vui_menubar(window_);
-    auto *view_menu = vui_menu(window_, mb, "View");
-    vui_on_click(vui_menuitem(window_, view_menu, "Refresh"), on_refresh_cb);
-    vui_menu_separator(window_, view_menu);
-    vui_on_click(vui_menuitem(window_, view_menu, "Quit"), on_quit_cb);
-
-    /* ---- Title bar (below menu bar) ------------------------------------- */
-    vui_label(window_, 18, 12 + VUI_MENUBAR_HEIGHT, "TASK MANAGER");
-
-    auto *subtitle = vui_label(window_, 152, 12 + VUI_MENUBAR_HEIGHT, "LIVE PROCESS CONTROL");
-    vui_set_color(subtitle, VUI_TEXT_DIM);
-
-    auto *refresh_btn = vui_button(window_, 458, 7 + VUI_MENUBAR_HEIGHT, "Refresh");
-    vui_set_button_width(refresh_btn, 76);
-    vui_set_anchor(refresh_btn, VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
-    vui_on_click(refresh_btn, on_refresh_cb);
-
-    /* ---- System summary panel ------------------------------------------- */
-    vui_set_anchor(vui_panel(window_, 16, 40 + VUI_MENUBAR_HEIGHT, 528, 58, "System"),
-                   VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
-
-    /* HBox distributes the three stat labels across the panel's inner width. */
-    auto *summary = vui_hbox(window_, 30, 62 + VUI_MENUBAR_HEIGHT, 500, 20);
-    vui_set_anchor(summary, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
-    vui_set_gap(summary, 0);
-
-    total_label_ = vui_label(window_, 0, 0, "PROC");
+    /* ---- Metric cards --------------------------------------------------- */
+    vui_set_anchor(vui_card(window_, 16, 14, 144, 66, "Processes"),
+                   VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
+    total_label_ = vui_label(window_, 28, 42, "0 / 0");
     vui_set_color(total_label_, VUI_ACCENT);
-    vui_set_expand(total_label_);
-    vui_box_add(summary, total_label_);
 
-    ready_label_ = vui_label(window_, 0, 0, "READY");
+    vui_set_anchor(vui_card(window_, 168, 14, 144, 66, "Scheduler"),
+                   VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
+    ready_label_ = vui_label(window_, 180, 42, "READY 0");
     vui_set_color(ready_label_, VUI_OK);
-    vui_set_expand(ready_label_);
-    vui_box_add(summary, ready_label_);
 
-    mem_label_ = vui_label(window_, 0, 0, "RAM");
+    vui_set_anchor(vui_card(window_, 320, 14, 144, 66, "Memory"),
+                   VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
+    mem_label_ = vui_label(window_, 332, 42, "0 B");
     vui_set_color(mem_label_, VUI_WARN);
-    vui_set_expand(mem_label_);
-    vui_box_add(summary, mem_label_);
 
-    status_label_ = vui_label(window_, 0, 0, "READY");
-    vui_set_size(status_label_, 92, 0);
+    vui_set_anchor(vui_card(window_, 472, 14, 152, 66, "Status"),
+                   VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
+    status_label_ = vui_label(window_, 484, 42, "READY");
     vui_set_color(status_label_, VUI_TEXT_DIM);
-    vui_box_add(summary, status_label_);
+
+    /* ---- Navigation/search strip ---------------------------------------- */
+    auto *tabs = vui_tabs(window_, 16, 94, 392, "PROCESSES|SYSTEM|SERVICES|PERF", 0);
+    vui_set_anchor(tabs, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
+
+    auto *search = vui_input(window_, 422, 95, 202, "Search processes...");
+    vui_set_anchor(search, VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
 
     /* ---- Processes panel ------------------------------------------------ */
-    vui_set_anchor(vui_panel(window_, 16, 112 + VUI_MENUBAR_HEIGHT, 528, 210, "Processes"),
+    vui_set_anchor(vui_panel(window_, 16, 130, 608, 274, ""),
                    VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT | VUI_ANCHOR_BOTTOM);
 
     /* Column header HBox — stretches horizontally with the panel. */
-    auto *headers = vui_hbox(window_, 30, 136 + VUI_MENUBAR_HEIGHT, 500, 16);
+    auto *headers = vui_hbox(window_, 30, 146, 580, 16);
     vui_set_anchor(headers, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
     vui_set_gap(headers, 6);
 
@@ -120,7 +92,7 @@ void TaskManager::build_ui() {
     vui_box_add(headers, h_action);
 
     /* Process-rows VBox — fills the remaining panel area on all sides. */
-    rows_vbox_ = vui_vbox(window_, 30, 158 + VUI_MENUBAR_HEIGHT, 500, 155);
+    rows_vbox_ = vui_vbox(window_, 30, 170, 580, 220);
     vui_set_anchor(rows_vbox_,
                    VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT | VUI_ANCHOR_BOTTOM);
     vui_set_gap(rows_vbox_, 0);

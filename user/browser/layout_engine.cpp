@@ -85,6 +85,27 @@ static int add_href(wl_doc *d, const char *href) {
     return d->href_count++;
 }
 
+/* Append a form-control descriptor; returns its index (or -1). */
+static int add_field(wl_doc *d) {
+    if (d->field_count >= d->field_cap) {
+        int nc = d->field_cap ? d->field_cap * 2 : 16;
+        wl_field *nf = static_cast<wl_field *>(
+            urealloc(d->fields, (umsize_t)nc * (int)sizeof(wl_field)));
+        if (!nf) return -1;
+        d->fields = nf; d->field_cap = nc;
+    }
+    wl_field *f = &d->fields[d->field_count];
+    f->kind = WLF_TEXT; f->name[0] = '\0'; f->value[0] = '\0';
+    f->action[0] = '\0'; f->method_post = 0;
+    return d->field_count++;
+}
+
+static void str_copy(char *dst, int cap, const char *src) {
+    int i = 0;
+    for (; src && src[i] && i < cap - 1; ++i) dst[i] = src[i];
+    dst[i] = '\0';
+}
+
 /* ---- inline style parsing ---------------------------------------------- */
 
 static bool parse_color(const char *s, unsigned &out) {
@@ -120,6 +141,7 @@ struct StyleDecls {
     unsigned color;
     unsigned bg;
     bool     hidden;
+    int      width;   /* explicit CSS width in px (0 = unset; not inherited) */
 };
 
 static void apply_decls(const char *css, StyleDecls &st) {
@@ -146,6 +168,8 @@ static void apply_decls(const char *css, StyleDecls &st) {
         else if (ieq(prop,"font-size"))  { const char *w=val; int px=0; while(*w==' ')++w;
                                            while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} if(px>=10&&px<=96) st.px=px; }
         else if (ieq(prop,"visibility")) { const char *w=val; while(*w==' ')++w; if(ieq(w,"hidden")) st.hidden=true; }
+        else if (ieq(prop,"width"))      { const char *w=val; int px=0; while(*w==' ')++w;
+                                           while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} if(px>0&&px<=2000) st.width=px; }
     }
 }
 
@@ -161,6 +185,7 @@ struct Style {
     int      left      = 0;
     bool     hidden    = false;
     bool     pre       = false;   /* preserve whitespace */
+    int      width     = 0;       /* CSS width px for this element (not inherited) */
 };
 
 /* ---- layout state ------------------------------------------------------ */
@@ -178,6 +203,10 @@ struct State {
     int       sp             = 0;
     css_sheet *sheet         = nullptr;
 
+    /* Current <form> context (raw action; browser resolves + submits). */
+    char      form_action[256] = {};
+    int       form_method_post = 0;
+
     /* font callbacks */
     int  (*adv_fn)(int cp, int px)  = nullptr;
     int  (*lh_fn)(int px)           = nullptr;
@@ -190,10 +219,11 @@ struct State {
 static void st_push(State &S) { if(S.sp<39){S.stk[S.sp+1]=S.stk[S.sp];++S.sp;} }
 static void st_pop (State &S) { if(S.sp>0) --S.sp; }
 
-/* Apply CSS cascade to the top of the style stack. */
+/* Apply CSS cascade to the top of the style stack. `width` is reset to 0 first
+ * so it applies per-element (it must not inherit to children). */
 static void apply_css(State &S, dom_node *node) {
     StyleDecls d{S.stk[S.sp].px, S.stk[S.sp].bold, S.stk[S.sp].underline,
-                 S.stk[S.sp].color, S.stk[S.sp].bg, S.stk[S.sp].hidden};
+                 S.stk[S.sp].color, S.stk[S.sp].bg, S.stk[S.sp].hidden, 0};
     if (S.sheet) { char buf[640]; css_match(S.sheet, node, buf, sizeof buf); apply_decls(buf, d); }
     const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
     S.stk[S.sp].px        = d.px;
@@ -202,6 +232,7 @@ static void apply_css(State &S, dom_node *node) {
     S.stk[S.sp].color     = d.color;
     S.stk[S.sp].bg        = d.bg;
     S.stk[S.sp].hidden    = d.hidden;
+    S.stk[S.sp].width     = d.width;
 }
 
 static bool check_hidden(State &S, dom_node *node) {
@@ -496,10 +527,106 @@ static void walk(State &S, dom_node *node) {
     /* ---- Paragraphs --------------------------------------------------- */
     if (ieq(t,"p")) { block_break(S,12); st_push(S); apply_css(S,node); walk_children(S,node); st_pop(S); block_break(S,12); return; }
 
+    /* ---- Form: establish the action/method context for child controls -- */
+    if (ieq(t,"form")) {
+        char saved_action[256]; int saved_post = S.form_method_post;
+        for (int i=0;i<256;++i) saved_action[i]=S.form_action[i];
+        const char *act = dom_attr(node,"action");
+        const char *mth = dom_attr(node,"method");
+        str_copy(S.form_action, sizeof S.form_action, act ? act : "");
+        S.form_method_post = (mth && (mth[0]=='p'||mth[0]=='P'));
+        block_break(S,8); st_push(S); apply_css(S,node);
+        if (!S.stk[S.sp].hidden) walk_children(S,node);
+        st_pop(S); block_break(S,8);
+        for (int i=0;i<256;++i) S.form_action[i]=saved_action[i];
+        S.form_method_post = saved_post;
+        return;
+    }
+
+    /* ---- Form controls: input / textarea / button / select ------------- *
+     * Each emits a WL_FIELD run (a box carrying the cascaded style: color,
+     * background, font-size and an optional CSS width) plus a wl_field entry
+     * with the metadata needed to submit the owning form. */
+    if (ieq(t,"input") || ieq(t,"textarea") || ieq(t,"button") || ieq(t,"select")) {
+        st_push(S); apply_css(S,node);
+        if (S.stk[S.sp].hidden) { st_pop(S); return; }
+
+        const char *type = dom_attr(node,"type");
+        const char *name = dom_attr(node,"name");
+        const char *val  = dom_attr(node,"value");
+        int px = S.stk[S.sp].px;
+
+        /* Classify. */
+        int kind = WLF_TEXT;
+        int hidden_input = 0;
+        if (ieq(t,"button")) kind = WLF_BUTTON;
+        else if (ieq(t,"textarea")) kind = WLF_TEXTAREA;
+        else if (ieq(t,"input") && type) {
+            if (ieq(type,"submit")) kind = WLF_SUBMIT;
+            else if (ieq(type,"button")) kind = WLF_BUTTON;
+            else if (ieq(type,"hidden")) hidden_input = 1;
+            else if (ieq(type,"checkbox")||ieq(type,"radio")) kind = WLF_BUTTON; /* drawn as small box */
+        }
+
+        int idx = add_field(S.doc);
+        if (idx >= 0) {
+            wl_field *f = &S.doc->fields[idx];
+            f->kind = kind;
+            str_copy(f->name,  sizeof f->name,  name ? name : "");
+            str_copy(f->value, sizeof f->value, val ? val : "");
+            str_copy(f->action,sizeof f->action,S.form_action);
+            f->method_post = S.form_method_post;
+        }
+
+        /* Hidden inputs are submittable but invisible: no run. */
+        if (hidden_input) { st_pop(S); return; }
+
+        /* Box geometry: CSS width wins; else `size` chars; else a default. */
+        int w_css = S.stk[S.sp].width;
+        int chars = 20;
+        { const char *sz = dom_attr(node,"size"); if (sz) { int v=0; for(const char*p=sz;*p>='0'&&*p<='9';++p)v=v*10+(*p-'0'); if(v>0)chars=v; } }
+        int box_w, box_h;
+        if (kind == WLF_SUBMIT || kind == WLF_BUTTON) {
+            const char *label = (val && val[0]) ? val : "Submit";
+            box_w = w_css > 0 ? w_css : word_w(S, label, (int)__builtin_strlen(label), px) + 24;
+            box_h = px + 12;
+        } else if (kind == WLF_TEXTAREA) {
+            box_w = w_css > 0 ? w_css : 280;
+            box_h = S.lh(px) * 3 + 8;
+        } else { /* text-like input */
+            box_w = w_css > 0 ? w_css : chars * S.adv('m', px);
+            box_h = px + 10;
+        }
+        if (box_w > S.vw - S.stk[S.sp].left) box_w = S.vw - S.stk[S.sp].left;
+
+        /* Place the box on the current line (wrap if needed). */
+        int gap = (S.pend_space && !S.at_sol) ? S.adv(' ', px) : 0;
+        if (!S.at_sol && S.cx + gap + box_w > S.vw) { newline(S); gap = 0; }
+        else S.cx += gap;
+        S.pend_space = false;
+
+        wl_run *r = add_run(S.doc);
+        if (r) {
+            r->kind = WL_FIELD;
+            r->x = S.cx; r->y = S.cy; r->w = box_w; r->h = box_h;
+            r->px = px;
+            r->bold = (kind==WLF_SUBMIT||kind==WLF_BUTTON) ? 1 : 0;
+            r->underline = 0;
+            r->color = S.stk[S.sp].color;
+            r->bg = S.stk[S.sp].bg;
+            r->off = idx; r->len = kind; r->link = -1;
+            S.cx += box_w; S.at_sol = false;
+            if (box_h > S.line_h) S.line_h = box_h;
+            S.pending_margin = 0;
+        }
+        st_pop(S);
+        return;
+    }
+
     /* ---- Generic block containers ------------------------------------- */
     if (ieq(t,"div")    ||ieq(t,"section")||ieq(t,"article")||ieq(t,"header")||
         ieq(t,"main")   ||ieq(t,"aside")  ||ieq(t,"figure") ||ieq(t,"figcaption")||
-        ieq(t,"form")   ||ieq(t,"fieldset")||ieq(t,"details")||ieq(t,"summary")||
+        ieq(t,"fieldset")||ieq(t,"details")||ieq(t,"summary")||
         ieq(t,"body")   ||ieq(t,"html")) {
         st_push(S); apply_css(S,node);
         if (!S.stk[S.sp].hidden) { block_break(S,6); walk_children(S,node); }

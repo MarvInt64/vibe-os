@@ -39,7 +39,13 @@ typedef unsigned int vui_u32;
 #define VUI_OK          0x0050c98au
 #define VUI_WARN        0x00f0b86eu
 #define VUI_DANGER      0x00ef7f7fu
+#define VUI_COLOR_TRANSPARENT 0x00ff00ffu
 #define VUI_PROCESS_MAX 8   /* must match kernel PROCESS_MAX_COUNT */
+
+#define VUI_WINDOW_FRAMELESS  0x00000001u
+#define VUI_WINDOW_NO_DOCK    0x00000002u
+#define VUI_WINDOW_POSITIONED 0x00000004u
+#define VUI_WINDOW_ALWAYS_ON_TOP 0x00000008u
 
 typedef struct vui_window vui_window;
 typedef struct vui_widget vui_widget;
@@ -48,6 +54,26 @@ typedef void (*vui_tick_callback)(vui_window *window);
 typedef void (*vui_resize_callback)(vui_window *window, int width, int height);
 typedef void (*vui_context_callback)(vui_window *window, int x, int y);
 typedef void (*vui_menu_callback)(vui_window *window);
+
+typedef struct vui_theme {
+    vui_u32 bg;
+    vui_u32 surface;
+    vui_u32 surface_hi;
+    vui_u32 border;
+    vui_u32 border_hi;
+    vui_u32 text;
+    vui_u32 text_dim;
+    vui_u32 accent;
+    vui_u32 ok;
+    vui_u32 warn;
+    vui_u32 danger;
+    unsigned char radius;
+    unsigned char padding;
+} vui_theme;
+
+const vui_theme *vui_theme_default(void);
+void vui_set_theme(const vui_theme *theme);
+int  vui_load_theme(const char *path);
 
 typedef struct vui_process_info {
     unsigned int pid;
@@ -68,17 +94,25 @@ typedef struct vui_process_info {
  * Always returns a valid window: if no window server is running, the toolkit
  * prints a hint and terminates the process, so callers need not null-check. */
 vui_window *vui_window_open(const char *title, int width, int height);
+vui_window *vui_window_open_ex(const char *title, int width, int height,
+                               vui_u32 flags, int x, int y);
 
 /* ---- Create persistent widgets (retained) ---- */
 vui_widget *vui_panel(vui_window *w, int x, int y, int width, int height, const char *title);
+vui_widget *vui_card(vui_window *w, int x, int y, int width, int height, const char *title);
 vui_widget *vui_label(vui_window *w, int x, int y, const char *text);
 vui_widget *vui_button(vui_window *w, int x, int y, const char *text);
+vui_widget *vui_tile_button(vui_window *w, int x, int y, const char *text);
+vui_widget *vui_input(vui_window *w, int x, int y, int width, const char *placeholder);
+vui_widget *vui_badge(vui_window *w, int x, int y, const char *text);
+vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels, int active);
 vui_widget *vui_bar(vui_window *w, int x, int y, int width, int height, int max);
 
 /* ---- Configure widgets ---- */
 void vui_on_click(vui_widget *b, vui_callback cb);
 void vui_set_text(vui_widget *wgt, const char *text);
 void vui_set_int(vui_widget *wgt, int value);          /* label: show a number */
+int  vui_get_int(vui_widget *wgt);
 void vui_set_value(vui_widget *wgt, int value);        /* bar: progress value */
 void vui_set_color(vui_widget *wgt, vui_u32 color);
 void vui_set_user(vui_widget *wgt, void *user);        /* attach app data */
@@ -95,6 +129,7 @@ void vui_set_button_width(vui_widget *wgt, int width);
 /* Keep a widget attached to window edges. LEFT|RIGHT grows horizontally;
  * RIGHT alone follows the right edge; TOP|BOTTOM grows vertically. */
 void vui_set_anchor(vui_widget *wgt, int anchors);
+void vui_set_clear_color(vui_window *w, vui_u32 color);
 int vui_window_width(vui_window *w);
 int vui_window_height(vui_window *w);
 void vui_on_tick(vui_window *w, vui_tick_callback cb);
