@@ -39,12 +39,13 @@ struct desktop_theme {
 };
 
 static struct desktop_theme g_chrome_theme = {
-    /* bg          surface      surface_hi   border */
-    0x001a2740u, 0x00243650u, 0x002e435du, 0x003c526eu,
+    /* Palette from the VibeOS design spec (blue-gray glass, cyan-blue accent).
+       bg          surface      surface_hi   border */
+    0x0015273cu, 0x001b3048u, 0x00233850u, 0x0039506au,
     /* border_hi   text         text_dim     accent */
-    0x006f86a6u, 0x00e8f0f8u, 0x00aebbd0u, 0x006eb6ffu,
+    0x005a7da3u, 0x00eaf2fau, 0x00b7c7d8u, 0x004da3ffu,
     /* ok          warn         danger */
-    0x0076e0b5u, 0x00f4c36bu, 0x00ff7f8fu
+    0x0063d9a5u, 0x00e6b65cu, 0x00e36c7au
 };
 
 static const char *const INFO_LINES[] = {
