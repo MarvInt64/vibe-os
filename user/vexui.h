@@ -216,6 +216,8 @@ int vui_process_kill(unsigned int pid);
 /* ---- Run the framework event loop until the window closes ---- */
 void vui_run(vui_window *w) __attribute__((noreturn));
 void vui_quit(vui_window *w);
+/* The window-server id of a VexUI window (e.g. for vos_window_set_menubar). */
+int  vui_window_id(vui_window *w);
 
 #ifdef __cplusplus
 } /* extern "C" */

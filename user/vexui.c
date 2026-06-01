@@ -1256,6 +1256,7 @@ vui_window *vui_window_open(const char *title, int width, int height) {
 }
 
 void vui_quit(vui_window *w){ if(w) w->open=0; }
+int vui_window_id(vui_window *w){ return w ? w->id : -1; }
 
 void __attribute__((noreturn)) vui_run(vui_window *w) {
     /* initial paint */
