@@ -6,8 +6,13 @@
 #include "input.h"
 #include "winsys.h"
 
-/* Number of concurrent userspace app windows supported. */
-#define MAX_USER_APPS 16
+/* Number of concurrent userspace app windows supported. Each slot statically
+ * reserves full-width (WINSYS_MAX_WIDTH) content + surface buffers, so this
+ * count directly scales kernel BSS. With the full-width top bar raising
+ * WINSYS_MAX_WIDTH to 1920 each slot roughly doubled (~10.7 MB), so this is
+ * halved from 16 to keep the total memory budget that fit in RAM before.
+ * The persistent shell panels (top bar + dock) use 2 slots, leaving 6 apps. */
+#define MAX_USER_APPS 8
 
 enum window_id {
     WINDOW_INFO = 0,
