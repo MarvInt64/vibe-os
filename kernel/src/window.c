@@ -22,9 +22,8 @@ struct desktop_icon {
 
 static struct desktop_icon launcher_icon_at(const struct desktop_state *desktop, int index);
 
-/* Pixels left at this colour in a window surface are treated as transparent
- * when the surface is composited, so the rounded corners show the desktop
- * behind them instead of an ugly black block. */
+/* Legacy transparent color key. Newer app surfaces may also use ARGB alpha in
+ * the high byte; keeping the key preserves old 0x00RRGGBB callers. */
 #define WINDOW_TRANSPARENT_KEY 0x00ff00ffu
 
 struct desktop_theme {
@@ -1622,20 +1621,28 @@ static void blit_window_surface_region(struct framebuffer *dest, const struct fr
         int x;
         for (x = x0; x < x1; ++x) {
             uint32_t px = src_row[x - dest_x];
-            /* Skip transparent-key pixels so rounded corners reveal the desktop. */
+            uint32_t sa;
+            uint32_t effective_alpha;
+            uint32_t d;
+            uint32_t sr, sg, sb, dr, dg, db, r, g, b;
+            /* Skip legacy transparent-key pixels so old rounded corners reveal
+             * the desktop even though they have no real alpha channel. */
             if (px == WINDOW_TRANSPARENT_KEY) continue;
-            if (alpha < 255u) {
-                /* Blend the surface over the desktop for a translucent window. */
-                uint32_t d = dest_row[x];
-                uint32_t sr=(px>>16)&255u, sg=(px>>8)&255u, sb=px&255u;
-                uint32_t dr=(d>>16)&255u, dg=(d>>8)&255u, db=d&255u;
-                uint32_t r=(sr*alpha + dr*(255u-alpha))/255u;
-                uint32_t g=(sg*alpha + dg*(255u-alpha))/255u;
-                uint32_t b=(sb*alpha + db*(255u-alpha))/255u;
-                dest_row[x] = (r<<16)|(g<<8)|b;
-            } else {
+            sa = px >> 24;
+            if (sa == 0u) sa = 255u;
+            effective_alpha = (sa * alpha) / 255u;
+            if (effective_alpha == 0u) continue;
+            if (effective_alpha >= 255u) {
                 dest_row[x] = px;
+                continue;
             }
+            d = dest_row[x];
+            sr=(px>>16)&255u; sg=(px>>8)&255u; sb=px&255u;
+            dr=(d>>16)&255u; dg=(d>>8)&255u; db=d&255u;
+            r=(sr*effective_alpha + dr*(255u-effective_alpha))/255u;
+            g=(sg*effective_alpha + dg*(255u-effective_alpha))/255u;
+            b=(sb*effective_alpha + db*(255u-effective_alpha))/255u;
+            dest_row[x] = (r<<16)|(g<<8)|b;
         }
     }
 }
@@ -1893,7 +1900,7 @@ static void compose_scene_rect(struct desktop_state *desktop, struct framebuffer
          * which was the main source of flicker during motion. */
         draw_shadow_block(fb, window->x, window->y, window->width, window->height);
         blit_window_surface_region(fb, &desktop->window_fbs[index], window->x, window->y, rect,
-                                   (window->flags & WINSYS_WINDOW_TRANSLUCENT) ? 210u
+                                   (window->flags & WINSYS_WINDOW_TRANSLUCENT) ? 245u
                                                                                : g_chrome_theme.window_alpha);
     }
 
@@ -2639,6 +2646,19 @@ int desktop_app_create_ex(struct desktop_state *desktop, uint32_t pid, const str
     if ((flags & WINSYS_WINDOW_POSITIONED) == 0u) {
         if (w->x < ui_left_work_area_inset(desktop) + 16) w->x = ui_left_work_area_inset(desktop) + 16;
         if (w->y < 16) w->y = 16;
+    }
+    /* Positioned app windows are requests, not trusted coordinates. Clamp them
+     * back onto the physical screen so a stale display-mode result or runtime
+     * resolution change cannot strand frameless windows offscreen. */
+    {
+        int max_x = (int)desktop->screen_width - w->width;
+        int max_y = (int)desktop->screen_height - w->height;
+        if (max_x < 0) max_x = 0;
+        if (max_y < 0) max_y = 0;
+        if (w->x < 0) w->x = 0;
+        if (w->y < 0) w->y = 0;
+        if (w->x > max_x) w->x = max_x;
+        if (w->y > max_y) w->y = max_y;
     }
 
     desktop->user_apps[slot].created = 1;

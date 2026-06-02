@@ -15,6 +15,47 @@
 #include <stdlib.h>
 #include "image.h"
 
+static uint32_t mix_rgb(uint32_t a, uint32_t b, unsigned step, unsigned total) {
+    uint32_t ar = (a >> 16) & 0xffu, ag = (a >> 8) & 0xffu, ab = a & 0xffu;
+    uint32_t br = (b >> 16) & 0xffu, bg = (b >> 8) & 0xffu, bb = b & 0xffu;
+    return ((((ar * (total - step)) + (br * step)) / total) << 16) |
+           ((((ag * (total - step)) + (bg * step)) / total) << 8) |
+           (((ab * (total - step)) + (bb * step)) / total);
+}
+
+static unsigned noise2(int x, int y) {
+    uint32_t n = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u;
+    n = (n ^ (n >> 13)) * 1274126177u;
+    return (n ^ (n >> 16)) & 0xffu;
+}
+
+static unsigned int *make_fallback_wallpaper(int *w, int *h) {
+    const int width = 1024;
+    const int height = 768;
+    uint32_t *px = (uint32_t *)malloc((size_t)width * (size_t)height * sizeof(uint32_t));
+    int x, y;
+
+    if (!px) return 0;
+    for (y = 0; y < height; ++y) {
+        uint32_t top = mix_rgb(0x0013263bu, 0x00192844u, (unsigned)y, (unsigned)(height - 1));
+        uint32_t bottom = mix_rgb(0x0006101cu, 0x00142636u, (unsigned)y, (unsigned)(height - 1));
+        for (x = 0; x < width; ++x) {
+            uint32_t c = mix_rgb(top, bottom, (unsigned)x, (unsigned)(width - 1));
+            unsigned glow = 0;
+            int dx = x - width / 2;
+            int dy = y - height / 3;
+            int dist = (dx * dx) / 6 + (dy * dy) / 3;
+            if (dist < 36000) glow = (unsigned)(80 - dist / 450);
+            c = mix_rgb(c, 0x00375f88u, glow, 255u);
+            c = mix_rgb(c, 0x00ffffffu, noise2(x, y) & 7u, 255u);
+            px[(size_t)y * (size_t)width + (size_t)x] = c;
+        }
+    }
+    *w = width;
+    *h = height;
+    return px;
+}
+
 /* Read the whole file into a heap buffer (grows as needed). */
 static int read_all(const char *path, unsigned char **out_buf, int *out_len) {
     int fd = (int)__sc1(SYS_OPEN, (uint64_t)(size_t)path);
@@ -72,8 +113,12 @@ int main(void) {
     px = image_decode(data, len, &w, &h);
     free(data);
     if (!px || w <= 0 || h <= 0) {
-        vos_log(VOS_LOG_APP, "wallpaper: decode failed");
-        return 1;
+        vos_log(VOS_LOG_APP, "wallpaper: decode failed, using fallback");
+        px = make_fallback_wallpaper(&w, &h);
+        if (!px) {
+            vos_log(VOS_LOG_APP, "wallpaper: fallback allocation failed");
+            return 1;
+        }
     }
 
     if (vos_set_wallpaper(px, w, h) == 0)

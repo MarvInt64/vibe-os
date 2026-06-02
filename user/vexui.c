@@ -292,6 +292,11 @@ static uint32_t mix(uint32_t a, uint32_t b, unsigned step, unsigned total) {
            (((ab * (total - step)) + (bb * step)) / total);
 }
 
+static vui_u32 argb(vui_u32 color, unsigned alpha) {
+    if (alpha > 255u) alpha = 255u;
+    return ((vui_u32)alpha << 24) | (color & 0x00ffffffu);
+}
+
 /* ---- canvas drawing ---- */
 /* Final, hard bound on every g_canvas access: returns the pixel index, or -1 if
  * it would land outside the backing array. Defends against a corrupted
@@ -342,7 +347,7 @@ static void blend_put(struct vui_window *w,int x,int y,vui_u32 c,int a){
     {
         vui_u32 *d=&g_canvas[i];
         if (*d == w->clear_color) {
-            if (a >= 128) *d = c;
+            *d = argb(c, (unsigned)a);
             return;
         }
         vui_u32 sr=(c>>16)&255u, sg=(c>>8)&255u, sb=c&255u;
@@ -584,7 +589,7 @@ vui_widget *vui_button(vui_window *w, int x, int y, const char *t) {
 vui_widget *vui_tile_button(vui_window *w, int x, int y, const char *t) {
     vui_widget *wd = new_widget(w, W_TILE);
     if (!wd) return 0;
-    wd->x=x; wd->y=y; wd->w=44; wd->h=44; wd->color=VUI_ACCENT;
+    wd->x=x; wd->y=y; wd->w=58; wd->h=58; wd->color=VUI_ACCENT;
     scopy(wd->text, t?t:"", sizeof(wd->text));
     init_margins(wd); w->dirty=1; return wd;
 }
@@ -1206,27 +1211,21 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         text(w, tx, ty, wd->text, (wd->hover || wd->pressed) ? g_theme.text : g_theme.text_dim);
         break; }
     case W_TILE: {
-        /* Dock icon: a thin-outlined rounded-square tile (transparent interior)
-         * with a line-art glyph inside — matching the reference. Hover/active
-         * brightens the outline to the accent and shows a short blue indicator
-         * line just below the tile; faint separators sit in the gaps. */
+        /* Dock icon tile with enough raster budget for crisp line-art. The
+         * interior stays mostly transparent so the glass bar remains visible. */
         uint32_t accent = wd->color ? wd->color : g_theme.accent;
         int cx = wd->x + wd->w / 2;
-        int cy = wd->y + wd->h / 2 - 2;
+        int cy = wd->y + wd->h / 2 - 3;
         int active = (wd->hover || wd->pressed);
-        int pad = 4;
+        int pad = 6;
         int tx = wd->x + pad, ty = wd->y + pad;
         int tw = wd->w - 2 * pad, th = wd->h - 2 * pad;
         uint32_t bd = active ? mix(g_theme.surface, accent, 1u, 1u)
-                             : mix(g_theme.surface, 0x00cfe2f5u, 1u, 2u);
-        uint32_t ic = active ? g_theme.text : g_theme.text_dim;
-        /* Rounded-square outline (corners rounded by skipping the extreme pixel). */
-        rect(w, tx + 2, ty,          tw - 4, 1, bd);
-        rect(w, tx + 2, ty + th - 1, tw - 4, 1, bd);
-        rect(w, tx,          ty + 2, 1, th - 4, bd);
-        rect(w, tx + tw - 1, ty + 2, 1, th - 4, bd);
-        put(w, tx + 1, ty + 1, bd); put(w, tx + tw - 2, ty + 1, bd);
-        put(w, tx + 1, ty + th - 2, bd); put(w, tx + tw - 2, ty + th - 2, bd);
+                             : mix(g_theme.surface, 0x00cfe2f5u, 1u, 3u);
+        uint32_t fill = active ? mix(g_theme.surface, accent, 1u, 7u)
+                               : argb(mix(g_theme.surface, 0x00ffffffu, 1u, 18u), 150u);
+        uint32_t ic = active ? mix(g_theme.text, accent, 1u, 4u) : mix(g_theme.text_dim, 0x00ffffffu, 1u, 6u);
+        fill_round_rect(w, tx, ty, tw, th, 6, fill, bd);
         if (wd->value > 0) {
             tile_icon(w, cx, cy, wd->value, ic);
         } else {
@@ -1236,10 +1235,9 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
             if (gx < wd->x + 6) gx = wd->x + 6;
             text(w, gx, gy, wd->text, ic);
         }
-        /* Faint vertical separator in the gap to the right of the tile. */
-        rect(w, wd->x + wd->w + 11, wd->y + 6, 1, wd->h - 12,
-             mix(g_theme.surface, 0x00cfe2f5u, 1u, 6u));
-        if (active) rect(w, cx - 7, ty + th + 3, 14, 2, accent);
+        rect(w, wd->x + wd->w + 10, wd->y + 10, 1, wd->h - 20,
+             argb(mix(g_theme.surface, 0x00cfe2f5u, 1u, 4u), 130u));
+        if (active) fill_round_rect(w, cx - 9, ty + th + 4, 18, 3, 2, accent, accent);
         break; }
     case W_INPUT: {
         /* Rounded dark input field (all text/search fields). Subtle border that
@@ -1302,12 +1300,14 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         }
         break; }
     case W_PILL: {
-        /* Dock bar surface with a restrained radius and a faint glass border. */
+        /* Glass dock surface: real alpha at the rounded edges and a subtle
+         * border so it reads cleanly over both wallpaper and windows. */
         uint32_t fill = wd->color ? wd->color : g_theme.surface;
         uint32_t bd = mix(fill, 0x00cfe2f5u, 1u, 3u);
-        int r = 10;
+        int r = 14;
         if (r > wd->h / 2) r = wd->h / 2;
-        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, r, fill, bd);
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, r, argb(fill, 238u), bd);
+        rect(w, wd->x + r, wd->y + 1, wd->w - 2 * r, 1, argb(0x00ffffffu, 44u));
         break; }
     case W_METRIC: {
         /* Self-contained metric card: title + big value + sub-label + a chart

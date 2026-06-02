@@ -72,8 +72,8 @@ int main() {
     uint32_t mode = (uint32_t)__sc2(SYS_DISPLAY_MODE, 0, 0);
     int screen_w = (int)((mode >> 16) & 0xffffu);
     int screen_h = (int)(mode & 0xffffu);
-    int width = 464;
-    int height = 52;
+    int width = 560;
+    int height = 76;
     int x;
     int y;
 
@@ -81,7 +81,7 @@ int main() {
     if (screen_h <= 0) screen_h = 768;
     if (width > screen_w - 24) width = screen_w - 24;
     x = (screen_w - width) / 2;
-    y = screen_h - height - 18;
+    y = screen_h - height - 24;
     if (y < 0) y = 0;
 
     vos_log(VOS_LOG_APP, "dock ready");
@@ -97,8 +97,8 @@ int main() {
     vui_widget *surface = vui_pill(win, 0, 0, width, height);
     vui_set_color(surface, 0x00263a54u);
 
-    vui_widget *row = vui_hbox(win, 26, 4, width - 52, height - 8);
-    vui_set_gap(row, 22);
+    vui_widget *row = vui_hbox(win, 32, 8, width - 64, height - 16);
+    vui_set_gap(row, 18);
     vui_set_padding(row, 0);
 
     for (unsigned i = 0; i < sizeof(kEntries) / sizeof(kEntries[0]); ++i) {
