@@ -113,6 +113,10 @@ vui_widget *vui_tile_button(vui_window *w, int x, int y, const char *text);
 vui_widget *vui_image(vui_window *w, int x, int y, int size);
 vui_widget *vui_input(vui_window *w, int x, int y, int width, const char *placeholder);
 vui_widget *vui_badge(vui_window *w, int x, int y, const char *text);
+/* Low-level pixel buffer widget for custom rendering (games, browser).
+ * The pixels buffer must be at least stride * height * 4 bytes. */
+vui_widget *vui_canvas(vui_window *w, int x, int y, int width, int height, vui_u32 *pixels);
+vui_widget *vui_canvas_ex(vui_window *w, int x, int y, int width, int height, vui_u32 *pixels, int stride);
 vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels, int active);
 vui_widget *vui_bar(vui_window *w, int x, int y, int width, int height, int max);
 /* Decorative mini line-graph (sparkline) for metric cards. */
@@ -132,6 +136,9 @@ void vui_metric_push(vui_widget *wd, int sample);
 
 /* ---- Configure widgets ---- */
 void vui_on_click(vui_widget *b, vui_callback cb);
+/* W_INPUT only: callback fired when Enter/Return is pressed in the input. Use
+ * this for "submit on Enter" (e.g. a URL bar); on_click fires on every keystroke. */
+void vui_on_submit(vui_widget *b, vui_callback cb);
 void vui_set_text(vui_widget *wgt, const char *text);
 void vui_set_int(vui_widget *wgt, int value);          /* label: show a number */
 int  vui_get_int(vui_widget *wgt);

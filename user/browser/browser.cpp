@@ -10,9 +10,8 @@
  * ------------------
  *   HTTP fetch  →  dom_parse  →  LayoutEngine::layout  →  render()
  *
- * The canvas is a plain RGBA pixel buffer drawn by render() and handed to
- * the kernel window server via vos_window_present.  VexUI is not used here
- * because the browser needs pixel-level control of the page area.
+ * The browser uses VexUI for its window and chrome (toolbar, status bar),
+ * and draws the page content into a W_CANVAS widget.
  *
  * Navigation history
  * ------------------
@@ -22,8 +21,8 @@
  *
  * Keyboard shortcuts
  * ------------------
- *   Enter        load URL             u / /       focus URL bar
- *   [ / ]        back / forward       Esc         cancel URL editing
+ *   Enter        load URL (in URL bar)
+ *   [ / ]        back / forward
  *   j / k        scroll down/up       Space / b   page down/up
  *   g / G        top / bottom         r           reload current page */
 
@@ -38,20 +37,12 @@
 #include <cstdlib>
 #include <sys/syscall.h>
 
-/* The browser's identity, sent as the User-Agent on every request. The kernel
- * net layer stays generic and forwards whatever the app provides. */
+/* The browser's identity, sent as the User-Agent on every request. */
 static const char *BROWSER_USER_AGENT = "VibeOS github.com/MarvInt64/vibe-os";
 
 /* ---- theme colours ----------------------------------------------------- */
-static const uint32_t COL_BG       = 0x00101620u;  /* window background    */
-static const uint32_t COL_BAR      = 0x001d2740u;  /* chrome bar           */
-static const uint32_t COL_BAR_HI   = 0x00273f6bu;  /* URL bar active       */
-static const uint32_t COL_BTN      = 0x00243350u;  /* nav button bg        */
-/* COL_BTN_HI reserved for future hover state on back/forward buttons. */
-/* static const uint32_t COL_BTN_HI = 0x00304472u; */
 static const uint32_t COL_PAGE     = 0x00f7f8fcu;  /* page paper           */
 static const uint32_t COL_HOVER    = 0x00d8e4ffu;  /* link hover           */
-static const uint32_t COL_TEXT_CHR = 0x00d6e2f2u;  /* chrome text          */
 static const uint32_t COL_DIM      = 0x008396adu;  /* dimmed chrome text   */
 static const uint32_t COL_ACCENT   = 0x0064f2ccu;  /* cursor / accent      */
 static const uint32_t COL_SCROLLBG = 0x001a2438u;  /* scrollbar track      */
@@ -66,124 +57,108 @@ Browser::Browser() {
     s_instance_ = this;
 }
 
+/* ---- global callbacks -------------------------------------------------- */
+
+void on_back_click(vui_widget *) { Browser::s_instance_->on_back(); }
+void on_forward_click(vui_widget *) { Browser::s_instance_->on_forward(); }
+void on_url_enter_cb(vui_widget *) { Browser::s_instance_->on_url_enter(); }
+void on_tick_cb(vui_window *) { Browser::s_instance_->on_tick(); }
+void on_resize_cb(vui_window *, int w, int h) { Browser::s_instance_->on_resize(w, h); }
+
+void Browser::on_back() {
+    if (hist_pos_ > 0) {
+        --hist_pos_;
+        __builtin_strncpy(url_, history_[hist_pos_], sizeof url_);
+        url_len_ = (int)__builtin_strlen(url_);
+        vui_set_text(w_url_bar_, url_);
+        load_url(url_);
+    }
+}
+
+void Browser::on_forward() {
+    if (hist_pos_ + 1 < hist_count_) {
+        ++hist_pos_;
+        __builtin_strncpy(url_, history_[hist_pos_], sizeof url_);
+        url_len_ = (int)__builtin_strlen(url_);
+        vui_set_text(w_url_bar_, url_);
+        load_url(url_);
+    }
+}
+
+void Browser::on_url_enter() {
+    const char *text = vui_input_text(w_url_bar_);
+    if (text && text[0]) {
+        __builtin_strncpy(url_, text, sizeof url_);
+        url_len_ = (int)__builtin_strlen(url_);
+        navigate(url_);
+    }
+}
+
+void Browser::on_tick() {
+    bool dirty = false;
+    if (fetch_state_.load(std::memory_order_acquire) == (int)FetchState::Fetching) {
+        ++progress_phase_;
+        dirty = true;
+    }
+    int before = fetch_state_.load(std::memory_order_acquire);
+    poll_fetch();
+    if (before != fetch_state_.load(std::memory_order_acquire)) dirty = true;
+    if (images_dirty_.exchange(false, std::memory_order_acquire)) dirty = true;
+    if (dirty) {
+        render();
+        vui_request_repaint(win_);
+    }
+}
+
 /* ---- entry point ------------------------------------------------------- */
 
 void __attribute__((noreturn)) Browser::run() {
-    vos_window_options opts{};
-    uint32_t mode = (uint32_t)__sc2(SYS_DISPLAY_MODE, 0, 0);
-    int screen_w = (int)((mode >> 16) & 0xffffu);
-    int screen_h = (int)(mode & 0xffffu);
-    int x = 96;
-    int y = 220;
+    win_ = vui_window_open_ex("Browser", win_w_, win_h_, VUI_WINDOW_POSITIONED, 96, 220);
 
-    if (screen_w > 0 && screen_h > 0) {
-        if (x + win_w_ > screen_w) x = screen_w - win_w_ - 28;
-        if (y + win_h_ > screen_h) y = screen_h - win_h_ - 132;
-        if (x < 20) x = 20;
-        if (y < 72) y = 72;
-    }
+    vui_widget *bar = vui_hbox(win_, 0, 0, win_w_, BAR_H);
+    vui_set_anchor(bar, VUI_ANCHOR_LEFT | VUI_ANCHOR_RIGHT | VUI_ANCHOR_TOP);
+    vui_set_padding(bar, 4);
+    vui_set_gap(bar, 6);
 
-    opts.title = "Browser";
-    opts.width = win_w_;
-    opts.height = win_h_;
-    opts.flags = VOS_WINDOW_POSITIONED;
-    opts.x = x;
-    opts.y = y;
+    w_back_ = vui_button(win_, 0, 0, "<");
+    vui_box_add(bar, w_back_);
+    vui_on_click(w_back_, on_back_click);
 
-    win_id_ = vos_window_create_ex(&opts);
-    if (win_id_ < 0) {
-        vos_log(VOS_LOG_APP, "browser: no window server — start the desktop with 'gui'");
-        exit(1);
-    }
+    w_forward_ = vui_button(win_, 0, 0, ">");
+    vui_box_add(bar, w_forward_);
+    vui_on_click(w_forward_, on_forward_click);
 
-    /* Declare this app's global menu bar; the desktop shows it in the top bar
-     * while the browser is focused, and reports picks via VOS_EV_MENU_ACTION. */
-    static const vos_menubar_item kMenuBar[] = {
-        {"Page","",VOS_MB_TITLE,0},
-        {"New Tab","Ctrl+T",0,1},{"New Window","Ctrl+N",0,2},
-        {"Open Location","Ctrl+L",0,3},{"Reload","Ctrl+R",0,4},
-        {"","",VOS_MB_DIVIDER,0},{"Save Page","Ctrl+S",0,5},{"Print","Ctrl+P",0,6},
-        {"","",VOS_MB_DIVIDER,0},{"Close Window","Ctrl+W",VOS_MB_DANGER,7},
-        {"Edit","",VOS_MB_TITLE,0},
-        {"Undo","Ctrl+Z",0,10},{"Redo","Ctrl+Shift+Z",0,11},{"","",VOS_MB_DIVIDER,0},
-        {"Cut","Ctrl+X",0,12},{"Copy","Ctrl+C",0,13},{"Paste","Ctrl+V",0,14},
-        {"Select All","Ctrl+A",0,15},{"","",VOS_MB_DIVIDER,0},{"Find in Page","Ctrl+F",0,16},
-        {"View","",VOS_MB_TITLE,0},
-        {"Show Toolbar","",VOS_MB_CHECK|VOS_MB_CHECKED,20},
-        {"Show Status Bar","",VOS_MB_CHECK|VOS_MB_CHECKED,21},{"","",VOS_MB_DIVIDER,0},
-        {"Zoom In","Ctrl++",0,22},{"Zoom Out","Ctrl+-",0,23},{"Reset Zoom","Ctrl+0",0,24},
-        {"Navigate","",VOS_MB_TITLE,0},
-        {"Back","Alt+Left",0,30},{"Forward","Alt+Right",0,31},{"Home","Alt+Home",0,32},
-        {"Reload","Ctrl+R",0,33},{"","",VOS_MB_DIVIDER,0},{"Open Downloads","",0,34},
-        {"Tools","",VOS_MB_TITLE,0},
-        {"Developer Console","Ctrl+Shift+I",0,40},{"Network Inspector","",0,41},{"Settings","",0,42},
-        {"Help","",VOS_MB_TITLE,0},
-        {"VibeOS Help","",0,50},{"Keyboard Shortcuts","",0,51},{"About","",0,52},
-    };
-    vos_window_set_menubar(win_id_, kMenuBar, (int)(sizeof(kMenuBar) / sizeof(kMenuBar[0])));
+    w_url_bar_ = vui_input(win_, 0, 0, 400, "example.com");
+    vui_set_expand(w_url_bar_);
+    vui_box_add(bar, w_url_bar_);
+    vui_on_submit(w_url_bar_, on_url_enter_cb);
 
-    /* Pre-fill URL bar with a hint. */
+    w_canvas_ = vui_canvas_ex(win_, 0, BAR_H, win_w_, win_h_ - BAR_H, canvas_, BROW_MAX_W);
+    vui_set_anchor(w_canvas_, VUI_ANCHOR_LEFT | VUI_ANCHOR_RIGHT | VUI_ANCHOR_TOP | VUI_ANCHOR_BOTTOM);
+
+    vui_on_tick(win_, on_tick_cb);
+    vui_on_resize(win_, on_resize_cb);
+
     const char *hint = "example.com";
     __builtin_strcpy(url_, hint);
     url_len_ = (int)__builtin_strlen(hint);
-
-    __builtin_strcpy(status_,
-        "type a URL + Enter  |  [/] back/forward  |  j/k scroll  |  u=edit");
+    vui_set_text(w_url_bar_, url_);
 
     render();
-
-    for (;;) {
-        vos_event ev;
-        bool dirty = false;
-
-        while (vos_event_poll(win_id_, &ev) == 1) {
-            switch (ev.type) {
-            case VOS_EV_CLOSE:      exit(0);
-            case VOS_EV_KEY:        on_key(ev.key);              dirty = true; break;
-            case VOS_EV_SCROLL:     on_scroll(ev.y);             dirty = true; break;
-            case VOS_EV_MOUSE_MOVE: on_mouse_move(ev.x, ev.y);  dirty = true; break;
-            case VOS_EV_MOUSE_DOWN: on_click(ev.x, ev.y);       dirty = true; break;
-            case VOS_EV_RESIZE:     on_resize(ev.x, ev.y);      dirty = true; break;
-            default: break;
-            }
-        }
-
-        /* While the worker thread is fetching, keep repainting so the progress
-         * bar animates and the window stays visibly alive. */
-        if (fetch_state_.load(std::memory_order_acquire) == (int)FetchState::Fetching) {
-            ++progress_phase_;
-            dirty = true;
-        }
-
-        /* Settle the state machine once the worker finishes (page is stable). */
-        int before = fetch_state_.load(std::memory_order_acquire);
-        poll_fetch();
-        if (before != fetch_state_.load(std::memory_order_acquire)) dirty = true;
-
-        /* A background image finished and the worker re-laid-out the page. */
-        if (images_dirty_.exchange(false, std::memory_order_acquire)) dirty = true;
-
-        if (dirty) render();
-
-        /* A plain yield makes the browser immediately runnable again. During
-         * page loads that meant repainting/presenting the full window as fast
-         * as the scheduler allowed, which starved the rest of the desktop.
-         * Sleep for a tick while idle and a few ticks during indeterminate
-         * progress animation; input latency stays low, but loading no longer
-         * turns into a compositor stress test. */
-        vos_sleep_ticks(fetch_state_.load(std::memory_order_acquire) ==
-                            (int)FetchState::Fetching ? 3u : 1u);
-    }
+    vui_run(win_);
 }
 
 /* ---- canvas drawing helpers -------------------------------------------- */
 
 void Browser::fill(int x, int y, int w, int h, uint32_t c) {
+    if (y < 0) { h += y; y = 0; }
+    if (y + h > win_h_) h = win_h_ - y;
+    if (h <= 0) return;
     for (int iy = y; iy < y + h; ++iy) {
-        if (iy < 0 || iy >= win_h_) continue;
-        for (int ix = x; ix < x + w; ++ix) {
-            if (ix >= 0 && ix < win_w_) canvas_[iy * win_w_ + ix] = c;
-        }
+        uint32_t *row = &canvas_[iy * BROW_MAX_W];
+        int x0 = x < 0 ? 0 : x;
+        int x1 = (x + w) > win_w_ ? win_w_ : (x + w);
+        for (int ix = x0; ix < x1; ++ix) row[ix] = c;
     }
 }
 
@@ -191,11 +166,13 @@ void Browser::draw_glyph(int x, int y, char ch, uint32_t c) {
     const uint8_t *g = glyph_for_char(ch);
     for (int r = 0; r < 16; ++r) {
         uint8_t b = g[r];
+        int py = y + r;
+        if (py < 0 || py >= win_h_) continue;
+        uint32_t *row = &canvas_[py * BROW_MAX_W];
         for (int col = 0; col < 8; ++col) {
             if (!((b >> (7 - col)) & 1u)) continue;
-            int px = x + col, py = y + r;
-            if (px >= 0 && px < win_w_ && py >= 0 && py < win_h_)
-                canvas_[py * win_w_ + px] = c;
+            int px = x + col;
+            if (px >= 0 && px < win_w_) row[px] = c;
         }
     }
 }
@@ -210,20 +187,20 @@ int Browser::draw_text_n(int x, int y, const char *s, int n, uint32_t c) {
     return i;
 }
 
-/* Anti-aliased glyph blit from the appfont cache. */
-void Browser::blit_glyph_aa(const af_glyph *g, int ox, int oy,
-                              uint32_t color, int clip_top) {
+void Browser::blit_glyph_aa(const af_glyph *g, int ox, int oy, uint32_t color) {
     if (!g || !g->cov) return;
     int sr = (color >> 16) & 255, sg = (color >> 8) & 255, sb = color & 255;
     for (int yy = 0; yy < g->h; ++yy) {
         int py = oy + yy;
-        if (py < clip_top || py >= win_h_) continue;
+        if (py < 0 || py >= win_h_) continue;
+        uint32_t *row = &canvas_[py * BROW_MAX_W];
+        const uint8_t *cov = &g->cov[yy * g->w];
         for (int xx = 0; xx < g->w; ++xx) {
-            int a = g->cov[yy * g->w + xx];
+            int a = cov[xx];
             if (!a) continue;
             int px = ox + xx;
             if (px < 0 || px >= win_w_) continue;
-            uint32_t &d  = canvas_[py * win_w_ + px];
+            uint32_t &d  = row[px];
             int dr = (d >> 16) & 255, dg = (d >> 8) & 255, db = d & 255;
             int r = (sr * a + dr * (255 - a)) / 255;
             int gv= (sg * a + dg * (255 - a)) / 255;
@@ -233,7 +210,6 @@ void Browser::blit_glyph_aa(const af_glyph *g, int ox, int oy,
     }
 }
 
-/* Draw one wl_run's text using the proportional font cache. */
 void Browser::draw_run_text(int rx, int sy, const wl_run *r) {
     int pen = rx;
     int base = sy + appfont_ascent(r->px);
@@ -241,19 +217,14 @@ void Browser::draw_run_text(int rx, int sy, const wl_run *r) {
         unsigned char cp = (unsigned char)layout_.pool[r->off + k];
         const af_glyph *g = appfont_get(cp, r->px);
         if (g) {
-            blit_glyph_aa(g, pen + g->xoff, base + g->yoff, r->color, CONTENT_TOP);
-            if (r->bold) /* faux bold: draw shifted by 1 px */
-                blit_glyph_aa(g, pen + g->xoff + 1, base + g->yoff, r->color, CONTENT_TOP);
+            blit_glyph_aa(g, pen + g->xoff, base + g->yoff, r->color);
+            if (r->bold) blit_glyph_aa(g, pen + g->xoff + 1, base + g->yoff, r->color);
             pen += g->advance;
-        } else {
-            pen += r->px / 2;
-        }
+        } else { pen += r->px / 2; }
     }
 }
 
-void Browser::present() {
-    vos_window_present(win_id_, canvas_, win_w_, win_h_);
-}
+void Browser::present() { /* handled by VexUI */ }
 
 /* ---- HTTP helpers ------------------------------------------------------ */
 
@@ -279,8 +250,7 @@ int Browser::http_status(const char *raw, int n) {
     return d ? code : 0;
 }
 
-bool Browser::find_header(const char *raw, int n, const char *name,
-                            char *out, int cap) {
+bool Browser::find_header(const char *raw, int n, const char *name, char *out, int cap) {
     int nl = (int)__builtin_strlen(name), i = 0;
     while (i < n && raw[i] != '\n') ++i; ++i;
     while (i < n) {
@@ -326,7 +296,6 @@ bool Browser::is_chunked(const char *raw, int n) {
     return false;
 }
 
-/* One-shot fetch with redirect following; returns body length, sets *bodyoff. */
 int Browser::fetch_raw(const char *url, char *out, int cap, int *bodyoff) {
     static char host[256], path[512];
     const char *u = url; uint32_t ip; int h=0,p=0,i=0,n,secure=0;
@@ -339,10 +308,9 @@ int Browser::fetch_raw(const char *url, char *out, int cap, int *bodyoff) {
     if (u[i]=='/'){++i; while(u[i]&&p<(int)sizeof(path)-1) path[p++]=u[i++];} path[p]='\0';
     if (!parse_ipv4(host, &ip)) { if (vos_resolve(host,&ip)<0) return -1; }
     req.ip=ip; req.port=secure?443:80; req.host=host; req.path=path; req.out=out; req.cap=cap; req.user_agent=BROWSER_USER_AGENT;
-    req.timeout_ms = 4000;   /* images are best-effort: don't stall the page on a slow host */
+    req.timeout_ms = 4000;
     n = secure ? vos_https_get(&req) : vos_http_get(&req);
     if (n <= 0) return -1;
-    /* Locate the header/body separator. */
     for (int k=0; k+1<n; ++k) {
         if (k+3<n && out[k]=='\r'&&out[k+1]=='\n'&&out[k+2]=='\r'&&out[k+3]=='\n'){*bodyoff=k+4;break;}
         if (out[k]=='\n'&&out[k+1]=='\n'){*bodyoff=k+2;break;}
@@ -353,16 +321,13 @@ int Browser::fetch_raw(const char *url, char *out, int cap, int *bodyoff) {
 /* ---- navigation -------------------------------------------------------- */
 
 void Browser::push_history(const char *url) {
-    /* Truncate any forward history. */
     if (hist_pos_ + 1 < hist_count_) hist_count_ = hist_pos_ + 1;
     if (hist_count_ < HIST_CAP) {
         __builtin_strncpy(history_[hist_count_], url, 1023);
         history_[hist_count_][1023] = '\0';
         hist_pos_ = hist_count_++;
     } else {
-        /* Rotate ring: drop oldest. */
-        for (int i = 0; i < HIST_CAP - 1; ++i)
-            __builtin_memcpy(history_[i], history_[i+1], 1024);
+        for (int i = 0; i < HIST_CAP - 1; ++i) __builtin_memcpy(history_[i], history_[i+1], 1024);
         __builtin_strncpy(history_[HIST_CAP-1], url, 1023);
         history_[HIST_CAP-1][1023] = '\0';
         hist_pos_ = HIST_CAP - 1;
@@ -391,76 +356,42 @@ void Browser::layout_current() {
     dom_doc dom; dom_init(&dom);
     dom_node *root = dom_parse(&dom, html_buf_, html_len_);
     if (!root) { dom_free(&dom); return; }
-
     wl_free(&layout_); wl_init(&layout_);
     layout_engine_.layout(&layout_, root, content_w());
-
-    /* Extract <title> for the window title bar. */
     LayoutEngine::extract_title(root, page_title_, (int)sizeof page_title_);
-    if (page_title_[0]) {
-        char title_buf[160];
-        __builtin_snprintf(title_buf, sizeof title_buf, "Browser — %s", page_title_);
-        /* Update window title (not currently exposed via vibeos.h; use status). */
-    }
-
     dom_free(&dom);
     clamp_scroll();
 }
 
-/* Hand a navigation off to a background worker thread so the UI thread stays
- * responsive (and can animate a progress bar) while the blocking fetch runs.
- * Ignored if a fetch is already in flight. */
 void Browser::navigate(const char *url) {
     if (!url || !url[0]) return;
-    int expected = (int)FetchState::Idle;
-    /* Only start if currently Idle (also accept Ready/Failed = settled). */
     int cur = fetch_state_.load(std::memory_order_acquire);
-    if (cur == (int)FetchState::Fetching) return;   /* one fetch at a time */
-    (void)expected;
-
+    if (cur == (int)FetchState::Fetching) return;
     __builtin_strncpy(pending_url_, url, sizeof pending_url_);
     pending_url_[sizeof pending_url_ - 1] = '\0';
     progress_phase_ = 0;
-    scroll_ = 0;        /* new page starts at the top */
-    editing_ = false;   /* UI thread: deselect the URL bar for the load */
+    scroll_ = 0;
     focused_field_ = -1;
     fields_seeded_ = false;
     fetch_state_.store((int)FetchState::Fetching, std::memory_order_release);
-
-    /* Reap a previous finished worker handle before reusing it. */
     if (worker_.joinable()) worker_.detach();
     worker_ = std::thread([this] { fetch_worker(); });
 }
 
-/* Worker-thread body: performs the blocking load, then publishes the result.
- * load_url() does the fetch + DOM parse + layout (all heap ops are thread-safe
- * via the umalloc lock). It must not draw or present — only the UI thread
- * touches the canvas. */
 void Browser::fetch_worker() {
     text_ready_.store(false, std::memory_order_release);
     load_url(pending_url_);
-    /* The text is laid out now; let the UI paint it immediately while we keep
-     * fetching images. fetch_state_ stays Fetching for the whole load so a new
-     * navigation can't spawn a second worker and race on shared buffers. */
     text_ready_.store(true, std::memory_order_release);
     load_images();
     fetch_state_.store((int)FetchState::Ready, std::memory_order_release);
 }
 
-/* Worker thread: walk the DOM for <img> sources, fetch+decode each (best-effort,
- * short timeout), and after every successful image re-lay-out the page and flag
- * a repaint. The layout mutex serialises the re-layout against the UI thread's
- * render pass. */
 void Browser::load_images() {
     if (!html_buf_ || html_len_ <= 0) return;
-
     dom_doc dom; dom_init(&dom);
     dom_node *root = dom_parse(&dom, html_buf_, html_len_);
     if (!root) { dom_free(&dom); return; }
-
-    /* Collect <img> srcs first (so we're not walking the tree while it changes). */
-    static char srcs[MAX_IMGS][256];
-    int n = 0;
+    static char srcs[MAX_IMGS][256]; int n = 0;
     struct Walk {
         static void go(dom_node *node, char (*out)[256], int &count, int max) {
             for (dom_node *c = node->first_child; c && count < max; c = c->next_sibling) {
@@ -479,161 +410,73 @@ void Browser::load_images() {
     };
     Walk::go(root, srcs, n, MAX_IMGS);
     dom_free(&dom);
-
-    /* Fetch each image, then re-layout + request a repaint progressively. */
     for (int i = 0; i < n; ++i) {
-        if (image_load(srcs[i]) < 0) continue;   /* skipped/failed — leave placeholder */
-        {
-            std::lock_guard<std::mutex> lk(layout_mutex_);
-            layout_current();
-        }
+        if (image_load(srcs[i]) < 0) continue;
+        { std::lock_guard<std::mutex> lk(layout_mutex_); layout_current(); }
         images_dirty_.store(true, std::memory_order_release);
     }
 }
 
-/* UI-thread side: when the worker has finished, the page (layout_) is stable,
- * so settle back to Idle. Called once per frame from run(). Returns true if a
- * state transition happened (so the caller repaints). */
 void Browser::poll_fetch() {
     int s = fetch_state_.load(std::memory_order_acquire);
     if (s == (int)FetchState::Ready || s == (int)FetchState::Failed) {
-        if (worker_.joinable()) worker_.join();   /* reap the finished thread */
+        if (worker_.joinable()) worker_.join();
         fetch_state_.store((int)FetchState::Idle, std::memory_order_release);
     }
 }
 
 void Browser::load_url(const char *start_url) {
-    static char cur[1024];
-    static char host[256], path[512], loc[1024];
-
-    if (!start_url || !start_url[0]) { __builtin_strcpy(status_,"enter a URL"); return; }
+    static char cur[1024], host[256], path[512], loc[1024];
+    if (!start_url || !start_url[0]) { return; }
     __builtin_strncpy(cur, start_url, sizeof cur); cur[sizeof cur-1]='\0';
-
     for (int redir = 0; redir < 6; ++redir) {
-        const char *u = cur;
-        uint32_t ip; int h=0,p=0,i=0,n,bodyoff,secure=0,code;
-        char *raw;
-        vos_http_req req;
-
+        const char *u = cur; uint32_t ip; int h=0,p=0,i=0,n,bodyoff,secure=0,code;
+        char *raw; vos_http_req req;
         if (__builtin_strncmp(u,"https://",8)==0){secure=1;u+=8;}
         else if (__builtin_strncmp(u,"http://",7)==0) u+=7;
-
         h=0; while(u[i]&&u[i]!='/'&&h<(int)sizeof(host)-1) host[h++]=u[i++]; host[h]='\0';
-        p=0; path[p++]='/';
-        if(u[i]=='/'){ ++i; while(u[i]&&p<(int)sizeof(path)-1) path[p++]=u[i++]; } path[p]='\0';
-
-        /* Runs on the worker thread — update status_ only (the UI thread reads
-         * it and repaints); never draw or present() from here. */
-        if (!parse_ipv4(host,&ip)) {
-            __builtin_snprintf(status_,sizeof status_,"Resolving %s …",host);
-            if (vos_resolve(host,&ip)<0){__builtin_strcpy(status_,"DNS: cannot resolve host");return;}
-        }
-
+        p=0; path[p++]='/'; if(u[i]=='/'){ ++i; while(u[i]&&p<(int)sizeof(path)-1) path[p++]=u[i++]; } path[p]='\0';
+        if (!parse_ipv4(host,&ip)) { if (vos_resolve(host,&ip)<0) return; }
         static constexpr int RAW_CAP = 512 * 1024;
         raw = static_cast<char *>(__builtin_malloc(RAW_CAP + 1));
-        if (!raw) { __builtin_strcpy(status_,"out of memory"); return; }
-
+        if (!raw) return;
         req.ip=ip; req.port=secure?443:80; req.host=host; req.path=path;
         req.out=raw; req.cap=RAW_CAP; req.user_agent=BROWSER_USER_AGENT; req.timeout_ms=0;
-        __builtin_snprintf(status_,sizeof status_,"%s %s …",secure?"TLS":"HTTP",host);
-        vos_log(VOS_LOG_APP, cur);
         n = secure ? vos_https_get(&req) : vos_http_get(&req);
-        if (n <= 0) {
-            __builtin_free(raw);
-            __builtin_strcpy(status_, secure ? "TLS request failed" : "request failed");
-            return;
-        }
+        if (n <= 0) { __builtin_free(raw); return; }
         raw[n] = '\0';
-
         code = http_status(raw, n);
-
-        /* Follow HTTP redirects. */
         if (code >= 300 && code < 400 && find_header(raw,n,"location:",loc,sizeof loc)) {
             if (__builtin_strncmp(loc,"http://",7)==0 || __builtin_strncmp(loc,"https://",8)==0)
                 __builtin_strncpy(cur,loc,sizeof cur);
-            else if (loc[0]=='/')
-                __builtin_snprintf(cur,sizeof cur,"%s://%s%s",secure?"https":"http",host,loc);
-            else
-                __builtin_snprintf(cur,sizeof cur,"%s://%s/%s",secure?"https":"http",host,loc);
-            __builtin_strncpy(url_,cur,sizeof url_); url_len_=(int)__builtin_strlen(url_);
+            else if (loc[0]=='/') __builtin_snprintf(cur,sizeof cur,"%s://%s%s",secure?"https":"http",host,loc);
+            else __builtin_snprintf(cur,sizeof cur,"%s://%s/%s",secure?"https":"http",host,loc);
+            __builtin_strncpy(url_,cur,sizeof url_);
             __builtin_free(raw); continue;
         }
-
-        /* Locate body. */
         bodyoff = 0;
         for (int k=0; k+1<n; ++k) {
             if (k+3<n&&raw[k]=='\r'&&raw[k+1]=='\n'&&raw[k+2]=='\r'&&raw[k+3]=='\n'){bodyoff=k+4;break;}
             if (raw[k]=='\n'&&raw[k+1]=='\n'){bodyoff=k+2;break;}
         }
-
-        /* Save page base for relative-URL resolution. */
-        cur_secure_=secure;
-        __builtin_strncpy(cur_host_,host,sizeof cur_host_);
-        __builtin_strncpy(cur_path_,path,sizeof cur_path_);
-
-        /* Decode chunked transfer encoding if needed. */
-        int blen = n - bodyoff;
-        if (is_chunked(raw,n)) blen = dechunk(raw+bodyoff, blen);
-
-        /* Store HTML. */
+        cur_secure_=secure; __builtin_strncpy(cur_host_,host,sizeof cur_host_); __builtin_strncpy(cur_path_,path,sizeof cur_path_);
+        int blen = n - bodyoff; if (is_chunked(raw,n)) blen = dechunk(raw+bodyoff, blen);
         if (html_buf_) { __builtin_free(html_buf_); html_buf_=nullptr; html_len_=0; }
         html_buf_ = static_cast<char *>(__builtin_malloc((unsigned)blen + 1));
-        if (!html_buf_) { __builtin_free(raw); __builtin_strcpy(status_,"out of memory"); return; }
+        if (!html_buf_) { __builtin_free(raw); return; }
         __builtin_memcpy(html_buf_, raw+bodyoff, (unsigned)blen);
         html_buf_[blen] = '\0'; html_len_ = blen;
-
-        /* Lay out the TEXT immediately with image placeholders. Images are
-         * fetched afterwards by load_images() on the worker thread, which
-         * re-lays-out and repaints as each one arrives (progressive render) —
-         * so the page is readable at once instead of waiting for every image. */
-        images_clear();
-        layout_current();
-        seed_fields();   /* capture the form's initial field values for this page */
-        __builtin_free(raw);
-        push_history(cur);
-        __builtin_snprintf(status_,sizeof status_,
-            "%d  %d runs  %s",
-            code, layout_.run_count,
-            page_title_[0] ? page_title_ : "");
-        vos_log(VOS_LOG_APP, status_);
-        /* scroll reset + URL-bar deselect happen on the UI thread (poll_fetch /
-         * navigate), never from this worker thread. */
+        images_clear(); layout_current(); seed_fields();
+        __builtin_free(raw); push_history(cur);
         return;
     }
-    __builtin_strcpy(status_,"too many redirects");
 }
 
-/* ---- image cache ------------------------------------------------------- */
-
 void Browser::images_clear() {
-    for (int i = 0; i < n_imgs_; ++i)
-        if (images_[i].px) { image_free(images_[i].px); images_[i].px=nullptr; }
+    for (int i = 0; i < n_imgs_; ++i) if (images_[i].px) { image_free(images_[i].px); images_[i].px=nullptr; }
     n_imgs_ = 0;
 }
 
-void Browser::images_collect(dom_node *node) {
-    if (!node || n_imgs_ >= MAX_IMGS) return;
-    for (dom_node *c=node->first_child; c && n_imgs_<MAX_IMGS; c=c->next_sibling) {
-        if (c->type==DOM_ELEMENT && __builtin_strcmp(c->tag,"img")==0) {
-            const char *src = dom_attr(c,"src");
-            if (!src || !src[0] || __builtin_strncmp(src,"data:",5)==0)
-                src = dom_attr(c,"data-src");
-            if (src && src[0]) {
-                bool dup = false;
-                for (int k=0;k<n_imgs_;++k)
-                    if (__builtin_strcmp(images_[k].src,src)==0){dup=true;break;}
-                if (!dup) {
-                    /* Worker thread: status only, no present() (UI owns the canvas). */
-                    __builtin_snprintf(status_,sizeof status_,"Loading image %d …",n_imgs_+1);
-                    image_load(src);
-                }
-            }
-        }
-        images_collect(c);
-    }
-}
-
-/* Static callback: routes back to the current Browser instance. */
 int Browser::img_sizer_cb(const char *src, int maxw, int *w, int *h) {
     if (!s_instance_) return 0;
     for (int i=0;i<s_instance_->n_imgs_;++i) {
@@ -650,8 +493,7 @@ int Browser::img_sizer_cb(const char *src, int maxw, int *w, int *h) {
 Browser::ImgEntry *Browser::img_find(const char *src) {
     if (!s_instance_) return nullptr;
     for (int i=0;i<s_instance_->n_imgs_;++i)
-        if (__builtin_strcmp(s_instance_->images_[i].src,src)==0)
-            return &s_instance_->images_[i];
+        if (__builtin_strcmp(s_instance_->images_[i].src,src)==0) return &s_instance_->images_[i];
     return nullptr;
 }
 
@@ -660,52 +502,28 @@ int Browser::image_load(const char *rawsrc) {
     static char abs_url[1024], cur[1024], loc[1024], next_url[1024];
     resolve_href(rawsrc, abs_url, sizeof abs_url);
     if (!abs_url[0] || __builtin_strncmp(abs_url,"data:",5)==0) return -1;
-
-    static char raw[512*1024];
-    __builtin_strncpy(cur, abs_url, sizeof cur);
-
+    static char raw[512*1024]; __builtin_strncpy(cur, abs_url, sizeof cur);
     for (int redir = 0; redir < 5; ++redir) {
-        int bodyoff = 0;
-        int n = fetch_raw(cur, raw, (int)sizeof raw - 1, &bodyoff);
+        int bodyoff = 0; int n = fetch_raw(cur, raw, (int)sizeof raw - 1, &bodyoff);
         if (n <= 0) return -1;
         int code = http_status(raw, n);
         if (code>=300&&code<400&&find_header(raw,n,"location:",loc,sizeof loc)){
-            /* Resolve redirect location against the current base. */
-            if (__builtin_strncmp(loc,"http://",7)==0||__builtin_strncmp(loc,"https://",8)==0)
-                __builtin_strncpy(next_url,loc,sizeof next_url);
-            else if (loc[0]=='/')
-                __builtin_snprintf(next_url,sizeof next_url,"http://%.*s%s",
-                    (int)__builtin_strlen(cur_host_),cur_host_,loc);
+            if (__builtin_strncmp(loc,"http://",7)==0||__builtin_strncmp(loc,"https://",8)==0) __builtin_strncpy(next_url,loc,sizeof next_url);
+            else if (loc[0]=='/') __builtin_snprintf(next_url,sizeof next_url,"http://%.*s%s", (int)__builtin_strlen(cur_host_),cur_host_,loc);
             else __builtin_strncpy(next_url,loc,sizeof next_url);
             __builtin_strncpy(cur,next_url,sizeof cur); continue;
         }
-        int blen = n - bodyoff;
-        if (is_chunked(raw,n)) blen = dechunk(raw+bodyoff,blen);
-        int w=0,h=0;
-        uint32_t *px = image_decode(
-            reinterpret_cast<const unsigned char *>(raw+bodyoff), blen, &w, &h);
+        int blen = n - bodyoff; if (is_chunked(raw,n)) blen = dechunk(raw+bodyoff,blen);
+        int w=0,h=0; uint32_t *px = image_decode(reinterpret_cast<const unsigned char *>(raw+bodyoff), blen, &w, &h);
         if (!px || w<=0 || h<=0) return -1;
-        /* Publish the decoded image into the cache under the layout lock so the
-         * UI thread's render pass (which reads the cache via img_find) never
-         * sees a half-written entry or a racing n_imgs_ bump. */
-        {
-            std::lock_guard<std::mutex> lk(layout_mutex_);
-            ImgEntry &e = images_[n_imgs_];
-            __builtin_strncpy(e.src, rawsrc, sizeof e.src);
-            e.w=w; e.h=h; e.px=px;
-            __builtin_snprintf(status_,sizeof status_,"Loaded %dx%d image",w,h);
-            return n_imgs_++;
-        }
+        { std::lock_guard<std::mutex> lk(layout_mutex_); ImgEntry &e = images_[n_imgs_]; __builtin_strncpy(e.src, rawsrc, sizeof e.src); e.w=w; e.h=h; e.px=px; return n_imgs_++; }
     }
     return -1;
 }
 
-/* ---- link hit-test ----------------------------------------------------- */
-
 int Browser::link_at(int x, int y) const {
-    if (y < CONTENT_TOP) return -1;
-    int content_x = MARGIN + PAGE_PAD;
-    int docx = x - content_x, docy = (y - CONTENT_TOP) + scroll_;
+    int content_x = PAGE_PAD;
+    int docx = x - content_x, docy = y + scroll_;
     for (int i=0; i<layout_.run_count; ++i) {
         const wl_run &r = layout_.runs[i];
         if (r.kind!=WL_TEXT || r.link<0) continue;
@@ -715,29 +533,18 @@ int Browser::link_at(int x, int y) const {
 }
 
 bool Browser::hit_link(int x, int y, char *out, int cap) const {
-    int li = link_at(x, y);
-    if (li < 0) return false;
-    resolve_href(layout_.hrefs[li], out, cap);
-    return out[0] != '\0';
+    int li = link_at(x, y); if (li < 0) return false;
+    resolve_href(layout_.hrefs[li], out, cap); return out[0] != '\0';
 }
 
-/* ---- form fields ------------------------------------------------------- */
-
-/* Copy the HTML's initial value= into the editable buffers, once per page. */
 void Browser::seed_fields() {
     int n = layout_.field_count; if (n > MAX_FIELDS) n = MAX_FIELDS;
-    for (int i = 0; i < n; ++i) {
-        __builtin_strncpy(field_values_[i], layout_.fields[i].value, 127);
-        field_values_[i][127] = '\0';
-    }
-    fields_seeded_ = true;
+    for (int i = 0; i < n; ++i) { __builtin_strncpy(field_values_[i], layout_.fields[i].value, 127); field_values_[i][127] = '\0'; }
 }
 
-/* Return the field index of the WL_FIELD box at (x,y), or -1. */
 int Browser::field_at(int x, int y) const {
-    if (y < CONTENT_TOP) return -1;
-    int content_x = MARGIN + PAGE_PAD;
-    int docx = x - content_x, docy = (y - CONTENT_TOP) + scroll_;
+    int content_x = PAGE_PAD;
+    int docx = x - content_x, docy = y + scroll_;
     for (int i = 0; i < layout_.run_count; ++i) {
         const wl_run &r = layout_.runs[i];
         if (r.kind != WL_FIELD) continue;
@@ -746,253 +553,112 @@ int Browser::field_at(int x, int y) const {
     return -1;
 }
 
-/* Build a GET query from every named field in the form and navigate to
- * action?query. POST is treated as GET (no body support yet). */
 void Browser::submit_form(int field_idx) {
     if (field_idx < 0 || field_idx >= layout_.field_count) return;
-
     char query[1024]; int q = 0;
     auto enc = [&](const char *s) {
         const char *hex = "0123456789ABCDEF";
         for (; s && *s && q + 3 < (int)sizeof query; ++s) {
             char c = *s;
-            if ((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.')
-                query[q++] = c;
+            if ((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.') query[q++] = c;
             else if (c == ' ') query[q++] = '+';
             else { query[q++]='%'; query[q++]=hex[(c>>4)&15]; query[q++]=hex[c&15]; }
         }
     };
-
     bool first = true;
     for (int i = 0; i < layout_.field_count && i < MAX_FIELDS; ++i) {
         const wl_field &f = layout_.fields[i];
         if (!f.name[0]) continue;
-        if (f.kind == WLF_SUBMIT || f.kind == WLF_BUTTON) continue;  /* skip buttons */
+        if (f.kind == WLF_SUBMIT || f.kind == WLF_BUTTON) continue;
         if (!first && q + 1 < (int)sizeof query) query[q++] = '&';
-        first = false;
-        enc(f.name);
-        if (q + 1 < (int)sizeof query) query[q++] = '=';
-        enc(field_values_[i]);
+        first = false; enc(f.name); if (q + 1 < (int)sizeof query) query[q++] = '='; enc(field_values_[i]);
     }
     query[q] = '\0';
-
-    /* Resolve action (empty = current path) + query against the page base. */
     const wl_field &btn = layout_.fields[field_idx];
     char rel[1300], abs_url[1400];
     const char *act = btn.action[0] ? btn.action : cur_path_;
     __builtin_snprintf(rel, sizeof rel, "%s?%s", act, query);
     resolve_href(rel, abs_url, sizeof abs_url);
-    if (abs_url[0]) {
-        __builtin_strncpy(url_, abs_url, sizeof url_);
-        url_[sizeof url_ - 1] = '\0';
-        url_len_ = (int)__builtin_strlen(url_);
-        focused_field_ = -1;
-        navigate(url_);
-    }
+    if (abs_url[0]) { __builtin_strncpy(url_, abs_url, sizeof url_); url_[sizeof url_ - 1] = '\0'; url_len_ = (int)__builtin_strlen(url_); focused_field_ = -1; navigate(url_); }
 }
 
-/* ---- rendering --------------------------------------------------------- */
-
 void Browser::render() {
-    int bar_cols = (win_w_ - 2*MARGIN - 2*BTN_W - 8) / 8;
-    int content_x = MARGIN + PAGE_PAD;
-
-    fill(0, 0, win_w_, win_h_, COL_BG);
-
-    /* ---- Chrome: back / forward buttons -------------------------------- */
-    bool can_back    = (hist_pos_ > 0);
-    bool can_forward = (hist_pos_ + 1 < hist_count_);
-    fill(0,        0, BTN_W, BAR_H, can_back    ? COL_BTN : COL_BAR);
-    fill(BTN_W,    0, BTN_W, BAR_H, can_forward ? COL_BTN : COL_BAR);
-    draw_text(8,    7, "<", can_back    ? COL_TEXT_CHR : COL_DIM);
-    draw_text(8+BTN_W, 7, ">", can_forward ? COL_TEXT_CHR : COL_DIM);
-
-    /* ---- Chrome: URL bar ---------------------------------------------- */
-    int bar_x = 2 * BTN_W;
-    fill(bar_x, 0, win_w_ - bar_x, BAR_H, editing_ ? COL_BAR_HI : COL_BAR);
-    draw_text(bar_x + 4, 7, editing_ ? "URL:" : " ", COL_ACCENT);
-
-    {
-        int txt_x = bar_x + 40;
-        int start = 0; if (url_len_ > bar_cols) start = url_len_ - bar_cols;
-        draw_text_n(txt_x, 7, url_ + start, bar_cols, COL_TEXT_CHR);
-        if (editing_) {
-            int cx = txt_x + (url_len_ - start) * 8;
-            fill(cx, 4, 2, BAR_H - 8, COL_ACCENT);  /* text cursor */
-        }
-    }
-
-    /* ---- Chrome: status bar ------------------------------------------- */
-    fill(0, BAR_H, win_w_, STATUS_H + 4, COL_BAR);
-    draw_text(MARGIN, BAR_H + 2, status_, COL_DIM);
-
-    bool fetching =
-        fetch_state_.load(std::memory_order_acquire) == (int)FetchState::Fetching;
+    int content_x = PAGE_PAD;
+    fill(0, 0, win_w_, win_h_, COL_PAGE);
+    bool fetching = fetch_state_.load(std::memory_order_acquire) == (int)FetchState::Fetching;
     bool text_ready = text_ready_.load(std::memory_order_acquire);
-
-    /* Progress bar while the page is still being fetched (text not laid out yet,
-     * or images still streaming in). */
     if (fetching) {
-        int bar_y = BAR_H + STATUS_H + 2;
-        int bar_w = win_w_;
-        fill(0, bar_y, bar_w, 2, COL_BAR);
-        /* A 25%-wide knob sweeps left→right, wrapping — honest "indeterminate"
-         * feedback since a single blocking GET gives no byte progress. */
-        int knob = bar_w / 4;
-        int span = bar_w + knob;
+        int bar_w = win_w_; int knob = bar_w / 4; int span = bar_w + knob;
         int pos  = (progress_phase_ * 12) % span - knob;
-        fill(pos < 0 ? 0 : pos, bar_y,
-             pos < 0 ? knob + pos : (pos + knob > bar_w ? bar_w - pos : knob),
-             2, COL_ACCENT);
+        fill(pos < 0 ? 0 : pos, 0, pos < 0 ? knob + pos : (pos + knob > bar_w ? bar_w - pos : knob), 2, COL_ACCENT);
     }
-
-    /* ---- Page paper area ----------------------------------------------- */
-    fill(MARGIN, CONTENT_TOP, page_w(), win_h_ - CONTENT_TOP, COL_PAGE);
-
-    /* Only skip the content pass until the TEXT is laid out. Once text_ready,
-     * we render the page even while images keep streaming in (progressive). */
-    if (!text_ready) {
-        draw_text(MARGIN + PAGE_PAD, CONTENT_TOP + 20, "Loading", COL_DIM);
-        present();
-        return;
-    }
-
-    /* ---- Content: positioned runs offset by scroll --------------------- */
-    /* Hold the layout lock for the whole content pass: the worker thread may be
-     * re-laying-out the page (progressive image loading) at the same time. */
+    if (!text_ready) { draw_text(PAGE_PAD, 20, "Loading...", COL_DIM); return; }
     std::lock_guard<std::mutex> render_lock(layout_mutex_);
     clamp_scroll();
     for (int i = 0; i < layout_.run_count; ++i) {
         const wl_run &r = layout_.runs[i];
-        int sy = CONTENT_TOP + r.y - scroll_;
-        int rx = content_x + r.x;
-        if (sy + r.h < CONTENT_TOP || sy >= win_h_) continue;
-
-        if (r.kind == WL_RECT) {
-            int top = sy, h = r.h;
-            if (top < CONTENT_TOP) { h -= (CONTENT_TOP - top); top = CONTENT_TOP; }
-            if (h > 0) fill(rx, top, r.w, h, r.color);
-            continue;
-        }
+        int sy = r.y - scroll_; int rx = content_x + r.x;
+        if (sy + r.h < 0 || sy >= win_h_) continue;
+        if (r.kind == WL_RECT) { int top = sy, h = r.h; if (top < 0) { h -= -top; top = 0; } if (h > 0) fill(rx, top, r.w, h, r.color); continue; }
         if (r.kind == WL_IMAGE) {
-            ImgEntry *im = img_find(r.off>=0&&r.off<layout_.href_count
-                                    ? layout_.hrefs[r.off] : "");
+            ImgEntry *im = img_find(r.off>=0&&r.off<layout_.href_count ? layout_.hrefs[r.off] : "");
             if (im && im->px) {
-                /* Nearest-neighbour scale to fit the reserved box. */
                 for (int yy=0; yy<r.h; ++yy) {
-                    int py = sy + yy;
-                    if (py < CONTENT_TOP || py >= win_h_) continue;
+                    int py = sy + yy; if (py < 0 || py >= win_h_) continue;
                     int syi = (int)((long)yy * im->h / r.h);
                     for (int xx=0; xx<r.w; ++xx) {
                         int pxx = rx + xx; if (pxx<0||pxx>=win_w_) continue;
                         int sxi = (int)((long)xx * im->w / r.w);
-                        canvas_[py * win_w_ + pxx] = im->px[syi * im->w + sxi];
+                        canvas_[py * BROW_MAX_W + pxx] = im->px[syi * im->w + sxi];
                     }
                 }
-            } else if (sy >= CONTENT_TOP) {
-                fill(rx, sy, r.w, r.h, 0x00e0e4ecu);  /* grey placeholder */
-            }
+            } else if (sy >= 0) fill(rx, sy, r.w, r.h, 0x00e0e4ecu);
             continue;
         }
-        if (r.kind == WL_RULE) {
-            if (sy >= CONTENT_TOP) fill(rx, sy, r.w, r.h, r.color);
-            continue;
-        }
+        if (r.kind == WL_RULE) { if (sy >= 0) fill(rx, sy, r.w, r.h, r.color); continue; }
         if (r.kind == WL_BULLET) {
             int rad = r.px/7 + 2, cx = rx + rad + 2, cy = sy + r.h/2;
             for (int yy=-rad; yy<=rad; ++yy)
                 for (int xx=-rad; xx<=rad; ++xx)
-                    if (xx*xx+yy*yy<=rad*rad && cy+yy>=CONTENT_TOP)
-                        if (cx+xx>=0&&cx+xx<win_w_&&cy+yy<win_h_)
-                            canvas_[(cy+yy)*win_w_+(cx+xx)] = r.color;
+                    if (xx*xx+yy*yy<=rad*rad && cy+yy>=0)
+                        if (cx+xx>=0&&cx+xx<win_w_&&cy+yy<win_h_) canvas_[(cy+yy)*BROW_MAX_W+(cx+xx)] = r.color;
             continue;
         }
         if (r.kind == WL_FIELD) {
-            if (sy < CONTENT_TOP) continue;
-            int kind = r.len;   /* WLF_* */
-            bool button = (kind == WLF_SUBMIT || kind == WLF_BUTTON);
-            bool focused = (r.off == focused_field_);
-            /* Box: buttons are filled with the accent; text fields are a white
-             * field with a border (brighter when focused). CSS bg overrides. */
-            uint32_t face = button ? (r.bg ? r.bg : 0x002a354du)
-                                   : (r.bg ? r.bg : 0x00ffffffu);
+            if (sy < 0) continue;
+            int kind = r.len; bool button = (kind == WLF_SUBMIT || kind == WLF_BUTTON); bool focused = (r.off == focused_field_);
+            uint32_t face = button ? (r.bg ? r.bg : 0x002a354du) : (r.bg ? r.bg : 0x00ffffffu);
             uint32_t border = focused ? COL_ACCENT : 0x00808a99u;
-            fill(rx, sy, r.w, r.h, face);
-            fill(rx, sy, r.w, 1, border);
-            fill(rx, sy + r.h - 1, r.w, 1, border);
-            fill(rx, sy, 1, r.h, border);
-            fill(rx + r.w - 1, sy, 1, r.h, border);
-            /* Label/value text. */
-            const char *text = button
-                ? ((r.off>=0 && r.off<layout_.field_count && layout_.fields[r.off].value[0])
-                       ? layout_.fields[r.off].value : "Submit")
-                : ((r.off>=0 && r.off<MAX_FIELDS) ? field_values_[r.off] : "");
+            fill(rx, sy, r.w, r.h, face); fill(rx, sy, r.w, 1, border); fill(rx, sy + r.h - 1, r.w, 1, border); fill(rx, sy, 1, r.h, border); fill(rx + r.w - 1, sy, 1, r.h, border);
+            const char *text = button ? ((r.off>=0 && r.off<layout_.field_count && layout_.fields[r.off].value[0]) ? layout_.fields[r.off].value : "Submit") : ((r.off>=0 && r.off<MAX_FIELDS) ? field_values_[r.off] : "");
             uint32_t tcol = button ? 0x00ffffffu : (r.color ? r.color : 0x00202632u);
-            int ty = sy + (r.h - r.px) / 2;
-            int tx = rx + (button ? (r.w - (int)__builtin_strlen(text)*8)/2 : 6);
-            if (tx < rx + 4) tx = rx + 4;
-            /* clip text to the box width */
-            int maxchars = (r.w - 10) / 8; if (maxchars < 0) maxchars = 0;
-            draw_text_n(tx, ty, text, maxchars, tcol);
-            /* text cursor when focused */
-            if (focused && !button) {
-                int n = (int)__builtin_strlen(text); if (n > maxchars) n = maxchars;
-                int cx = rx + 6 + n*8;
-                fill(cx, sy+3, 2, r.h-6, COL_ACCENT);
-            }
+            int ty = sy + (r.h - r.px) / 2; int tx = rx + (button ? (r.w - (int)__builtin_strlen(text)*8)/2 : 6); if (tx < rx + 4) tx = rx + 4;
+            int maxchars = (r.w - 10) / 8; if (maxchars < 0) maxchars = 0; draw_text_n(tx, ty, text, maxchars, tcol);
+            if (focused && !button) { int n = (int)__builtin_strlen(text); if (n > maxchars) n = maxchars; int cx = rx + 6 + n*8; fill(cx, sy+3, 2, r.h-6, COL_ACCENT); }
             continue;
         }
-        /* WL_TEXT */
-        if (r.link >= 0 && r.link == hover_link_ && sy >= CONTENT_TOP)
-            fill(rx-1, sy, r.w+2, r.h, COL_HOVER);
-        else if (r.bg && sy >= CONTENT_TOP)
-            fill(rx-1, sy, r.w+2, r.h, r.bg);
+        if (r.link >= 0 && r.link == hover_link_ && sy >= 0) fill(rx-1, sy, r.w+2, r.h, COL_HOVER);
+        else if (r.bg && sy >= 0) fill(rx-1, sy, r.w+2, r.h, r.bg);
         draw_run_text(rx, sy, &r);
-        if (r.underline && sy + r.h - 2 >= CONTENT_TOP)
-            fill(rx, sy + r.h - 2, r.w, 1, r.color);
+        if (r.underline && sy + r.h - 2 >= 0) fill(rx, sy + r.h - 2, r.w, 1, r.color);
     }
-
-    /* ---- Scrollbar ----------------------------------------------------- */
     if (layout_.height > content_h()) {
-        int track_h = win_h_ - CONTENT_TOP;
-        int knob_h  = track_h * content_h() / layout_.height; if (knob_h < 10) knob_h = 10;
-        int knob_y  = CONTENT_TOP + (track_h - knob_h) * scroll_
-                      / (layout_.height - content_h());
-        fill(win_w_ - SCROLLBAR_W, CONTENT_TOP, SCROLLBAR_W, track_h, COL_SCROLLBG);
-        fill(win_w_ - SCROLLBAR_W, knob_y, SCROLLBAR_W, knob_h, COL_ACCENT);
+        int track_h = win_h_; int knob_h  = track_h * content_h() / layout_.height; if (knob_h < 10) knob_h = 10;
+        int knob_y  = (track_h - knob_h) * scroll_ / (layout_.height - content_h());
+        fill(win_w_ - SCROLLBAR_W, 0, SCROLLBAR_W, track_h, COL_SCROLLBG); fill(win_w_ - SCROLLBAR_W, knob_y, SCROLLBAR_W, knob_h, COL_ACCENT);
     }
-
-    present();
 }
 
-/* ---- event handlers ---------------------------------------------------- */
-
 void Browser::on_key(uint32_t k) {
-    if (editing_) {
-        if (k == '\n' || k == '\r') {
-            editing_ = false;
-            navigate(url_);
-        } else if (k == 0x08) {  /* Backspace */
-            url_backspace();
-        } else if (k == 0x1b) {  /* Escape */
-            editing_ = false;
-        } else if (k >= 0x20 && k < 0x7f) {
-            url_putc(static_cast<char>(k));
-        }
-        return;
-    }
-    /* Typing into a focused form field. */
     if (focused_field_ >= 0 && focused_field_ < MAX_FIELDS) {
-        char *v = field_values_[focused_field_];
-        int n = (int)__builtin_strlen(v);
-        if (k == '\n' || k == '\r')      submit_form(focused_field_);
-        else if (k == 0x08) { if (n > 0) v[n-1] = '\0'; }   /* backspace */
-        else if (k == 0x1b) focused_field_ = -1;            /* escape unfocuses */
+        char *v = field_values_[focused_field_]; int n = (int)__builtin_strlen(v);
+        if (k == '\n' || k == '\r') submit_form(focused_field_);
+        else if (k == 0x08) { if (n > 0) v[n-1] = '\0'; }
+        else if (k == 0x1b) focused_field_ = -1;
         else if (k >= 0x20 && k < 0x7f && n < 126) { v[n]=(char)k; v[n+1]='\0'; }
         return;
     }
     switch (k) {
-    case 'u': case '/':  editing_ = true; break;
     case 'j':            scroll_ += 20; clamp_scroll(); break;
     case 'k':            scroll_ -= 20; clamp_scroll(); break;
     case ' ': case 'f':  scroll_ += content_h() - 20; clamp_scroll(); break;
@@ -1000,99 +666,31 @@ void Browser::on_key(uint32_t k) {
     case 'g':            scroll_ = 0; break;
     case 'G':            scroll_ = layout_.height; clamp_scroll(); break;
     case 'r':            if (html_buf_) { layout_current(); } break;
-    case '[':
-        if (hist_pos_ > 0) {
-            --hist_pos_;
-            __builtin_strncpy(url_,history_[hist_pos_],sizeof url_);
-            url_len_ = (int)__builtin_strlen(url_);
-            load_url(url_);  /* load without pushing history */
-        }
-        break;
-    case ']':
-        if (hist_pos_ + 1 < hist_count_) {
-            ++hist_pos_;
-            __builtin_strncpy(url_,history_[hist_pos_],sizeof url_);
-            url_len_ = (int)__builtin_strlen(url_);
-            load_url(url_);
-        }
-        break;
+    case '[':            on_back(); break;
+    case ']':            on_forward(); break;
     default: break;
     }
 }
 
-void Browser::on_mouse_move(int x, int y) {
-    int hl = editing_ ? -1 : link_at(x, y);
-    if (hl != hover_link_) hover_link_ = hl;
-}
+void Browser::on_mouse_move(int x, int y) { int hl = link_at(x, y); if (hl != hover_link_) hover_link_ = hl; }
 
 void Browser::on_click(int x, int y) {
-    /* Back button */
-    if (y >= 0 && y < BAR_H && x < BTN_W && hist_pos_ > 0) {
-        --hist_pos_;
-        __builtin_strncpy(url_,history_[hist_pos_],sizeof url_);
-        url_len_ = (int)__builtin_strlen(url_);
-        load_url(url_); return;
-    }
-    /* Forward button */
-    if (y >= 0 && y < BAR_H && x >= BTN_W && x < 2*BTN_W && hist_pos_+1 < hist_count_) {
-        ++hist_pos_;
-        __builtin_strncpy(url_,history_[hist_pos_],sizeof url_);
-        url_len_ = (int)__builtin_strlen(url_);
-        load_url(url_); return;
-    }
-    /* Click on URL bar */
-    if (y >= 0 && y < BAR_H && x >= 2*BTN_W) { editing_ = true; focused_field_ = -1; return; }
-
-    /* Click on a form control: focus a text field, or submit on a button. */
     int fi = field_at(x, y);
     if (fi >= 0 && fi < layout_.field_count) {
-        editing_ = false;
         int kind = layout_.fields[fi].kind;
         if (kind == WLF_SUBMIT || kind == WLF_BUTTON) { focused_field_ = -1; submit_form(fi); }
-        else focused_field_ = fi;   /* text/textarea: take keyboard focus */
+        else focused_field_ = fi;
         return;
     }
-    focused_field_ = -1;   /* clicked elsewhere: drop field focus */
-
-    /* Click on a link. */
-    {
-        char href[1024];
-        if (hit_link(x, y, href, sizeof href)) {
-            __builtin_strncpy(url_, href, sizeof url_);
-            url_len_ = (int)__builtin_strlen(url_);
-            navigate(url_);
-        }
-    }
+    focused_field_ = -1;
+    { char href[1024]; if (hit_link(x, y, href, sizeof href)) { __builtin_strncpy(url_, href, sizeof url_); url_len_ = (int)__builtin_strlen(url_); vui_set_text(w_url_bar_, url_); navigate(url_); } }
 }
 
-void Browser::on_scroll(int dy) {
-    scroll_ += dy * 3 * 20;
-    clamp_scroll();
-}
+void Browser::on_scroll(int dy) { scroll_ += dy * 3 * 20; clamp_scroll(); }
 
 void Browser::on_resize(int w, int h) {
-    if (w < 80) w = 80; if (h < 60) h = 60;
-    if (w > BROW_MAX_W) w = BROW_MAX_W;
-    if (h > BROW_MAX_H) h = BROW_MAX_H;
-    win_w_ = w; win_h_ = h;
-    if (html_buf_) layout_current();
+    if (w < 80) w = 80; if (h < 60) h = 60; if (w > BROW_MAX_W) w = BROW_MAX_W; if (h > BROW_MAX_H) h = BROW_MAX_H;
+    win_w_ = w; win_h_ = h; if (w_canvas_) vui_set_size(w_canvas_, win_w_, win_h_ - BAR_H); if (html_buf_) layout_current();
 }
 
-/* ---- URL bar ----------------------------------------------------------- */
-
-void Browser::url_putc(char c) {
-    if (url_len_ < (int)sizeof(url_) - 1) { url_[url_len_++] = c; url_[url_len_] = '\0'; }
-}
-void Browser::url_backspace() {
-    if (url_len_ > 0) url_[--url_len_] = '\0';
-}
-void Browser::url_clear() {
-    url_len_ = 0; url_[0] = '\0';
-}
-
-/* ---- entry point ------------------------------------------------------- */
-
-int main() {
-    static Browser browser;
-    browser.run();
-}
+int main() { static Browser browser; browser.run(); }

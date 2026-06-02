@@ -65,9 +65,6 @@ static inline ssize_t sc2(uint64_t n, uint64_t a0, uint64_t a1) {
 static inline ssize_t sc3(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2) {
     ssize_t r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(n),"D"(a0),"S"(a1),"d"(a2) : "rcx","r11","memory"); return r;
 }
-static inline ssize_t sc4(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
-    ssize_t r; __asm__ volatile("mov %5,%%r10; int $0x80" : "=a"(r) : "a"(n),"D"(a0),"S"(a1),"d"(a2),"r"(a3) : "rcx","r8","r9","r10","r11","memory"); return r;
-}
 static inline ssize_t sc6(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     ssize_t r;
     register uint64_t r10 __asm__("r10") = a3;
@@ -99,6 +96,7 @@ enum { W_PANEL, W_LABEL, W_BUTTON, W_BAR, W_VBOX, W_HBOX,
        W_TILE,
        W_INPUT,
        W_BADGE,
+       W_CANVAS,
        W_TABS,
        W_SPARK,
        W_PILL,
@@ -134,6 +132,9 @@ struct vui_widget {
     vui_u32 color;
     int value, max;
     vui_callback on_click;
+    /* W_INPUT: fired only when Enter/Return is pressed (form submit), as opposed
+     * to on_click which fires on focus and on every keystroke. */
+    vui_callback on_submit;
     void *user;
     int icon_slot;   /* index into the shared SVG icon pool; -1 = none */
 
@@ -574,7 +575,7 @@ static struct vui_widget *new_widget(struct vui_window *w, int type) {
     if (w->widget_count >= VUI_MAX_WIDGETS) return 0;
     wd = &w->widgets[w->widget_count++];
     wd->type = type; wd->x=wd->y=wd->w=wd->h=0; wd->text[0]=0;
-    wd->color = VUI_TEXT; wd->value=0; wd->max=100; wd->on_click=0; wd->user=0; wd->icon_slot=-1;
+    wd->color = VUI_TEXT; wd->value=0; wd->max=100; wd->on_click=0; wd->on_submit=0; wd->user=0; wd->icon_slot=-1;
     wd->anchors = VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP;
     wd->margin_l=wd->margin_t=wd->margin_r=wd->margin_b=0;
     wd->parent_idx=-1; wd->gap=4; wd->padding=0;
@@ -641,6 +642,17 @@ vui_widget *vui_badge(vui_window *w, int x, int y, const char *t) {
     if (!wd) return 0;
     wd->x=x; wd->y=y; scopy(wd->text, t?t:"", sizeof(wd->text));
     wd->w=text_px(wd->text,1)+18; wd->h=20; wd->color=VUI_ACCENT;
+    init_margins(wd); w->dirty=1; return wd;
+}
+vui_widget *vui_canvas(vui_window *w, int x, int y, int width, int height, vui_u32 *pixels) {
+    return vui_canvas_ex(w, x, y, width, height, pixels, width);
+}
+vui_widget *vui_canvas_ex(vui_window *w, int x, int y, int width, int height, vui_u32 *pixels, int stride) {
+    vui_widget *wd = new_widget(w, W_CANVAS);
+    if (!wd) return 0;
+    wd->x=x; wd->y=y; wd->w=width; wd->h=height;
+    wd->user = (void*)pixels;
+    wd->value = stride;
     init_margins(wd); w->dirty=1; return wd;
 }
 vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels, int active) {
@@ -710,6 +722,7 @@ vui_widget *vui_bar(vui_window *w, int x, int y, int width, int height, int max)
 }
 
 void vui_on_click(vui_widget *b, vui_callback cb){ if(b) b->on_click=cb; }
+void vui_on_submit(vui_widget *b, vui_callback cb){ if(b) b->on_submit=cb; }
 void vui_set_text(vui_widget *wd, const char *t){
     if(!wd)return;
     /* Dirty-on-change: skip the repaint entirely when the text is unchanged, so
@@ -1263,6 +1276,28 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         if (wd->value > 1) text_scaled(w, wd->x, wd->y, wd->text, wd->color, wd->value);
         else text(w, wd->x, wd->y, wd->text, wd->color);
         break;
+    case W_CANVAS: {
+        /* Raw pixel buffer blit. pixels = (uint32_t*)wd->user, with its OWN row
+         * stride in wd->value (the source buffer may be wider than the widget).
+         * The destination g_canvas is packed at stride w->width — the same
+         * convention canvas_index() uses for every other draw — so we MUST index
+         * it with w->width here, not VUI_MAX_W, or the blitted region shears
+         * relative to the rest of the window. */
+        uint32_t *pixels = (uint32_t *)wd->user;
+        int stride = wd->value;
+        if (pixels && stride > 0) {
+            for (int iy = 0; iy < wd->h; ++iy) {
+                int py = wd->y + iy;
+                if (py < 0 || py >= w->height) continue;
+                for (int ix = 0; ix < wd->w; ++ix) {
+                    int px = wd->x + ix;
+                    long di = canvas_index(w, px, py);
+                    if (di < 0) continue;
+                    g_canvas[di] = pixels[iy * stride + ix];
+                }
+            }
+        }
+        break; }
     case W_BUTTON: {
         /* Restrained rounded button (themed): subtle surface fill, thin border
          * that turns accent on hover/press; no gradient or accent bar. */
@@ -1522,7 +1557,10 @@ static void repaint(struct vui_window *w) {
     for (i = 0; i < w->widget_count; ++i) draw_widget(w, &w->widgets[i]);
     /* Pass 2: dropdown overlay so it always appears on top. */
     draw_dropdown(w);
-    sc4(SYS_WINDOW_PRESENT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas, (uint64_t)w->width, (uint64_t)w->height);
+    /* g_canvas is packed at stride w->width (see canvas_index): row y starts at
+     * y * w->width, so the present width is also the source row stride. */
+    sc6(SYS_WINDOW_PRESENT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas,
+        (uint64_t)w->width, (uint64_t)w->height, 0, 0);
     dmg_reset();
 }
 
@@ -1607,12 +1645,15 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
                 struct vui_widget *in = &w->widgets[w->active_input];
                 unsigned k = ev.key;
                 int n = slen(in->text);
+                int submit = 0;
                 if (k == 0x08) { if (n > 0) in->text[n-1] = 0; }          /* backspace */
-                else if (k == 0x1b || k == '\n' || k == '\r') { w->active_input = -1; }
+                else if (k == 0x1b) { w->active_input = -1; }             /* escape: cancel */
+                else if (k == '\n' || k == '\r') { w->active_input = -1; submit = 1; }
                 else if (k >= 0x20 && k < 0x7f && n + 1 < (int)sizeof(in->text)) {
                     in->text[n] = (char)k; in->text[n+1] = 0;
                 }
-                if (in->on_click) in->on_click(in);   /* notify (e.g. re-filter) */
+                if (in->on_click) in->on_click(in);     /* per-keystroke notify (e.g. re-filter) */
+                if (submit && in->on_submit) in->on_submit(in);  /* Enter: form submit */
                 w->dirty = 1; dmg_add(in->x, in->y, in->w, in->h);
             }
             else if (ev.type == EV_RESIZE) {

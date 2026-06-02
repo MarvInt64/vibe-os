@@ -16,6 +16,7 @@
 #include <thread>
 #include <mutex>
 #include "vibeos.h"
+#include "vexui.h"
 #include "weblayout.h"
 #include "dom.h"
 #include "layout_engine.h"
@@ -35,11 +36,10 @@ static constexpr int BROW_INIT_W = 760;
 static constexpr int BROW_INIT_H = 560;
 
 /* Chrome dimensions. */
-static constexpr int BAR_H       = 30;  /* URL bar height            */
-static constexpr int BTN_W       = 30;  /* back/forward button width */
-static constexpr int STATUS_H    = 16;  /* status line height        */
-static constexpr int CONTENT_TOP = BAR_H + STATUS_H + 4;
-static constexpr int MARGIN      = 6;   /* page left/right margin    */
+static constexpr int BAR_H       = 36;  /* VexUI bar height          */
+static constexpr int STATUS_H    = 18;  /* status line height        */
+static constexpr int CONTENT_TOP = BAR_H;
+static constexpr int MARGIN      = 0;   /* VexUI handles margins     */
 static constexpr int SCROLLBAR_W = 6;   /* scrollbar width           */
 static constexpr int PAGE_PAD    = 14;  /* inner left padding        */
 
@@ -50,12 +50,35 @@ public:
     /* Open the window, set up callbacks, and run the event loop. */
     void __attribute__((noreturn)) run();
 
+    /* Event handlers called by VexUI or global callbacks. */
+    void on_key(uint32_t k);
+    void on_mouse_move(int x, int y);
+    void on_click(int x, int y);
+    void on_scroll(int dy);
+    void on_resize(int w, int h);
+    void on_back();
+    void on_forward();
+    void on_url_enter();
+    void on_tick();
+
+    static Browser *s_instance_;  /* for static image callback */
+
 private:
     /* ---- canvas / window ----------------------------------------------- */
-    uint32_t canvas_[BROW_MAX_W * BROW_MAX_H];
-    int      win_id_  = -1;
-    int      win_w_   = BROW_INIT_W;
-    int      win_h_   = BROW_INIT_H;
+    /* Framebuffer uses a fixed stride of BROW_MAX_W so the VexUI canvas can
+     * read rows without depending on the current window width. */
+    uint32_t    canvas_[BROW_MAX_W * BROW_MAX_H];
+    vui_window *win_   = nullptr;
+    int         win_w_ = BROW_INIT_W;
+    int         win_h_ = BROW_INIT_H;
+
+    /* ---- VexUI widgets ------------------------------------------------- */
+    vui_widget *w_url_bar_ = nullptr;
+    vui_widget *w_status_  = nullptr;
+    vui_widget *w_progress_= nullptr;
+    vui_widget *w_canvas_  = nullptr;
+    vui_widget *w_back_    = nullptr;
+    vui_widget *w_forward_ = nullptr;
 
     /* ---- navigation ---------------------------------------------------- */
     static constexpr int HIST_CAP = 24;
@@ -65,7 +88,6 @@ private:
 
     char url_[1024]    = {};
     int  url_len_      = 0;
-    bool editing_      = true;
 
     char status_[128]  = {};
     char page_title_[128] = {};  /* extracted <title> for display */
@@ -120,7 +142,7 @@ private:
     void draw_text(int x, int y, const char *s, uint32_t c);
     int  draw_text_n(int x, int y, const char *s, int n, uint32_t c);
     void blit_glyph_aa(const struct af_glyph *g, int ox, int oy,
-                       uint32_t color, int clip_top);
+                       uint32_t color);
     void draw_run_text(int rx, int sy, const wl_run *r);
     void present();
 
@@ -153,7 +175,6 @@ private:
     static int  img_sizer_cb(const char *src, int maxw, int *w, int *h);
     static ImgEntry *img_find(const char *src);
     int  image_load(const char *src);
-    static Browser *s_instance_;  /* for static image callback */
 
     /* ---- link hit-test ------------------------------------------------- */
     int  link_at(int x, int y) const;
@@ -167,15 +188,5 @@ private:
     /* ---- rendering ----------------------------------------------------- */
     void render();
 
-    /* ---- event handlers ------------------------------------------------ */
-    void on_key(uint32_t k);
-    void on_mouse_move(int x, int y);
-    void on_click(int x, int y);
-    void on_scroll(int dy);
-    void on_resize(int w, int h);
-
-    /* ---- URL bar editing ----------------------------------------------- */
-    void url_putc(char c);
-    void url_backspace();
-    void url_clear();
+    /* ---- URL bar editing (deprecated, now handled by VexUI) ------------- */
 };
