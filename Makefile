@@ -126,9 +126,10 @@ libc: $(LIBC_A)
 
 apps: $(DISK_IMG) $(LIBC_A)
 	@mkdir -p build/user
-	$(UCC) $(UCFLAGS) -c user/vexui.c -o build/user/vexui.o
+	$(UCC) $(UCFLAGS) -Ilib/svg -c lib/svg/svg.c -o build/user/svg.o
+	$(UCC) $(UCFLAGS) -Ilib/svg -c user/vexui.c -o build/user/vexui.o
 	$(UCC) $(UCFLAGS) -c user/uidemo.c -o build/user/uidemo.o
-	$(LD) -nostdlib -static -T user/linker.ld -o build/user/uidemo.elf build/user/uidemo.o build/user/vexui.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/uidemo.elf build/user/uidemo.o build/user/vexui.o build/user/svg.o
 	$(USTRIP) --strip-all build/user/uidemo.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/uidemo.elf /bin/uidemo
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/taskmgr/taskmgr.cpp     -o build/user/taskmgr.o
@@ -136,17 +137,17 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/taskmgr/task_manager.cpp -o build/user/taskmgr_task_manager.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/taskmgr.elf \
 		$(LIBC_CRT0) build/user/taskmgr.o build/user/taskmgr_process_row.o \
-		build/user/taskmgr_task_manager.o build/user/vexui.o $(LIBC_A)
+		build/user/taskmgr_task_manager.o build/user/vexui.o build/user/svg.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/taskmgr.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/taskmgr.elf /bin/taskmgr
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/sysinfo/sysinfo.cpp -o build/user/sysinfo.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/sysinfo.elf \
-		$(LIBC_CRT0) build/user/sysinfo.o build/user/vexui.o $(LIBC_A)
+		$(LIBC_CRT0) build/user/sysinfo.o build/user/vexui.o build/user/svg.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/sysinfo.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/sysinfo.elf /bin/sysinfo
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/dock/dock.cpp -o build/user/dock.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/dock.elf \
-		$(LIBC_CRT0) build/user/dock.o build/user/vexui.o $(LIBC_A)
+		$(LIBC_CRT0) build/user/dock.o build/user/vexui.o build/user/svg.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/dock.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/dock.elf /bin/dock
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/browser -c user/browser/weblayout.c  -o build/user/weblayout.o
@@ -174,6 +175,7 @@ apps: $(DISK_IMG) $(LIBC_A)
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/browser.svg /icons/dock/browser.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/taskmgr.svg /icons/dock/taskmgr.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/terminal.svg /icons/dock/terminal.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/vibeos-logo.svg /icons/vibeos-logo.svg
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/hello.c -o build/user/hello.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/hello.elf $(LIBC_CRT0) build/user/hello.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/hello.elf
