@@ -47,7 +47,41 @@ static const uint32_t COL_DIM      = 0x008396adu;  /* dimmed chrome text   */
 static const uint32_t COL_ACCENT   = 0x0064f2ccu;  /* cursor / accent      */
 static const uint32_t COL_SCROLLBG = 0x001a2438u;  /* scrollbar track      */
 
+/* Diagnostic logging into the kernel journal (visible via `dmesg` / serial).
+ * Used to pinpoint where a fetch fails: resolve, connect, status, empty body. */
+static void blog(const char *m) { vos_log(VOS_LOG_APP, m); }
+static void blogf(const char *fmt, ...) {
+    static char buf[256];
+    __builtin_va_list ap; __builtin_va_start(ap, fmt);
+    __builtin_vsnprintf(buf, sizeof buf, fmt, ap);
+    __builtin_va_end(ap);
+    vos_log(VOS_LOG_APP, buf);
+}
+
 Browser *Browser::s_instance_ = nullptr;
+
+/* Pre-grow the process heap on the main (UI) thread.
+ *
+ * Growing the heap via SYS_SBRK from the fetch *worker* thread faults the
+ * process (observed: #PF rip=0 right after the SBRK that backs a 512 KB
+ * malloc — the worker returns through a zeroed stack slot). Reserving the
+ * space here, on the main thread where SBRK is known-good, means the worker's
+ * allocations (raw HTTP buffer, HTML body, decoded images) are all satisfied
+ * from the free list and never trigger a grow on the worker. Allocate in
+ * moderate blocks so each underlying kmalloc stays small, then free them back
+ * into the allocator (umalloc never returns pages to the kernel, so the heap
+ * stays grown). */
+static void warm_heap(unsigned long total_bytes) {
+    constexpr unsigned long BLOCK = 512u * 1024u;
+    int n = (int)((total_bytes + BLOCK - 1) / BLOCK);
+    if (n <= 0) return;
+    static void *blocks[64];
+    if (n > 64) n = 64;
+    int got = 0;
+    for (int i = 0; i < n; ++i) { blocks[i] = __builtin_malloc(BLOCK); if (blocks[i]) ++got; }
+    for (int i = 0; i < n; ++i) if (blocks[i]) __builtin_free(blocks[i]);
+    blogf("browser: warm_heap reserved %d/%d blocks (%lu KB)", got, n, (BLOCK/1024)*got);
+}
 
 Browser::Browser() {
     wl_init(&layout_);
@@ -55,6 +89,7 @@ Browser::Browser() {
     layout_engine_.set_metrics(appfont_advance, appfont_line_height);
     layout_engine_.set_image_sizer(img_sizer_cb);
     s_instance_ = this;
+    warm_heap(8u * 1024u * 1024u);   /* 8 MB: HTTP buffer + HTML + a few images */
 }
 
 /* ---- global callbacks -------------------------------------------------- */
@@ -365,8 +400,9 @@ void Browser::layout_current() {
 
 void Browser::navigate(const char *url) {
     if (!url || !url[0]) return;
+    blogf("browser: navigate url=%s", url);
     int cur = fetch_state_.load(std::memory_order_acquire);
-    if (cur == (int)FetchState::Fetching) return;
+    if (cur == (int)FetchState::Fetching) { blog("browser: navigate ignored (already fetching)"); return; }
     __builtin_strncpy(pending_url_, url, sizeof pending_url_);
     pending_url_[sizeof pending_url_ - 1] = '\0';
     progress_phase_ = 0;
@@ -379,11 +415,14 @@ void Browser::navigate(const char *url) {
 }
 
 void Browser::fetch_worker() {
+    blogf("browser: fetch_worker start url=%s", pending_url_);
     text_ready_.store(false, std::memory_order_release);
     load_url(pending_url_);
+    blogf("browser: fetch_worker after load_url html_len=%d", html_len_);
     text_ready_.store(true, std::memory_order_release);
     load_images();
     fetch_state_.store((int)FetchState::Ready, std::memory_order_release);
+    blog("browser: fetch_worker done");
 }
 
 void Browser::load_images() {
@@ -436,16 +475,22 @@ void Browser::load_url(const char *start_url) {
         else if (__builtin_strncmp(u,"http://",7)==0) u+=7;
         h=0; while(u[i]&&u[i]!='/'&&h<(int)sizeof(host)-1) host[h++]=u[i++]; host[h]='\0';
         p=0; path[p++]='/'; if(u[i]=='/'){ ++i; while(u[i]&&p<(int)sizeof(path)-1) path[p++]=u[i++]; } path[p]='\0';
-        if (!parse_ipv4(host,&ip)) { if (vos_resolve(host,&ip)<0) return; }
+        blogf("browser: load_url host=%s path=%s secure=%d", host, path, secure);
+        if (!parse_ipv4(host,&ip)) {
+            if (vos_resolve(host,&ip)<0) { blogf("browser: resolve FAILED host=%s", host); return; }
+        }
+        blogf("browser: resolved ip=%u.%u.%u.%u", (ip>>24)&255,(ip>>16)&255,(ip>>8)&255,ip&255);
         static constexpr int RAW_CAP = 512 * 1024;
         raw = static_cast<char *>(__builtin_malloc(RAW_CAP + 1));
-        if (!raw) return;
+        if (!raw) { blog("browser: malloc RAW_CAP FAILED"); return; }
         req.ip=ip; req.port=secure?443:80; req.host=host; req.path=path;
         req.out=raw; req.cap=RAW_CAP; req.user_agent=BROWSER_USER_AGENT; req.timeout_ms=0;
         n = secure ? vos_https_get(&req) : vos_http_get(&req);
+        blogf("browser: %s_get returned n=%d", secure?"https":"http", n);
         if (n <= 0) { __builtin_free(raw); return; }
         raw[n] = '\0';
         code = http_status(raw, n);
+        blogf("browser: http_status=%d", code);
         if (code >= 300 && code < 400 && find_header(raw,n,"location:",loc,sizeof loc)) {
             if (__builtin_strncmp(loc,"http://",7)==0 || __builtin_strncmp(loc,"https://",8)==0)
                 __builtin_strncpy(cur,loc,sizeof cur);
