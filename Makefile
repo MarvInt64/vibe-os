@@ -168,6 +168,8 @@ apps: $(DISK_IMG) $(LIBC_A)
 		$(LIBC_CRT0) build/user/wallpaper.o build/user/image.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/wallpaper.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/wallpaper.elf /bin/wallpaper
+	python3 scripts/png_to_vwp.py assets/wallpapers/default.png build/user/default.vwp
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/default.vwp /wallpapers/default.vwp
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/wallpapers/default.png /wallpapers/default.png
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/hello.c -o build/user/hello.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/hello.elf $(LIBC_CRT0) build/user/hello.o $(LIBC_A)

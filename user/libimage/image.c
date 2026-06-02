@@ -12,7 +12,6 @@ typedef unsigned char u8;
 #define STBI_NO_HDR
 #define STBI_NO_LINEAR
 #define STBI_NO_STDIO
-#define STBI_NO_FAILURE_STRINGS
 #define STBI_NO_THREAD_LOCALS         /* single TLS-less callers */
 #define STBI_ASSERT(x) ((void)0)
 #define STBI_MALLOC(sz)        malloc((size_t)(sz))
@@ -38,3 +37,8 @@ unsigned int *image_decode(const unsigned char *data, int len, int *w, int *h) {
 }
 
 void image_free(unsigned int *px) { if (px) free(px); }
+
+const char *image_decode_failure_reason(void) {
+    const char *reason = stbi_failure_reason();
+    return reason ? reason : "unknown";
+}

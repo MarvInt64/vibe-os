@@ -98,6 +98,12 @@ static uint32_t mix_color(uint32_t a, uint32_t b, uint32_t step, uint32_t total)
            (((ab * (total - step)) + (bb * step)) / total);
 }
 
+static uint32_t backdrop_noise(int x, int y) {
+    uint32_t n = (uint32_t)x * 374761393u + (uint32_t)y * 668265263u;
+    n = (n ^ (n >> 13)) * 1274126177u;
+    return (n ^ (n >> 16)) & 0xffu;
+}
+
 static int large_ui(const struct desktop_state *desktop) {
 	return desktop->screen_width >= 1920u || desktop->screen_height >= 1080u;
 }
@@ -1457,12 +1463,26 @@ static void render_background_surface(struct desktop_state *desktop) {
         memcpy(fb->base, desktop->wallpaper_storage,
                (size_t)w * (size_t)desktop->screen_height * sizeof(uint32_t));
     } else {
-        /* No wallpaper set: a plain, calm theme-blue backdrop (a gentle vertical
-         * gradient within the theme palette) — no procedural grid/glow, so boot
-         * shows a clean solid desktop until a wallpaper image is applied. */
-        draw_gradient_background(fb, mix_color(g_chrome_theme.bg, g_chrome_theme.surface, 1u, 5u),
-                                 g_chrome_theme.bg);
-        (void)x; (void)y;
+        int h = (int)desktop->screen_height;
+        int cx = w / 2;
+        int cy = h / 3;
+        for (y = 0; y < h; ++y) {
+            uint32_t row_a = mix_color(0x0015273cu, 0x001b3048u, (uint32_t)y, (uint32_t)(h > 1 ? h - 1 : 1));
+            uint32_t row_b = mix_color(0x00071118u, 0x00142636u, (uint32_t)y, (uint32_t)(h > 1 ? h - 1 : 1));
+            for (x = 0; x < w; ++x) {
+                int dx = x - cx;
+                int dy = y - cy;
+                int dist = (dx * dx) / 7 + (dy * dy) / 3;
+                uint32_t c = mix_color(row_a, row_b, (uint32_t)x, (uint32_t)(w > 1 ? w - 1 : 1));
+                uint32_t glow = dist < 52000 ? (uint32_t)(96 - dist / 542) : 0u;
+                c = mix_color(c, 0x003b638du, glow, 255u);
+                if ((x % 48) == 0 || (y % 48) == 0) {
+                    c = mix_color(c, 0x00ffffffu, 9u, 255u);
+                }
+                c = mix_color(c, 0x00ffffffu, backdrop_noise(x, y) & 5u, 255u);
+                fb_put_pixel(fb, x, y, c);
+            }
+        }
     }
 
     /* ---- Top bar: thin, dense; V-logo + brand left, indicators right. ---- */

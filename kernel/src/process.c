@@ -417,7 +417,7 @@ static int process_range_overlaps_live_image(uintptr_t start, size_t size, const
 static void *process_kmalloc_no_image_overlap(size_t size, const struct process *skip, const char *tag) {
     uint32_t attempt;
 
-    for (attempt = 0; attempt < 16u; ++attempt) {
+    for (attempt = 0; attempt < PROCESS_IMAGE_ALLOC_QUARANTINE_CAP; ++attempt) {
         void *ptr = kmalloc(size);
         uint32_t slot = 0;
 
@@ -527,7 +527,7 @@ static uint64_t process_sbrk(struct process *process, int64_t increment) {
         return (uint64_t)(uintptr_t)-1;
     }
     map_size = (size_t)(new_page_end - old_page_end);
-    allocation = kmalloc(map_size + 0x1000u);
+    allocation = process_kmalloc_no_image_overlap(map_size + 0x1000u, 0, "sbrk_heap");
     if (allocation == 0) {
         return (uint64_t)(uintptr_t)-1;
     }

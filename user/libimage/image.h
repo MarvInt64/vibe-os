@@ -15,6 +15,7 @@ extern "C" {
  * 0x00RRGGBB pixels (alpha dropped). Returns 0 on failure (unsupported format
  * or decode error). Free the result with image_free. */
 unsigned int *image_decode(const unsigned char *data, int len, int *w, int *h);
+const char *image_decode_failure_reason(void);
 void image_free(unsigned int *px);
 
 #ifdef __cplusplus
