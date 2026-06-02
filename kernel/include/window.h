@@ -185,7 +185,7 @@ void desktop_render(struct desktop_state *desktop, struct framebuffer *fb);
 void desktop_render_rect(struct desktop_state *desktop, struct framebuffer *fb, const struct rect *rect);
 void desktop_draw_cursor_overlay(const struct desktop_state *desktop, struct framebuffer *fb);
 void desktop_cursor_rect_at(const struct desktop_state *desktop, int x, int y, struct rect *rect);
-int desktop_take_dirty_rect(struct desktop_state *desktop, struct rect *rect);
+int desktop_get_dirty_region(struct desktop_state *desktop, struct rect *rect);
 void desktop_show_error(struct desktop_state *desktop, const char *title, const char *message);
 uint64_t desktop_activity_units(void);
 

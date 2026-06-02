@@ -439,7 +439,7 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
                 g_wm_active = window_manager_active;
                 if (window_manager_active) {
                     struct rect initial_rect;
-                    (void)desktop_take_dirty_rect(&g_desktop, &initial_rect);
+                    (void)desktop_get_dirty_region(&g_desktop, &initial_rect);
                     ensure_shell_dock_running();
                     ensure_shell_topbar_running();
                     start_desktop_scene_apps();
@@ -460,7 +460,7 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
                 g_desktop_scene_started = 0;
                 if (start_window_manager(&presented_cursor_x, &presented_cursor_y)) {
                     struct rect r;
-                    (void)desktop_take_dirty_rect(&g_desktop, &r);
+                    (void)desktop_get_dirty_region(&g_desktop, &r);
                     ensure_shell_dock_running();
                     ensure_shell_topbar_running();
                     start_desktop_scene_apps();
@@ -484,13 +484,11 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
                 struct rect present;
                 int have_present = 0;
 
-                int tiles_processed = 0;
-                while (tiles_processed < 64 && desktop_take_dirty_rect(&g_desktop, &dirty_rect)) {
+                if (desktop_get_dirty_region(&g_desktop, &dirty_rect)) {
                     desktop_render_rect(&g_desktop, &g_backbuffer, &dirty_rect);
-                    present = have_present ? rect_union(&present, &dirty_rect) : dirty_rect;
+                    present = dirty_rect;
                     have_present = 1;
                     had_dirty = 1;
-                    tiles_processed++;
                 }
 
                 desktop_cursor_rect_at(&g_desktop, presented_cursor_x, presented_cursor_y, &old_cursor_rect);
