@@ -45,4 +45,15 @@ void gfx_heap_init(uintptr_t base, size_t size);
 void *gfx_alloc(size_t size);
 void gfx_free(void *ptr);
 
+/*
+ * Process-image heap: another separate, physically-disjoint region used for
+ * process images, so ELF read buffers / sbrk growth (main heap) can never be
+ * placed over a running image. image_heap_ready() reports whether it was set
+ * up (callers fall back to the main heap if not).
+ */
+void image_heap_init(uintptr_t base, size_t size);
+void *image_alloc(size_t size);
+void image_free(void *ptr);
+int image_heap_ready(void);
+
 #endif

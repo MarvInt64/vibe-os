@@ -201,49 +201,51 @@ size_t kmalloc_get_physical_used(void) {
 }
 
 /* ===================================================================
- *  Compositor (graphics) heap — a SECOND, physically-disjoint heap.
+ *  Auxiliary physically-disjoint heaps.
  *
- *  Window backing stores must never share physical memory with a process
- *  image: the compositor writes into them under any process's page tables,
- *  so an overlap would corrupt whatever process happens to be mapped there.
- *  Process images come from the main heap above; window/compositor buffers
- *  come from this separate region. Because the two heaps occupy disjoint
- *  physical RAM, overlap between a window buffer and a process image is
- *  impossible by construction — no retry/quarantine hack needed. The
- *  allocator itself is the same simple first-fit as the main heap.
- * =================================================================== */
-static alloc_header_t *g_gfx_start = NULL;
-static uintptr_t g_gfx_base = 0;
-static size_t g_gfx_size = 0;
+ *  Two kinds of large, long-lived buffers must never share physical memory
+ *  with anything else, because they are written under arbitrary page tables
+ *  or hold a whole process's address space:
+ *    - the GFX heap backs window/compositor surfaces (the compositor writes
+ *      them under any process's CR3);
+ *    - the IMAGE heap backs process images (a stray overlap would corrupt a
+ *      running program).
+ *  Each lives in its own region carved off RAM at boot, disjoint from the
+ *  main heap (which serves ELF read buffers, sbrk growth, misc) and from each
+ *  other. Disjoint regions make overlap impossible by construction, so no
+ *  retry/quarantine hack is needed. Same simple first-fit as the main heap,
+ *  parameterized over a heap instance. */
+struct kheap {
+    alloc_header_t *start;
+    uintptr_t base;
+    size_t size;
+};
+static struct kheap g_gfx_heap;
+static struct kheap g_img_heap;
 
-static uintptr_t gfx_end_addr(void) { return g_gfx_base + g_gfx_size; }
-
-static int gfx_block_in_heap(const alloc_header_t *block) {
+static int kheap_block_ok(const struct kheap *h, const alloc_header_t *block) {
     uintptr_t p = (uintptr_t)block;
-    if (p < g_gfx_base || p + sizeof(alloc_header_t) > gfx_end_addr()) {
-        return 0;
-    }
-    if (block->size > gfx_end_addr() - p - sizeof(alloc_header_t)) {
-        return 0;
-    }
+    uintptr_t end = h->base + h->size;
+    if (p < h->base || p + sizeof(alloc_header_t) > end) return 0;
+    if (block->size > end - p - sizeof(alloc_header_t)) return 0;
     return 1;
 }
 
-void gfx_heap_init(uintptr_t base, size_t size) {
-    g_gfx_base = base;
-    g_gfx_size = size;
-    g_gfx_start = (alloc_header_t *)base;
-    g_gfx_start->size = size - sizeof(alloc_header_t);
-    g_gfx_start->next = NULL;
-    g_gfx_start->is_free = 1;
+static void kheap_init(struct kheap *h, uintptr_t base, size_t size) {
+    h->base = base;
+    h->size = size;
+    h->start = (alloc_header_t *)base;
+    h->start->size = size - sizeof(alloc_header_t);
+    h->start->next = NULL;
+    h->start->is_free = 1;
 }
 
-void *gfx_alloc(size_t size) {
-    alloc_header_t *curr = g_gfx_start;
-    if (g_gfx_start == NULL) return NULL;
+static void *kheap_alloc(struct kheap *h, size_t size) {
+    alloc_header_t *curr = h->start;
+    if (curr == NULL) return NULL;
     size = (size + 7) & ~7u;
     while (curr != NULL) {
-        if (!gfx_block_in_heap(curr)) return NULL;
+        if (!kheap_block_ok(h, curr)) return NULL;
         if (curr->is_free && curr->size >= size) break;
         curr = curr->next;
     }
@@ -260,15 +262,15 @@ void *gfx_alloc(size_t size) {
     return (void *)((uint8_t *)curr + sizeof(alloc_header_t));
 }
 
-void gfx_free(void *ptr) {
+static void kheap_free(struct kheap *h, void *ptr) {
     alloc_header_t *block, *curr;
     if (ptr == NULL) return;
     block = (alloc_header_t *)((uint8_t *)ptr - sizeof(alloc_header_t));
-    if (!gfx_block_in_heap(block) || block->is_free) return;
+    if (!kheap_block_ok(h, block) || block->is_free) return;
     block->is_free = 1;
-    curr = g_gfx_start;
+    curr = h->start;
     while (curr != NULL && curr->next != NULL) {
-        if (!gfx_block_in_heap(curr) || !gfx_block_in_heap(curr->next)) return;
+        if (!kheap_block_ok(h, curr) || !kheap_block_ok(h, curr->next)) return;
         if (curr->is_free && curr->next->is_free && block_phys_next(curr) == curr->next) {
             curr->size += sizeof(alloc_header_t) + curr->next->size;
             curr->next = curr->next->next;
@@ -277,3 +279,12 @@ void gfx_free(void *ptr) {
         }
     }
 }
+
+void gfx_heap_init(uintptr_t base, size_t size) { kheap_init(&g_gfx_heap, base, size); }
+void *gfx_alloc(size_t size) { return kheap_alloc(&g_gfx_heap, size); }
+void gfx_free(void *ptr) { kheap_free(&g_gfx_heap, ptr); }
+
+void image_heap_init(uintptr_t base, size_t size) { kheap_init(&g_img_heap, base, size); }
+void *image_alloc(size_t size) { return kheap_alloc(&g_img_heap, size); }
+void image_free(void *ptr) { kheap_free(&g_img_heap, ptr); }
+int image_heap_ready(void) { return g_img_heap.start != NULL; }

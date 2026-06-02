@@ -58,8 +58,9 @@ static void kernel_init_heap_from_bootinfo(uintptr_t mbi_addr) {
 
   if (!multiboot2_memory_info(mbi_addr, heap_start, &mem)) {
     serial_write("VIBEOS: no multiboot memory map; using conservative heap fallback\n");
-    kmalloc_init(heap_start, 48 * 1024 * 1024);
-    gfx_heap_init(heap_start + 48 * 1024 * 1024, 16 * 1024 * 1024);
+    kmalloc_init(heap_start, 32 * 1024 * 1024);
+    gfx_heap_init(heap_start + 32 * 1024 * 1024, 12 * 1024 * 1024);
+    image_heap_init(heap_start + 44 * 1024 * 1024, 20 * 1024 * 1024);
     kmalloc_set_physical_total(heap_start + 64 * 1024 * 1024);
     return;
   }
@@ -75,15 +76,22 @@ static void kernel_init_heap_from_bootinfo(uintptr_t mbi_addr) {
 
   heap_size = heap_end - heap_start;
 
-  /* Carve a separate compositor (graphics) heap off the top of RAM for window
-   * backing stores, so they never share physical memory with a process image
-   * (which the compositor would corrupt). Take ~1/4 of the heap, capped at
-   * 96 MB, and only if the main heap stays comfortably above the minimum. */
+  /* Carve two separate, physically-disjoint heaps off the top of RAM:
+   *   - the GFX heap for window/compositor surfaces, and
+   *   - the IMAGE heap for process images,
+   * so that neither can ever share physical memory with the other or with a
+   * main-heap allocation (ELF read buffers, sbrk growth). This removes the
+   * whole class of "allocation lands on a live image" corruption by
+   * construction. Each is taken only if the main heap stays above the minimum. */
   {
-    uint64_t gfx_size = heap_size / 4;
-    if (gfx_size > 96ull * 1024ull * 1024ull) gfx_size = 96ull * 1024ull * 1024ull;
+    uint64_t gfx_size = heap_size / 6;
+    uint64_t img_size = heap_size / 4;
+    if (gfx_size > 64ull * 1024ull * 1024ull) gfx_size = 64ull * 1024ull * 1024ull;
+    if (img_size > 96ull * 1024ull * 1024ull) img_size = 96ull * 1024ull * 1024ull;
     gfx_size &= ~0x1fffffull;                 /* 2 MB aligned */
-    if (gfx_size >= 8ull * 1024ull * 1024ull && heap_size - gfx_size >= min_heap) {
+    img_size &= ~0x1fffffull;
+    if (gfx_size >= 8ull * 1024ull * 1024ull &&
+        heap_size - gfx_size - img_size >= min_heap) {
       uint64_t gfx_base = heap_end - gfx_size;
       heap_size -= gfx_size;
       heap_end = gfx_base;
@@ -92,6 +100,18 @@ static void kernel_init_heap_from_bootinfo(uintptr_t mbi_addr) {
       serial_write_hex_u64(gfx_base);
       serial_write(" size=");
       serial_write_hex_u64(gfx_size);
+      serial_write("\n");
+    }
+    if (img_size >= 8ull * 1024ull * 1024ull &&
+        heap_size - img_size >= min_heap) {
+      uint64_t img_base = heap_end - img_size;
+      heap_size -= img_size;
+      heap_end = img_base;
+      image_heap_init((uintptr_t)img_base, (size_t)img_size);
+      serial_write("VIBEOS: image heap base=");
+      serial_write_hex_u64(img_base);
+      serial_write(" size=");
+      serial_write_hex_u64(img_size);
       serial_write("\n");
     }
   }

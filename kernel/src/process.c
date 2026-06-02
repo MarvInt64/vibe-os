@@ -76,6 +76,8 @@ static uintptr_t align_up_page_uintptr(uintptr_t value) {
 }
 
 static void process_free_heap_chunks(struct process *process);
+static void *process_image_alloc(size_t size, const struct process *skip);
+static void process_image_free(void *ptr);
 
 /* Magic written to the lowest 8 bytes of every kernel stack. The stack grows
  * down toward this address, so an overflow clobbers the canary on its way into
@@ -338,7 +340,7 @@ static void process_reap(struct process *process) {
      * still-running parent (and its other threads). */
     if (!process->is_thread && process->user_image_allocation != 0) {
         process_free_heap_chunks(process);
-        kfree(process->user_image_allocation);
+        process_image_free(process->user_image_allocation);
     }
     process->is_thread = 0;
     process->user_image_allocation = 0;
@@ -456,6 +458,28 @@ static void *process_kmalloc_no_image_overlap(size_t size, const struct process 
         g_image_alloc_quarantine[g_image_alloc_quarantine_count++] = ptr;
     }
     return 0;
+}
+
+/* Process images live in their own physically-disjoint heap so that no main-
+ * heap allocation (ELF read buffer, sbrk growth) can ever be placed over a
+ * running image. If that heap could not be set up (very small RAM), fall back
+ * to the main heap with the legacy image-overlap guard. */
+static void *process_image_alloc(size_t size, const struct process *skip) {
+    if (image_heap_ready()) {
+        return image_alloc(size);
+    }
+    return process_kmalloc_no_image_overlap(size, skip, "user_image");
+}
+
+static void process_image_free(void *ptr) {
+    if (ptr == 0) {
+        return;
+    }
+    if (image_heap_ready()) {
+        image_free(ptr);
+    } else {
+        kfree(ptr);
+    }
 }
 
 static struct process *process_address_space_owner(struct process *process) {
@@ -906,13 +930,13 @@ static int process_load_image_slot(struct process *process, uint32_t slot, const
     image_capacity = align_up_size(image_capacity, 0x1000u);
     if (!process->is_thread && process->user_image_allocation != 0) {
         process_free_heap_chunks(process);
-        kfree(process->user_image_allocation);
+        process_image_free(process->user_image_allocation);
     }
     process->is_thread = 0;
     process->user_image_allocation = 0;
     process->user_image_pages = 0;
     process->user_image_capacity = 0;
-    image_allocation = process_kmalloc_no_image_overlap(image_capacity + 0x1000u, process, "user_image");
+    image_allocation = process_image_alloc(image_capacity + 0x1000u, process);
     if (image_allocation == 0) {
         serial_write("VIBEOS:   -> Out of heap for user image\n");
         return 0;
