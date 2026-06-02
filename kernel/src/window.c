@@ -437,32 +437,27 @@ static void clip_rect_to_screen(const struct desktop_state *desktop, struct rect
     rect->height = y1 - y0;
 }
 
-/* Mark a specific tile as dirty */
-static void mark_tile_dirty(struct desktop_state *desktop, int x, int y) {
-    int tile_x = x / desktop->tile_size;
-    int tile_y = y / desktop->tile_size;
-    if (tile_x < 0 || tile_y < 0 || tile_x >= desktop->tiles_x || tile_y >= desktop->tiles_y) return;
-
-    int tile_idx = tile_y * desktop->tiles_x + tile_x;
-    if (tile_idx / 8 < MAX_TILE_BIT_ARRAY) {
-        desktop->dirty_tiles[tile_idx / 8] |= (1 << (tile_idx % 8));
-        desktop->dirty = 1;
-    }
-}
-
 static void mark_dirty_rect(struct desktop_state *desktop, struct rect rect) {
     clip_rect_to_screen(desktop, &rect);
     if (rect_is_empty(&rect)) {
         return;
     }
     
-    for (int y = rect.y; y < rect.y + rect.height; y += desktop->tile_size) {
-        for (int x = rect.x; x < rect.x + rect.width; x += desktop->tile_size) {
-            mark_tile_dirty(desktop, x, y);
+    int start_tile_x = rect.x / desktop->tile_size;
+    int end_tile_x = (rect.x + rect.width - 1) / desktop->tile_size;
+    int start_tile_y = rect.y / desktop->tile_size;
+    int end_tile_y = (rect.y + rect.height - 1) / desktop->tile_size;
+    
+    for (int y = start_tile_y; y <= end_tile_y; y++) {
+        for (int x = start_tile_x; x <= end_tile_x; x++) {
+            if (x < 0 || y < 0 || x >= desktop->tiles_x || y >= desktop->tiles_y) continue;
+            int tile_idx = y * desktop->tiles_x + x;
+            if (tile_idx / 8 < MAX_TILE_BIT_ARRAY) {
+                desktop->dirty_tiles[tile_idx / 8] |= (1 << (tile_idx % 8));
+                desktop->dirty = 1;
+            }
         }
     }
-    // Mark the last tile
-    mark_tile_dirty(desktop, rect.x + rect.width - 1, rect.y + rect.height - 1);
 }
 
 static void mark_background_dirty(struct desktop_state *desktop) {
@@ -2223,40 +2218,46 @@ void desktop_cursor_rect_at(const struct desktop_state *desktop, int x, int y, s
     *rect = cursor_rect(desktop, x, y);
 }
 
-/* Get the next dirty tile */
-int desktop_take_dirty_rect(struct desktop_state *desktop, struct rect *rect) {
+/* Merges all dirty tiles into a single rectangle covering them. */
+int desktop_get_dirty_region(struct desktop_state *desktop, struct rect *rect) {
     if (!desktop->dirty) {
         return 0;
     }
+
+    int min_tile_x = desktop->tiles_x;
+    int max_tile_x = -1;
+    int min_tile_y = desktop->tiles_y;
+    int max_tile_y = -1;
+    int found = 0;
 
     for (int tile_idx = 0; tile_idx < desktop->tiles_x * desktop->tiles_y; tile_idx++) {
         if (desktop->dirty_tiles[tile_idx / 8] & (1 << (tile_idx % 8))) {
             int tile_x = tile_idx % desktop->tiles_x;
             int tile_y = tile_idx / desktop->tiles_x;
             
-            *rect = rect_from_bounds(tile_x * desktop->tile_size, 
-                                     tile_y * desktop->tile_size, 
-                                     desktop->tile_size, 
-                                     desktop->tile_size);
+            if (tile_x < min_tile_x) min_tile_x = tile_x;
+            if (tile_x > max_tile_x) max_tile_x = tile_x;
+            if (tile_y < min_tile_y) min_tile_y = tile_y;
+            if (tile_y > max_tile_y) max_tile_y = tile_y;
+            found = 1;
             
             // Clear the dirty bit
             desktop->dirty_tiles[tile_idx / 8] &= ~(1 << (tile_idx % 8));
-            
-            // Check if there are any dirty tiles left
-            int any_dirty = 0;
-            for(int i = 0; i < MAX_TILE_BIT_ARRAY; i++) {
-                if (desktop->dirty_tiles[i]) {
-                    any_dirty = 1;
-                    break;
-                }
-            }
-            desktop->dirty = any_dirty;
-            return 1;
         }
     }
     
+    if (!found) {
+        desktop->dirty = 0;
+        return 0;
+    }
+
+    rect->x = min_tile_x * desktop->tile_size;
+    rect->y = min_tile_y * desktop->tile_size;
+    rect->width = (max_tile_x - min_tile_x + 1) * desktop->tile_size;
+    rect->height = (max_tile_y - min_tile_y + 1) * desktop->tile_size;
+    
     desktop->dirty = 0;
-    return 0;
+    return 1;
 }
 
 /* ---- Window server (userspace GUI apps) ---- */
