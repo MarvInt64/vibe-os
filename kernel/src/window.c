@@ -467,6 +467,8 @@ static void mark_dirty_rect(struct desktop_state *desktop, struct rect rect) {
 
 static void mark_background_dirty(struct desktop_state *desktop) {
     desktop->background_dirty = 1;
+    for(int i = 0; i < MAX_TILE_BIT_ARRAY; i++) desktop->dirty_tiles[i] = 0xFF;
+    desktop->dirty = 1;
 }
 
 static void mark_window_dirty(struct desktop_state *desktop, int index) {
