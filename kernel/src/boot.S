@@ -137,6 +137,12 @@ _start:
     or eax, 1 << 8
     wrmsr
 
+    /* Set PAT3 to WC */
+    mov ecx, 0x277
+    rdmsr
+    or eax, 0x01000000
+    wrmsr
+
     lea eax, [pml4_table]
     mov cr3, eax
 

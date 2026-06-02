@@ -74,7 +74,7 @@ void paging_remap_framebuffer(uintptr_t framebuffer_addr, size_t framebuffer_siz
     size_t i;
 
     for (i = 0; i < FRAMEBUFFER_PAGE_TABLE_COUNT && next_region < region_end; ++i) {
-        fill_4k_page_table(page_tables[i], next_region, 0x101bu);
+        fill_4k_page_table(page_tables[i], next_region, 0x9bu);
         install_page_table(next_region, page_tables[i]);
         next_region += PAGE_TABLE_BYTES;
     }
