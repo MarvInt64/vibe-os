@@ -12,26 +12,27 @@ It boots via GRUB/Multiboot2, runs entirely bare-metal, and includes a working g
 | Area | Details |
 |---|---|
 | **Boot** | GRUB Multiboot2 → 32-bit protected mode → 64-bit long mode; VGA text-mode fallback during early init |
-| **Memory** | Physical frame allocator, 4-level paging, kernel heap (`kmalloc`/`kfree`), per-process page tables with full address-space isolation |
+| **Memory** | Physical frame allocator, 4-level paging, kernel heap (`kmalloc`/`kfree`), per-process page tables with full address-space isolation; **isolated compositor heap** for window buffers; **per-process image heaps** to prevent fragmentation and overlap |
 | **Interrupts** | IDT, PIC remapping, IRQ handlers, `int 0x80` syscall interface (39 syscalls) |
 | **Scheduler** | Round-robin preemptive multi-process; FPU/SSE context switch per process (`fxsave`/`fxrstor`) so userspace can freely use floats and SSE |
 | **Process management** | `SYS_PROCESS_SPAWN` / `SYS_WAITPID` / `SYS_PROCESS_KILL`; per-process file-descriptor table; `SYS_GETARG` argument passing |
 | **Storage** | IDE/PIO driver, ramdisk (in-memory block device for early boot), persistent raw disk image |
 | **File system** | ext2 read/write; full VFS layer; `open`/`close`/`read`/`write`/`stat`/`readdir`/`chdir`/`getcwd`/`unlink`/`creat`/`mkdir` syscalls; survives reboots |
 | **Networking** | Intel e1000 NIC driver; ARP, IPv4, ICMP (`ping`), UDP, DNS, TCP; HTTP (`curl`); TLS via BearSSL (freestanding port) — `SYS_NET_HTTPS_GET` syscall exists and encrypts the connection, but certificate validation is disabled (accept-all, no trust store) and the shell `curl` command currently only uses plain HTTP |
-| **Graphics** | BGA (Bochs Graphics Adapter) driver for arbitrary resolutions; double-buffered framebuffer with dirty-rect partial redraws; runtime resolution switching via `display <w> <h>`; VGA text fallback |
-| **Window server** | Multi-window compositor; drag, resize, close; PS/2 mouse + keyboard; **per-window alpha** (glass windows) and **partial damaged-rect presents** (`SYS_WINDOW_PRESENT_RECT`) so periodic updaters don't force full-window recomposites |
-| **Desktop chrome** | Flat blue-gray glass theme; thin line window controls; global top bar with V-logo, app menu bar, status indicators + sparkline + power glyph; floating rounded **dock** (translucent pill, line-art icons) |
-| **Top-bar menu bar** | The focused app declares its menus via `SYS_WINDOW_SET_MENUBAR` / `vos_window_set_menubar` (titles, items, shortcuts, dividers, checkmarks, danger style); the compositor draws the dropdowns and reports picks back as `VOS_EV_MENU_ACTION` |
+| **Graphics** | BGA (Bochs Graphics Adapter) driver; **tile-based dirty tracking** with **dirty tile merging** for optimized redraws; **Write-Combining (WC)** enabled via **PAT** for fast framebuffer writes; runtime resolution switching via `display <w> <h>` |
+| **Window server** | Multi-window compositor; drag, resize, close; PS/2 mouse + keyboard; **per-window alpha** (glass windows); **dynamic window buffer allocation**; **isolated compositor heap** prevents image corruption during heavy allocation |
+| **Desktop chrome** | Flat blue-gray glass theme; thin line window controls; **userspace top bar app** (V-logo, app menu, status indicators, power glyph); floating rounded **dock** with **SVG icons** and **anti-aliased SDF rendering** |
+| **Top-bar menu bar** | The focused app declares its menus via `SYS_WINDOW_SET_MENUBAR` / `vos_window_set_menubar` (titles, items, shortcuts, dividers, checkmarks, danger style); the **topbar app** draws the dropdowns and reports picks back as `VOS_EV_MENU_ACTION` |
 | **Theming** | Central design-token theme for both kernel chrome and VexUI (`bg`/`surface`/`border`/`text`/`accent`/`ok`/`warn`/`danger`/`menu_*`/`window_alpha`), overridable at runtime from `/home/user/.config/vibeos.theme` |
 | **Wallpaper** | Userspace decodes an image (shared `user/libimage`, stb_image) and hands pixels to the kernel via `SYS_SET_WALLPAPER`; `/bin/wallpaper [path]` (default `/wallpapers/default.png`); plain theme-blue backdrop when none set |
 | **VexUI toolkit** | Retained-mode widget library: labels, rounded buttons, **pill buttons**, panels, **cards**, **status badges/pills**, **rounded inputs**, **tabs** (accent underline), progress bars, **sparklines**, **dock tiles**; **VBox/HBox layout containers** with `expand`/`fill`/`gap`/`padding`; in-window menu bar; **dirty-on-change setters + damaged-rect partial presents** for efficient redraws |
 | **Font rendering** | Built-in bitmap font atlas (`font_atlas.c`) used by VexUI and the kernel terminal; DejaVu Sans TTF embedded via `.incbin` + stb_truetype glyph cache (`appfont.c`) used by the browser for anti-aliased proportional text |
 | **Userspace libc** | Freestanding libc: stdio/stdlib/string/ctype; `crt0` (entry, `.init_array` ctors, `_exit`); user heap (`umalloc`) |
+| **SVG Rendering** | Reusable **lib/svg** library with **anti-aliased SDF (Signed Distance Field) renderer**; used by the dock for high-quality vector icons |
 | **C++20 userspace** | Full freestanding C++20 runtime: vtables, RTTI, `typeid`, global/local statics, `new`/`delete`, `__cxa_guard_*`, `__cxa_atexit`; standard headers `<array>`, `<span>`, `<algorithm>`, `<utility>`, `<type_traits>`, `<new>`, `<typeinfo>`, etc. |
 | **Kernel C++ runtime** | Kernel-side C++20 subset (no exceptions/RTTI); `new`/`delete` via `kmalloc`; `.init_array` global ctors; automatic boot self-test |
 | **Logging** | Kernel event journal (`dmesg`); serial debug output; `SYS_LOG` / `vos_log` for userspace; crash persistence to `/journal.log` |
-| **Apps** | `sh` (interactive shell), `edit` (text editor), `browser` (HTTP/HTTPS reader), `taskmgr` (process manager, written in C++20), `uidemo`, `hello`, `cpptest` |
+| **Apps** | `sh` (interactive shell), `edit` (text editor), `browser` (HTTP/HTTPS reader), `taskmgr` (process manager), **topbar** (userspace system bar), `uidemo`, `hello`, `cpptest` |
 
 ---
 
@@ -161,6 +162,7 @@ gui / desktop / wm     start graphical desktop
 taskmgr / tasks        process manager
 browser / web          HTTP/HTTPS text browser
 edit <file>            text editor
+topbar                 userspace system bar
 uidemo                 VexUI widget demo
 hello                  minimal hello-world app
 cpptest / c++test      C++20 runtime smoke test
@@ -188,11 +190,14 @@ VibeOS/
 │   ├── libc/             — freestanding libc + C++20 runtime + crt0
 │   │   └── include/      — standard headers (stdio, stdlib, string, new, …)
 │   ├── taskmgr/          — Task Manager (C++20, VexUI)
+│   ├── topbar/           — Top Bar (C++20, VexUI, userspace)
 │   ├── vexui.c/h         — retained-mode GUI toolkit
 │   ├── sh.c              — interactive shell
 │   ├── browser.c         — HTTP text browser
 │   ├── edit.c            — text editor
 │   └── ...
+├── lib/
+│   └── svg/              — reusable SVG/SDF renderer
 ├── third_party/
 │   ├── bearssl/          — TLS library (freestanding port)
 │   └── stb/              — stb_truetype / stb_image
@@ -209,7 +214,7 @@ VibeOS/
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Userspace (ring 3)                                     │
-│  sh  edit  browser  taskmgr  uidemo  hello  cpptest     │
+│  sh  edit  browser  taskmgr  topbar  uidemo  hello      │
 │  ↑                                                      │
 │  user/libc  (stdio/stdlib/string, crt0, C++20 ABI)      │
 │  user/vexui (retained-mode GUI toolkit, VBox/HBox)      │
