@@ -1,82 +1,60 @@
 #include "string.h"
 
+/* These are the hot path for every blit, fill and surface copy, so they use
+ * the x86 string instructions (rep movs/stos) instead of scalar C loops. On
+ * modern CPUs `rep movsb` is the recommended, ERMSB-optimized bulk copy, and
+ * the sequential burst it emits is exactly what a write-combining framebuffer
+ * wants. (The kernel runs with the direction flag clear by ABI convention.) */
+
 void *memcpy(void *dest, const void *src, size_t count) {
-    uint8_t *out = (uint8_t *)dest;
-    const uint8_t *in = (const uint8_t *)src;
-    size_t i;
-
-    for (i = 0; i < count; ++i) {
-        out[i] = in[i];
-    }
-
-    return dest;
-}
-
-void *memcpy_fast(void *dest, const void *src, size_t count) {
-    uint64_t *out64 = (uint64_t *)dest;
-    const uint64_t *in64 = (const uint64_t *)src;
-    size_t count64 = count / 8;
-    uint8_t *out8;
-    const uint8_t *in8;
-    size_t i;
-
-    for (i = 0; i < count64; ++i) {
-        out64[i] = in64[i];
-    }
-
-    out8 = (uint8_t *)(out64 + count64);
-    in8 = (const uint8_t *)(in64 + count64);
-    count = count & 7;
-    for (i = 0; i < count; ++i) {
-        out8[i] = in8[i];
-    }
-
-    return dest;
+    void *ret = dest;
+    __asm__ volatile("rep movsb"
+                     : "+D"(dest), "+S"(src), "+c"(count)
+                     :
+                     : "memory");
+    return ret;
 }
 
 void *memmove(void *dest, const void *src, size_t count) {
     uint8_t *out = (uint8_t *)dest;
     const uint8_t *in = (const uint8_t *)src;
-    size_t i;
 
     if (out == in || count == 0) {
         return dest;
     }
-
-    if (out < in) {
-        for (i = 0; i < count; ++i) {
-            out[i] = in[i];
-        }
-    } else {
-        for (i = count; i > 0; --i) {
-            out[i - 1] = in[i - 1];
-        }
+    /* Forward copy is correct unless dest overlaps the tail of src; only then
+     * do we copy backwards (high to low) to avoid clobbering unread bytes. */
+    if (out < in || out >= in + count) {
+        return memcpy(dest, src, count);
     }
-
+    {
+        uint8_t *d = out + count - 1;
+        const uint8_t *s = in + count - 1;
+        size_t n = count;
+        __asm__ volatile("std; rep movsb; cld"
+                         : "+D"(d), "+S"(s), "+c"(n)
+                         :
+                         : "memory");
+    }
     return dest;
 }
 
 void *memset(void *dest, int value, size_t count) {
-    uint8_t *out = (uint8_t *)dest;
-    uint8_t byte = (uint8_t)value;
-    size_t i;
-
-    for (i = 0; i < count; ++i) {
-        out[i] = byte;
-    }
-
-    return dest;
+    void *ret = dest;
+    __asm__ volatile("rep stosb"
+                     : "+D"(dest), "+c"(count)
+                     : "a"((uint8_t)value)
+                     : "memory");
+    return ret;
 }
 
 void *memset32(void *dest, uint32_t value, size_t count) {
-    uint32_t *out = (uint32_t *)dest;
-    size_t i;
-
-    for (i = 0; i < count; ++i) {
-        out[i] = value;
-    }
-
-    return dest;
+    void *ret = dest;
+    __asm__ volatile("rep stosl"
+                     : "+D"(dest), "+c"(count)
+                     : "a"(value)
+                     : "memory");
+    return ret;
 }
 
 int memcmp(const void *left, const void *right, size_t count) {

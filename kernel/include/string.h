@@ -4,7 +4,6 @@
 #include "types.h"
 
 void *memcpy(void *dest, const void *src, size_t count);
-void *memcpy_fast(void *dest, const void *src, size_t count);
 void *memmove(void *dest, const void *src, size_t count);
 void *memset(void *dest, int value, size_t count);
 void *memset32(void *dest, uint32_t value, size_t count);
