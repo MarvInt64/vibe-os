@@ -417,6 +417,16 @@ static int process_range_overlaps_live_image(uintptr_t start, size_t size, const
 static void *process_kmalloc_no_image_overlap(size_t size, const struct process *skip, const char *tag) {
     uint32_t attempt;
 
+    /* The quarantine is a transient skip-list for a SINGLE allocation: we keep
+     * blocks that alias a live process image allocated so kmalloc won't hand
+     * them back, then retry for a clear block. Release the previous call's
+     * quarantine here (and reset the count) so every allocation gets the full
+     * retry budget and nothing leaks across calls — persisting it was a bug
+     * that let the budget fill up and then fail every spawn. */
+    while (g_image_alloc_quarantine_count > 0) {
+        kfree(g_image_alloc_quarantine[--g_image_alloc_quarantine_count]);
+    }
+
     for (attempt = 0; attempt < PROCESS_IMAGE_ALLOC_QUARANTINE_CAP; ++attempt) {
         void *ptr = kmalloc(size);
         uint32_t slot = 0;
