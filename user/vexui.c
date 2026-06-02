@@ -341,6 +341,10 @@ static void blend_put(struct vui_window *w,int x,int y,vui_u32 c,int a){
     if (a>=255){ g_canvas[i]=c; return; }
     {
         vui_u32 *d=&g_canvas[i];
+        if (*d == w->clear_color) {
+            if (a >= 128) *d = c;
+            return;
+        }
         vui_u32 sr=(c>>16)&255u, sg=(c>>8)&255u, sb=c&255u;
         vui_u32 dr=(*d>>16)&255u, dg=(*d>>8)&255u, db=*d&255u;
         vui_u32 rr=(sr*(vui_u32)a+dr*(255u-(vui_u32)a))/255u;
@@ -349,23 +353,33 @@ static void blend_put(struct vui_window *w,int x,int y,vui_u32 c,int a){
         *d=(rr<<16)|(gg<<8)|bb;
     }
 }
-/* Is sub-pixel (px,py) inside the rounded rect? (float, for supersampling.) */
-static int rr_in(double px,double py,int x,int y,int wid,int hgt,int r){
-    double cx,cy,dx,dy;
-    if (px<x||py<y||px>x+wid||py>y+hgt) return 0;
-    if (r<=0) return 1;
-    if (px>=x+r && px<=x+wid-r) return 1;   /* straight middle (cols) */
-    if (py>=y+r && py<=y+hgt-r) return 1;   /* straight middle (rows) */
-    cx = (px<x+r) ? (double)(x+r) : (double)(x+wid-r);
-    cy = (py<y+r) ? (double)(y+r) : (double)(y+hgt-r);
-    dx=px-cx; dy=py-cy; return dx*dx+dy*dy <= (double)r*(double)r;
+/* Is a fixed-point sub-pixel inside the rounded rect? Coordinates are scaled
+ * by 4, so 2x2 samples can use offsets 1 and 3 without floating point. */
+static int rr_in4(int px4,int py4,int x,int y,int wid,int hgt,int r){
+    int x4 = x * 4, y4 = y * 4, x24 = (x + wid) * 4, y24 = (y + hgt) * 4;
+    int xr4 = (x + r) * 4, yr4 = (y + r) * 4;
+    int xwr4 = (x + wid - r) * 4, yhr4 = (y + hgt - r) * 4;
+    int cx4, cy4, dx4, dy4;
+    long dist2, rr4;
+
+    if (px4 < x4 || py4 < y4 || px4 > x24 || py4 > y24) return 0;
+    if (r <= 0) return 1;
+    if (px4 >= xr4 && px4 <= xwr4) return 1;
+    if (py4 >= yr4 && py4 <= yhr4) return 1;
+    cx4 = (px4 < xr4) ? xr4 : xwr4;
+    cy4 = (py4 < yr4) ? yr4 : yhr4;
+    dx4 = px4 - cx4;
+    dy4 = py4 - cy4;
+    dist2 = (long)dx4 * (long)dx4 + (long)dy4 * (long)dy4;
+    rr4 = (long)(r * 4) * (long)(r * 4);
+    return dist2 <= rr4;
 }
 /* Coverage 0..4 of a pixel, via 2x2 supersampling (corner anti-aliasing). */
 static int rr_cov(int px,int py,int x,int y,int wid,int hgt,int r){
-    static const double o[2]={0.25,0.75};
+    static const int o[2]={1,3};
     int i,j,c=0;
     for(i=0;i<2;++i) for(j=0;j<2;++j)
-        c += rr_in((double)px+o[j],(double)py+o[i],x,y,wid,hgt,r);
+        c += rr_in4(px * 4 + o[j], py * 4 + o[i], x, y, wid, hgt, r);
     return c;
 }
 /* Anti-aliased rounded-rect fill: full coverage in the interior/straight edges
@@ -374,7 +388,7 @@ static void rrect_fill_aa(struct vui_window *w,int x,int y,int wid,int hgt,int r
     int iy,ix;
     if (wid<=0||hgt<=0) return;
     if (r<0) r=0; if (r>hgt/2) r=hgt/2; if (r>wid/2) r=wid/2;
-    { rrect_fill(w,x,y,wid,hgt,r,c); return; }
+    if (r <= 0) { rrect_fill(w,x,y,wid,hgt,r,c); return; }
     for (iy=0; iy<hgt; ++iy){
         int py=y+iy;
         int corner = (iy<r) || (iy>=hgt-r);
@@ -388,9 +402,9 @@ static void rrect_fill_aa(struct vui_window *w,int x,int y,int wid,int hgt,int r
 }
 /* Rounded rect with an anti-aliased 1px outline (straight sides stay crisp). */
 static void fill_round_rect(struct vui_window *w,int x,int y,int wid,int hgt,int r,vui_u32 fill,vui_u32 border){
-    if (border == fill){ rrect_fill(w,x,y,wid,hgt,r,fill); return; }
-    rrect_fill(w, x, y, wid, hgt, r, border);
-    rrect_fill(w, x+1, y+1, wid-2, hgt-2, r>1?r-1:0, fill);
+    if (border == fill){ rrect_fill_aa(w,x,y,wid,hgt,r,fill); return; }
+    rrect_fill_aa(w, x, y, wid, hgt, r, border);
+    rrect_fill_aa(w, x+1, y+1, wid-2, hgt-2, r>1?r-1:0, fill);
 }
 static void glass_box(struct vui_window *w, int x, int y, int wid, int hgt, vui_u32 fill, int strong) {
     vui_u32 top = strong ? g_theme.border_hi : mix(g_theme.border_hi, fill, 1u, 2u);
