@@ -103,7 +103,8 @@ enum { W_PANEL, W_LABEL, W_BUTTON, W_BAR, W_VBOX, W_HBOX,
        W_SPARK,
        W_PILL,
        W_PILLBTN,
-       W_METRIC
+       W_METRIC,
+       W_ICON      /* bare SVG icon/logo, no chrome (transparent bg)     */
 };
 
 static const vui_theme g_default_theme = {
@@ -134,7 +135,7 @@ struct vui_widget {
     int value, max;
     vui_callback on_click;
     void *user;
-    char icon_svg[512];
+    int icon_slot;   /* index into the shared SVG icon pool; -1 = none */
 
     /* anchor / resize system (used by root widgets and vui_set_anchor) */
     uint8_t anchors;
@@ -573,7 +574,7 @@ static struct vui_widget *new_widget(struct vui_window *w, int type) {
     if (w->widget_count >= VUI_MAX_WIDGETS) return 0;
     wd = &w->widgets[w->widget_count++];
     wd->type = type; wd->x=wd->y=wd->w=wd->h=0; wd->text[0]=0;
-    wd->color = VUI_TEXT; wd->value=0; wd->max=100; wd->on_click=0; wd->user=0; wd->icon_svg[0]=0;
+    wd->color = VUI_TEXT; wd->value=0; wd->max=100; wd->on_click=0; wd->user=0; wd->icon_slot=-1;
     wd->anchors = VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP;
     wd->margin_l=wd->margin_t=wd->margin_r=wd->margin_b=0;
     wd->parent_idx=-1; wd->gap=4; wd->padding=0;
@@ -619,6 +620,12 @@ vui_widget *vui_tile_button(vui_window *w, int x, int y, const char *t) {
     if (!wd) return 0;
     wd->x=x; wd->y=y; wd->w=58; wd->h=58; wd->color=VUI_ACCENT;
     scopy(wd->text, t?t:"", sizeof(wd->text));
+    init_margins(wd); w->dirty=1; return wd;
+}
+vui_widget *vui_image(vui_window *w, int x, int y, int size) {
+    vui_widget *wd = new_widget(w, W_ICON);
+    if (!wd) return 0;
+    wd->x=x; wd->y=y; wd->w=size; wd->h=size; wd->color=VUI_ACCENT;
     init_margins(wd); w->dirty=1; return wd;
 }
 vui_widget *vui_input(vui_window *w, int x, int y, int width, const char *placeholder) {
@@ -742,26 +749,50 @@ void vui_set_int(vui_widget *wd, int v){
 int vui_get_int(vui_widget *wd){ return wd ? wd->value : 0; }
 void vui_set_value(vui_widget *wd, int v){ if(!wd||wd->value==v)return; wd->value=v; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
 void vui_set_color(vui_widget *wd, vui_u32 c){ if(!wd||wd->color==c)return; wd->color=c; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
+/* Shared SVG icon storage. Widgets reference a slot by index instead of each
+ * carrying a large inline buffer (logos can be a couple of KB). */
+#define VUI_ICON_SLOTS   8
+#define VUI_ICON_SLOT_SZ 4096
+static char g_icon_store[VUI_ICON_SLOTS][VUI_ICON_SLOT_SZ];
+static unsigned char g_icon_used[VUI_ICON_SLOTS];
+
+/* The widget's icon slot, allocating one on first use (-1 if the pool is full). */
+static int icon_slot_for(struct vui_widget *wd){
+    int i;
+    if(wd->icon_slot >= 0) return wd->icon_slot;
+    for(i = 0; i < VUI_ICON_SLOTS; ++i)
+        if(!g_icon_used[i]){ g_icon_used[i] = 1; wd->icon_slot = i; return i; }
+    return -1;
+}
+
+/* The widget's SVG text, or NULL if it has none. */
+static const char *widget_icon(struct vui_widget *wd){
+    if(wd->icon_slot < 0 || !g_icon_store[wd->icon_slot][0]) return 0;
+    return g_icon_store[wd->icon_slot];
+}
+
 void vui_set_icon_svg(vui_widget *wd, const char *svg){
+    int s;
     if(!wd) return;
-    scopy(wd->icon_svg, svg ? svg : "", sizeof(wd->icon_svg));
+    s = icon_slot_for(wd);
+    if(s < 0) return;
+    scopy(g_icon_store[s], svg ? svg : "", VUI_ICON_SLOT_SZ);
     dmg_add(wd->x,wd->y,wd->w,wd->h);
     g_win.dirty=1;
 }
 int vui_set_icon_svg_path(vui_widget *wd, const char *path){
-    int fd, n;
+    int fd, n, s;
     if(!wd || !path) return -1;
+    s = icon_slot_for(wd);
+    if(s < 0) return -1;
     fd = (int)sc1(SYS_OPEN, (uint64_t)(size_t)path);
-    if(fd < 0) return fd;
-    n = (int)sc3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)wd->icon_svg,
-                 (uint64_t)(sizeof(wd->icon_svg) - 1));
+    if(fd < 0) { g_icon_store[s][0] = 0; return fd; }
+    n = (int)sc3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)g_icon_store[s],
+                 (uint64_t)(VUI_ICON_SLOT_SZ - 1));
     sc1(SYS_CLOSE, (uint64_t)fd);
-    if(n <= 0) {
-        wd->icon_svg[0] = 0;
-        return -1;
-    }
-    if(n >= (int)sizeof(wd->icon_svg)) n = (int)sizeof(wd->icon_svg) - 1;
-    wd->icon_svg[n] = 0;
+    if(n <= 0) { g_icon_store[s][0] = 0; return -1; }
+    if(n >= VUI_ICON_SLOT_SZ) n = VUI_ICON_SLOT_SZ - 1;
+    g_icon_store[s][n] = 0;
     dmg_add(wd->x,wd->y,wd->w,wd->h);
     g_win.dirty=1;
     return 0;
@@ -1282,9 +1313,10 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
                                : argb(mix(g_theme.surface, 0x00ffffffu, 1u, 18u), 150u);
         uint32_t ic = active ? mix(g_theme.text, accent, 1u, 4u) : mix(g_theme.text_dim, 0x00ffffffu, 1u, 6u);
         fill_round_rect(w, tx, ty, tw, th, 6, fill, bd);
-        if (wd->icon_svg[0]) {
+        const char *isvg = widget_icon(wd);
+        if (isvg) {
             int icon_size = 32;   /* renderer keeps a built-in edge margin */
-            draw_svg_icon(w, cx - icon_size / 2, cy - icon_size / 2, icon_size, wd->icon_svg, accent);
+            draw_svg_icon(w, cx - icon_size / 2, cy - icon_size / 2, icon_size, isvg, accent);
         } else if (wd->value > 0) {
             tile_icon(w, cx, cy, wd->value, ic);
         } else {
@@ -1297,6 +1329,16 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         rect(w, wd->x + wd->w + 10, wd->y + 10, 1, wd->h - 20,
              argb(mix(g_theme.surface, 0x00cfe2f5u, 1u, 4u), 130u));
         if (active) fill_round_rect(w, cx - 9, ty + th + 4, 18, 3, 2, accent, accent);
+        break; }
+    case W_ICON: {
+        /* Bare SVG icon/logo: no background, no border — just the artwork,
+         * sized to the widget and centered. Used e.g. for the topbar logo. */
+        uint32_t accent = wd->color ? wd->color : g_theme.accent;
+        int size = wd->w < wd->h ? wd->w : wd->h;
+        const char *isvg = widget_icon(wd);
+        if (isvg)
+            draw_svg_icon(w, wd->x + (wd->w - size) / 2, wd->y + (wd->h - size) / 2,
+                          size, isvg, accent);
         break; }
     case W_INPUT: {
         /* Rounded dark input field (all text/search fields). Subtle border that

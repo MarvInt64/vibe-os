@@ -109,6 +109,8 @@ vui_widget *vui_button(vui_window *w, int x, int y, const char *text);
 /* Fully-rounded pill button (tags / quick actions). */
 vui_widget *vui_pill_button(vui_window *w, int x, int y, const char *text);
 vui_widget *vui_tile_button(vui_window *w, int x, int y, const char *text);
+/* Bare SVG icon/logo (no chrome). Set the artwork via vui_set_icon_svg[_path]. */
+vui_widget *vui_image(vui_window *w, int x, int y, int size);
 vui_widget *vui_input(vui_window *w, int x, int y, int width, const char *placeholder);
 vui_widget *vui_badge(vui_window *w, int x, int y, const char *text);
 vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels, int active);

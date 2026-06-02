@@ -26,6 +26,8 @@ static struct desktop_state g_desktop;
 static int g_wm_active = 0;
 static uint32_t g_shell_dock_pid = 0;
 static uint64_t g_shell_dock_next_launch_tick = 0;
+static uint32_t g_shell_topbar_pid = 0;
+static uint64_t g_shell_topbar_next_launch_tick = 0;
 static uint8_t g_desktop_scene_started = 0;
 
 /* Exposed to the syscall layer so userspace GUI apps can reach the compositor. */
@@ -192,6 +194,24 @@ static void ensure_shell_dock_running(void) {
 
     g_shell_dock_pid = (uint32_t)process_spawn_path("/bin/dock", 0, 0);
     g_shell_dock_next_launch_tick = now + timer_frequency_hz();
+}
+
+/* Keep the top bar app (logo, and later menus/clock) alive, like the dock. */
+static void ensure_shell_topbar_running(void) {
+    uint64_t now = timer_tick_count();
+
+    if (!g_wm_active) {
+        return;
+    }
+    if (g_shell_topbar_pid != 0 && process_pid_alive(g_shell_topbar_pid)) {
+        return;
+    }
+    if (now < g_shell_topbar_next_launch_tick) {
+        return;
+    }
+
+    g_shell_topbar_pid = (uint32_t)process_spawn_path("/bin/topbar", 0, 0);
+    g_shell_topbar_next_launch_tick = now + timer_frequency_hz();
 }
 
 static void start_desktop_scene_apps(void) {
@@ -378,6 +398,7 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
                     struct rect initial_rect;
                     (void)desktop_take_dirty_rect(&g_desktop, &initial_rect);
                     ensure_shell_dock_running();
+                    ensure_shell_topbar_running();
                     start_desktop_scene_apps();
                 }
             }
@@ -388,12 +409,17 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
                 if (g_shell_dock_pid != 0 && process_pid_alive(g_shell_dock_pid)) {
                     (void)process_kill(g_shell_dock_pid);
                 }
+                if (g_shell_topbar_pid != 0 && process_pid_alive(g_shell_topbar_pid)) {
+                    (void)process_kill(g_shell_topbar_pid);
+                }
                 g_shell_dock_pid = 0;
+                g_shell_topbar_pid = 0;
                 g_desktop_scene_started = 0;
                 if (start_window_manager(&presented_cursor_x, &presented_cursor_y)) {
                     struct rect r;
                     (void)desktop_take_dirty_rect(&g_desktop, &r);
                     ensure_shell_dock_running();
+                    ensure_shell_topbar_running();
                     start_desktop_scene_apps();
                 }
                 continue;
@@ -403,6 +429,7 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
             run_result = process_run_ready_slice();
             desktop_poll_apps(&g_desktop);
             ensure_shell_dock_running();
+            ensure_shell_topbar_running();
             start_desktop_scene_apps();
 
             /* Flicker-free presentation: the cursor is composited INTO the

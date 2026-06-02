@@ -1485,28 +1485,14 @@ static void render_background_surface(struct desktop_state *desktop) {
         }
     }
 
-    /* ---- Top bar: thin, dense; V-logo + brand left, indicators right. ---- */
+    /* ---- Top bar: thin, dense; brand left, indicators right. ---- */
     fb_fill_rect(fb, 0, 0, w, 54, mix_color(g_chrome_theme.surface, g_chrome_theme.bg, 1u, 3u));
     fb_fill_rect(fb, 0, 53, w, 1, g_chrome_theme.border);
 
-    /* Thin outlined V mark in the accent colour. */
-    {
-        int i;
-        int anim = desktop->logo_hover_anim;
-        int steps = 8 + (anim / 85);
-        int stroke = 2 + (anim / 170);
-        int left_x = 22 - (anim / 128);
-        int right_x = 38 + (anim / 128);
-        int top_y = 15 - (anim / 128);
-        int step_y = 2;
-        uint32_t mark = anim > 0 ? mix_color(g_chrome_theme.accent, g_chrome_theme.text, (uint32_t)anim, 768u) : g_chrome_theme.accent;
-
-        for (i = 0; i < steps; ++i) {
-            fb_fill_rect(fb, left_x + i, top_y + i * step_y, stroke, stroke, mark);
-            fb_fill_rect(fb, right_x - i, top_y + i * step_y, stroke, stroke, mark);
-        }
-    }
-    draw_text(fb, 50, 20, "VibeOS", g_chrome_theme.text, 1);
+    /* The V logo is rendered by the userspace topbar app (/bin/topbar) at the
+     * far left, so it can use the full SVG renderer (gradients/glow). The brand
+     * text sits just to its right. */
+    draw_text(fb, 58, 20, "VibeOS", g_chrome_theme.text, 1);
     draw_topbar_menu_labels(desktop, fb);
 
     sx = w - 430;
