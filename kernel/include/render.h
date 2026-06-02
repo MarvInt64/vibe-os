@@ -9,6 +9,9 @@ void draw_glyph_mono(struct framebuffer *fb, int x, int y, char c, uint32_t colo
 int text_line_height(int scale);
 int text_char_advance(int scale);   /* fixed monospace cell width */
 int text_width(const char *text, int scale);   /* proportional string width */
+int draw_text_to_argb(uint32_t *buf, int buf_w, int buf_h, int x, int y,
+                      const char *text, uint32_t color, int scale);
+uint32_t font_metrics_packed(int scale);   /* lineh|ascent<<8|cellw<<16|space<<24 */
 void draw_rounded_panel(struct framebuffer *fb, int x, int y, int width, int height, int radius, uint32_t top, uint32_t bottom, uint32_t border, uint32_t highlight);
 void draw_soft_shadow(struct framebuffer *fb, int x, int y, int width, int height, int radius, int spread, uint32_t color);
 void draw_panel(struct framebuffer *fb, int x, int y, int width, int height, uint32_t color, uint32_t border);

@@ -8,6 +8,7 @@
  * step. Entropy comes from RDRAND when available, else an INSECURE TSC seed. */
 
 #include "net.h"
+#include "journal.h"
 #include "serial.h"
 #include "string.h"
 #include "types.h"
@@ -116,7 +117,30 @@ static br_ssl_client_context  g_sc;
 static br_x509_minimal_context g_xc_min;   /* configured by init_full, then overridden */
 static ax_context             g_ax;
 static br_sslio_context       g_ioc;
-static unsigned char          g_iobuf[BR_SSL_BUFSIZE_BIDI];
+/* g_iobuf is handed to BearSSL's engine; bracket it with guard words so we can
+ * detect any write past either end (diagnostic for the cross-app crash hunt). */
+#define TLS_GUARD_MAGIC 0x544c53475541523Dull  /* "TLSGUAR=" */
+static struct {
+    uint64_t lo_guard;
+    unsigned char buf[BR_SSL_BUFSIZE_BIDI];
+    uint64_t hi_guard;
+} g_iobuf_s = { TLS_GUARD_MAGIC, {0}, TLS_GUARD_MAGIC };
+#define g_iobuf (g_iobuf_s.buf)
+
+/* Checked from net_poll(): logs once if BearSSL ever wrote past the I/O buffer
+ * (would corrupt adjacent kernel BSS — a candidate cause of one app killing
+ * another during a page load). */
+void net_tls_check_guard(void) {
+    if (g_iobuf_s.lo_guard != TLS_GUARD_MAGIC || g_iobuf_s.hi_guard != TLS_GUARD_MAGIC) {
+        static int reported = 0;
+        if (!reported) {
+            reported = 1;
+            journal_log(JOURNAL_FAULT, 0, "TLS IOBUF GUARD CORRUPTED (BearSSL overflow)");
+            journal_log_hex(JOURNAL_FAULT, 0, "  lo_guard=", g_iobuf_s.lo_guard);
+            journal_log_hex(JOURNAL_FAULT, 0, "  hi_guard=", g_iobuf_s.hi_guard);
+        }
+    }
+}
 
 static int tls_low_read(void *ctx, unsigned char *buf, size_t len) {
     (void)ctx;

@@ -40,7 +40,7 @@ typedef unsigned int vui_u32;
 #define VUI_WARN        0x00f0b86eu
 #define VUI_DANGER      0x00ef7f7fu
 #define VUI_COLOR_TRANSPARENT 0x00ff00ffu
-#define VUI_PROCESS_MAX 8   /* must match kernel PROCESS_MAX_COUNT */
+#define VUI_PROCESS_MAX 48  /* must match kernel PROCESS_MAX_COUNT */
 
 #define VUI_WINDOW_FRAMELESS  0x00000001u
 #define VUI_WINDOW_NO_DOCK    0x00000002u
@@ -113,10 +113,20 @@ vui_widget *vui_input(vui_window *w, int x, int y, int width, const char *placeh
 vui_widget *vui_badge(vui_window *w, int x, int y, const char *text);
 vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels, int active);
 vui_widget *vui_bar(vui_window *w, int x, int y, int width, int height, int max);
-/* Decorative mini bar-graph (sparkline) for metric cards. */
+/* Decorative mini line-graph (sparkline) for metric cards. */
 vui_widget *vui_sparkline(vui_window *w, int x, int y, int width, int height);
+/* Set an integer text scale on a label (1 = normal, 2 = double size, …). */
+void vui_set_text_scale(vui_widget *wd, int scale);
 /* Large rounded pill surface (e.g. the dock bar). */
 vui_widget *vui_pill(vui_window *w, int x, int y, int width, int height);
+/* Self-contained metric card (title + big value + sub-label + chart/bar).
+ * mode: 0 = area chart, 1 = progress bar (set percent via vui_set_value). */
+vui_widget *vui_metric(vui_window *w, int x, int y, int width, int height,
+                       const char *title, int mode);
+/* Set a metric card's big value and sub-label (e.g. "12%", "2.1 GHz"). */
+void vui_set_metric(vui_widget *wd, const char *value, const char *sub);
+/* Append a live sample (0..100) to a metric card's history chart. */
+void vui_metric_push(vui_widget *wd, int sample);
 
 /* ---- Configure widgets ---- */
 void vui_on_click(vui_widget *b, vui_callback cb);
@@ -127,6 +137,8 @@ void vui_set_value(vui_widget *wgt, int value);        /* bar: progress value */
 void vui_set_color(vui_widget *wgt, vui_u32 color);
 void vui_set_user(vui_widget *wgt, void *user);        /* attach app data */
 void *vui_get_user(vui_widget *wgt);
+/* Current text typed into an input field (empty string if none). */
+const char *vui_input_text(vui_widget *wgt);
 void vui_set_visible(vui_widget *wgt, int visible);
 void vui_set_bounds(vui_widget *wgt, int x, int y, int width, int height);
 /* Set only width/height; leave position unchanged (pass 0 to skip an axis). */

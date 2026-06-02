@@ -1,0 +1,13 @@
+# VibeOS VexUI theme
+# Copy to /home/user/.config/vibeos.theme inside VibeOS to override app colors.
+bg=#101A29
+surface=#182536
+surface_hi=#233146
+border=#32455D
+border_hi=#6F86A6
+text=#E8F0F8
+text_dim=#AEBBD0
+accent=#6EB6FF
+ok=#76E0B5
+warn=#F4C36B
+danger=#FF7F8F

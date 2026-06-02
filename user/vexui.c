@@ -11,7 +11,8 @@ typedef int int32_t;
 typedef unsigned short uint16_t;
 typedef unsigned char uint8_t;
 
-#include "vexui_font.h"   /* glyph_for_char() -> const uint8_t[16] */
+/* Text is rasterized by the kernel font atlas via SYS_TEXT_DRAW (see below);
+ * the old 8x16 bitmap font (vexui_font.h) is no longer used. */
 
 #define SYS_READ 0
 #define SYS_WRITE 1
@@ -28,6 +29,8 @@ typedef unsigned char uint8_t;
 #define SYS_WINDOW_SET_MENU 30
 #define SYS_WINDOW_CREATE_EX 35
 #define SYS_WINDOW_PRESENT_RECT 38
+#define SYS_TEXT_DRAW 40
+#define SYS_TEXT_METRICS 41
 
 struct winsys_event { uint32_t type; int32_t x; int32_t y; uint32_t buttons; uint32_t key; };
 #define EV_MOUSE_MOVE 1
@@ -98,26 +101,34 @@ enum { W_PANEL, W_LABEL, W_BUTTON, W_BAR, W_VBOX, W_HBOX,
        W_TABS,
        W_SPARK,
        W_PILL,
-       W_PILLBTN
+       W_PILLBTN,
+       W_METRIC
 };
 
 static const vui_theme g_default_theme = {
     0x0015273cu, 0x001b3048u, 0x00233850u, 0x0039506au,
     0x005a7da3u, 0x00eaf2fau, 0x00b7c7d8u, 0x004da3ffu,
     0x0063d9a5u, 0x00e6b65cu, 0x00e36c7au,
-    0x000c1b2au, 0x00d6e3efu, 0x007f93a8u, 6u, 10u
+    0x000c1b2au, 0x00d6e3efu, 0x007f93a8u, 5u, 10u
 };
 static vui_theme g_theme = {
     0x0015273cu, 0x001b3048u, 0x00233850u, 0x0039506au,
     0x005a7da3u, 0x00eaf2fau, 0x00b7c7d8u, 0x004da3ffu,
     0x0063d9a5u, 0x00e6b65cu, 0x00e36c7au,
-    0x000c1b2au, 0x00d6e3efu, 0x007f93a8u, 6u, 10u
+    0x000c1b2au, 0x00d6e3efu, 0x007f93a8u, 5u, 10u
 };
 
 struct vui_widget {
     int type;
     int x, y, w, h;
     char text[80];
+    /* W_METRIC: title (top) + sub-label (under the big value, which is `text`).
+     * hist is a ring buffer of recent samples (0..100) for the live chart. */
+    char mtitle[24];
+    char msub[28];
+    unsigned char hist[32];
+    unsigned char hist_n;
+    unsigned char hist_head;
     vui_u32 color;
     int value, max;
     vui_callback on_click;
@@ -156,6 +167,8 @@ struct vui_window {
     vui_u32 clear_color;
     /* Index of the currently open W_MENU widget in widgets[]; -1 = none. */
     int active_menu_idx;
+    /* Index of the focused W_INPUT receiving keyboard input; -1 = none. */
+    int active_input;
     struct vui_widget widgets[VUI_MAX_WIDGETS];
     int widget_count;
     uint8_t dirty;
@@ -237,6 +250,7 @@ int vui_load_theme(const char *path) {
     char buf[1024];
     int fd, n, i = 0;
     vui_theme next = g_theme;
+    return -1;   /* Keep the built-in theme until file-backed themes are stable. */
     if (!path) return -1;
     fd = (int)sc1(SYS_OPEN, (uint64_t)(size_t)path);
     if (fd < 0) return -1;
@@ -279,12 +293,24 @@ static uint32_t mix(uint32_t a, uint32_t b, unsigned step, unsigned total) {
 }
 
 /* ---- canvas drawing ---- */
+/* Final, hard bound on every g_canvas access: returns the pixel index, or -1 if
+ * it would land outside the backing array. Defends against a corrupted
+ * w->width/height (which would otherwise turn y*w->width+x into a wild offset
+ * and fault the renderer); with this guard a bad geometry skips pixels instead
+ * of reading/writing out of bounds. */
+static long canvas_index(struct vui_window *w, int x, int y) {
+    long i;
+    if (x < 0 || y < 0 || x >= w->width || y >= w->height) return -1;
+    i = (long)y * (long)w->width + (long)x;
+    if (i < 0 || i >= (long)((long)VUI_MAX_W * (long)VUI_MAX_H)) return -1;
+    return i;
+}
 static void rect(struct vui_window *w, int x, int y, int wid, int hgt, vui_u32 c) {
     int iy, ix;
     for (iy=y; iy<y+hgt; ++iy) { if(iy<0||iy>=w->height) continue;
-        for (ix=x; ix<x+wid; ++ix) { if(ix<0||ix>=w->width) continue; g_canvas[iy*w->width+ix]=c; } }
+        for (ix=x; ix<x+wid; ++ix) { long i=canvas_index(w,ix,iy); if(i<0) continue; g_canvas[i]=c; } }
 }
-static void put(struct vui_window *w,int x,int y,vui_u32 c){ if(x<0||y<0||x>=w->width||y>=w->height)return; g_canvas[y*w->width+x]=c; }
+static void put(struct vui_window *w,int x,int y,vui_u32 c){ long i=canvas_index(w,x,y); if(i<0)return; g_canvas[i]=c; }
 static void line_h(struct vui_window *w, int x, int y, int wid, vui_u32 c) { rect(w, x, y, wid, 1, c); }
 static void line_v(struct vui_window *w, int x, int y, int hgt, vui_u32 c) { rect(w, x, y, 1, hgt, c); }
 static int isqrt_i(int v){ int r=0; while((r+1)*(r+1)<=v) ++r; return r; }
@@ -306,16 +332,65 @@ static void rrect_fill(struct vui_window *w,int x,int y,int wid,int hgt,int r,vu
         rect(w, x+inset, py, wid-2*inset, 1, c);
     }
 }
-/* Rounded rect with a clean 1px border tracing the whole shape (arcs included):
- * paint the border-coloured shape, then an inset fill-coloured shape on top. */
-static void fill_round_rect(struct vui_window *w,int x,int y,int wid,int hgt,int r,vui_u32 fill,vui_u32 border){
-    if (border != fill) {
-        int ri = r - 1; if (ri < 0) ri = 0;
-        rrect_fill(w, x, y, wid, hgt, r, border);
-        rrect_fill(w, x+1, y+1, wid-2, hgt-2, ri, fill);
-    } else {
-        rrect_fill(w, x, y, wid, hgt, r, fill);
+/* Alpha-blend a colour over the existing canvas pixel (a = 0..255). */
+static void blend_put(struct vui_window *w,int x,int y,vui_u32 c,int a){
+    long i;
+    if (a<=0) return;
+    i = canvas_index(w, x, y);
+    if (i < 0) return;
+    if (a>=255){ g_canvas[i]=c; return; }
+    {
+        vui_u32 *d=&g_canvas[i];
+        vui_u32 sr=(c>>16)&255u, sg=(c>>8)&255u, sb=c&255u;
+        vui_u32 dr=(*d>>16)&255u, dg=(*d>>8)&255u, db=*d&255u;
+        vui_u32 rr=(sr*(vui_u32)a+dr*(255u-(vui_u32)a))/255u;
+        vui_u32 gg=(sg*(vui_u32)a+dg*(255u-(vui_u32)a))/255u;
+        vui_u32 bb=(sb*(vui_u32)a+db*(255u-(vui_u32)a))/255u;
+        *d=(rr<<16)|(gg<<8)|bb;
     }
+}
+/* Is sub-pixel (px,py) inside the rounded rect? (float, for supersampling.) */
+static int rr_in(double px,double py,int x,int y,int wid,int hgt,int r){
+    double cx,cy,dx,dy;
+    if (px<x||py<y||px>x+wid||py>y+hgt) return 0;
+    if (r<=0) return 1;
+    if (px>=x+r && px<=x+wid-r) return 1;   /* straight middle (cols) */
+    if (py>=y+r && py<=y+hgt-r) return 1;   /* straight middle (rows) */
+    cx = (px<x+r) ? (double)(x+r) : (double)(x+wid-r);
+    cy = (py<y+r) ? (double)(y+r) : (double)(y+hgt-r);
+    dx=px-cx; dy=py-cy; return dx*dx+dy*dy <= (double)r*(double)r;
+}
+/* Coverage 0..4 of a pixel, via 2x2 supersampling (corner anti-aliasing). */
+static int rr_cov(int px,int py,int x,int y,int wid,int hgt,int r){
+    static const double o[2]={0.25,0.75};
+    int i,j,c=0;
+    for(i=0;i<2;++i) for(j=0;j<2;++j)
+        c += rr_in((double)px+o[j],(double)py+o[i],x,y,wid,hgt,r);
+    return c;
+}
+/* Anti-aliased rounded-rect fill: full coverage in the interior/straight edges
+ * (crisp), blended coverage only on the corner arcs (smooth, not "krisselig"). */
+static void rrect_fill_aa(struct vui_window *w,int x,int y,int wid,int hgt,int r,vui_u32 c){
+    int iy,ix;
+    if (wid<=0||hgt<=0) return;
+    if (r<0) r=0; if (r>hgt/2) r=hgt/2; if (r>wid/2) r=wid/2;
+    { rrect_fill(w,x,y,wid,hgt,r,c); return; }
+    for (iy=0; iy<hgt; ++iy){
+        int py=y+iy;
+        int corner = (iy<r) || (iy>=hgt-r);
+        if (!corner){ rect(w, x, py, wid, 1, c); continue; }   /* straight rows: solid */
+        for (ix=0; ix<wid; ++ix){
+            int cov=rr_cov(x+ix,py,x,y,wid,hgt,r);
+            if (cov==4) put(w, x+ix, py, c);
+            else if (cov>0) blend_put(w, x+ix, py, c, cov*255/4);
+        }
+    }
+}
+/* Rounded rect with an anti-aliased 1px outline (straight sides stay crisp). */
+static void fill_round_rect(struct vui_window *w,int x,int y,int wid,int hgt,int r,vui_u32 fill,vui_u32 border){
+    if (border == fill){ rrect_fill(w,x,y,wid,hgt,r,fill); return; }
+    rrect_fill(w, x, y, wid, hgt, r, border);
+    rrect_fill(w, x+1, y+1, wid-2, hgt-2, r>1?r-1:0, fill);
 }
 static void glass_box(struct vui_window *w, int x, int y, int wid, int hgt, vui_u32 fill, int strong) {
     vui_u32 top = strong ? g_theme.border_hi : mix(g_theme.border_hi, fill, 1u, 2u);
@@ -334,12 +409,62 @@ static void glass_box(struct vui_window *w, int x, int y, int wid, int hgt, vui_
         put(w, x + wid - 1, y + hgt - 1, w->clear_color);
     }
 }
-static void glyph(struct vui_window *w,int x,int y,char ch,vui_u32 c){
-    const uint8_t *g=glyph_for_char(ch); int r,col;
-    for(r=0;r<16;++r){ uint8_t b=g[r]; for(col=0;col<8;++col) if((b>>(7-col))&1u) put(w,x+col,y+r,c); }
+/* Text now routes through the kernel's anti-aliased TrueType atlas (SYS_TEXT_DRAW)
+ * instead of the old 8x16 bitmap font: the kernel rasterizes straight into our
+ * g_canvas buffer (our address space is active during the syscall). Newlines and
+ * clipping are handled kernel-side. scale 1..3 picks the atlas size. */
+static void draw_text_sys(struct vui_window *w,int x,int y,const char *s,vui_u32 c,int sc){
+    if(!s||!*s) return;
+    if(sc<1) sc=1; else if(sc>3) sc=3;
+    sc6(SYS_TEXT_DRAW,
+        (uint64_t)(size_t)g_canvas,
+        (uint64_t)(size_t)s,
+        (((uint64_t)(uint32_t)w->width)<<16)|(uint32_t)w->height,
+        (((uint64_t)(uint16_t)x)<<16)|(uint16_t)y,
+        (uint64_t)c,
+        (uint64_t)sc);
 }
 static void text(struct vui_window *w,int x,int y,const char *s,vui_u32 c){
-    int cx=x; while(s&&*s){ if(*s=='\n'){cx=x;y+=18;} else {glyph(w,cx,y,*s,c);cx+=8;} ++s; }
+    draw_text_sys(w,x,y,s,c,1);
+}
+static void text_scaled(struct vui_window *w,int x,int y,const char *s,vui_u32 c,int sc){
+    draw_text_sys(w,x,y,s,c,sc);
+}
+/* Proportional pixel width of a string at the given atlas scale, queried from
+ * the kernel so widget layout matches the rasterized glyphs. */
+static int text_px(const char *s,int sc){
+    if(!s||!*s) return 0;
+    if(sc<1) sc=1; else if(sc>3) sc=3;
+    return (int)sc2(SYS_TEXT_METRICS,(uint64_t)(size_t)s,(uint64_t)sc);
+}
+/* 2px-thick line (Bresenham-ish) for line sparklines. */
+static void draw_line(struct vui_window *w,int x0,int y0,int x1,int y1,vui_u32 c){
+    int dx=x1-x0, dy=y1-y0;
+    int adx=dx<0?-dx:dx, ady=dy<0?-dy:dy;
+    int steps=adx>ady?adx:ady, i; if(steps<1)steps=1;
+    for(i=0;i<=steps;++i){ int x=x0+dx*i/steps, y=y0+dy*i/steps; put(w,x,y,c); put(w,x,y+1,c); }
+}
+/* Filled-area line chart in box (x,y,wd,ht) from `n` samples (0..100, oldest
+ * first): shaded area fading from an accent tint at the line to the surface,
+ * with a bright line on top. */
+static void area_chart(struct vui_window *w,int x,int y,int wd,int ht,
+                       const unsigned char *samp,int n,vui_u32 line){
+    vui_u32 ftop = mix(line, g_theme.surface, 1u, 2u);
+    vui_u32 fbot = mix(line, g_theme.surface, 1u, 8u);
+    int i,px=-1,py=0;
+    if(n<2) return;
+    for(i=0;i<n;++i){
+        int cx=x+i*(wd-1)/(n-1);
+        int v=samp[i]; if(v>100)v=100;
+        int cy=y+(ht-1)-v*(ht-2)/100;          /* samples are 0..100 */
+        int span=(y+ht)-cy; if(span<1)span=1;
+        int seg; for(seg=cy; seg<y+ht; ++seg){
+            vui_u32 c=mix(ftop, fbot, (vui_u32)(seg-cy), (vui_u32)span);
+            put(w,cx,seg,c); if(cx+1<x+wd) put(w,cx+1,seg,c);
+        }
+        if(px>=0) draw_line(w,px,py,cx,cy,line);
+        px=cx; py=cy;
+    }
 }
 static void line_diag(struct vui_window *w,int x,int y,int len,int dx,int dy,vui_u32 c){
     int i; for(i=0;i<len;++i){ put(w,x+i*dx,y+i*dy,c); put(w,x+i*dx+1,y+i*dy,c); }
@@ -432,34 +557,36 @@ vui_widget *vui_card(vui_window *w, int x, int y, int width, int height, const c
 vui_widget *vui_label(vui_window *w, int x, int y, const char *t) {
     vui_widget *wd = new_widget(w, W_LABEL);
     if (!wd) return 0;
-    wd->x=x; wd->y=y; scopy(wd->text, t, sizeof(wd->text)); wd->w=slen(wd->text)*8; wd->h=16; wd->color=VUI_TEXT;
+    wd->x=x; wd->y=y; scopy(wd->text, t, sizeof(wd->text)); wd->w=text_px(wd->text,1); wd->h=16; wd->color=VUI_TEXT;
     init_margins(wd); w->dirty=1; return wd;
 }
 vui_widget *vui_button(vui_window *w, int x, int y, const char *t) {
     vui_widget *wd = new_widget(w, W_BUTTON);
     if (!wd) return 0;
     wd->x=x; wd->y=y; scopy(wd->text, t, sizeof(wd->text));
-    wd->w = slen(wd->text)*8 + 26; wd->h = 26; wd->color = VUI_ACCENT;
+    wd->w = text_px(wd->text,1) + 26; wd->h = 26; wd->color = VUI_ACCENT;
     init_margins(wd); w->dirty=1; return wd;
 }
 vui_widget *vui_tile_button(vui_window *w, int x, int y, const char *t) {
     vui_widget *wd = new_widget(w, W_TILE);
     if (!wd) return 0;
-    wd->x=x; wd->y=y; wd->w=52; wd->h=52; wd->color=VUI_ACCENT;
+    wd->x=x; wd->y=y; wd->w=44; wd->h=44; wd->color=VUI_ACCENT;
     scopy(wd->text, t?t:"", sizeof(wd->text));
     init_margins(wd); w->dirty=1; return wd;
 }
 vui_widget *vui_input(vui_window *w, int x, int y, int width, const char *placeholder) {
     vui_widget *wd = new_widget(w, W_INPUT);
     if (!wd) return 0;
-    wd->x=x; wd->y=y; wd->w=width; wd->h=26; scopy(wd->text, placeholder?placeholder:"", sizeof(wd->text));
+    wd->x=x; wd->y=y; wd->w=width; wd->h=34;
+    scopy(wd->mtitle, placeholder?placeholder:"", sizeof(wd->mtitle));  /* placeholder */
+    wd->text[0]=0;                                                      /* typed value */
     init_margins(wd); w->dirty=1; return wd;
 }
 vui_widget *vui_badge(vui_window *w, int x, int y, const char *t) {
     vui_widget *wd = new_widget(w, W_BADGE);
     if (!wd) return 0;
     wd->x=x; wd->y=y; scopy(wd->text, t?t:"", sizeof(wd->text));
-    wd->w=slen(wd->text)*8+18; wd->h=20; wd->color=VUI_ACCENT;
+    wd->w=text_px(wd->text,1)+18; wd->h=20; wd->color=VUI_ACCENT;
     init_margins(wd); w->dirty=1; return wd;
 }
 vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels, int active) {
@@ -472,7 +599,7 @@ vui_widget *vui_pill_button(vui_window *w, int x, int y, const char *t) {
     vui_widget *wd = new_widget(w, W_PILLBTN);
     if (!wd) return 0;
     wd->x=x; wd->y=y; scopy(wd->text, t?t:"", sizeof(wd->text));
-    wd->w = slen(wd->text)*8 + 28; wd->h = 32; wd->color = 0;
+    wd->w = text_px(wd->text,1) + 28; wd->h = 32; wd->color = 0;
     init_margins(wd); w->dirty=1; return wd;
 }
 vui_widget *vui_pill(vui_window *w, int x, int y, int width, int height) {
@@ -480,6 +607,40 @@ vui_widget *vui_pill(vui_window *w, int x, int y, int width, int height) {
     if (!wd) return 0;
     wd->x=x; wd->y=y; wd->w=width; wd->h=height; wd->color=g_theme.surface;
     init_margins(wd); w->dirty=1; return wd;
+}
+/* Metric card: a self-contained card with a title, a big value, a sub-label and
+ * a chart/progress indicator — drawn as ONE widget. `mode`: 0 = area chart,
+ * 1 = progress bar (value via vui_set_value, 0..100). */
+vui_widget *vui_metric(vui_window *w, int x, int y, int width, int height,
+                       const char *title, int mode) {
+    vui_widget *wd = new_widget(w, W_METRIC);
+    if (!wd) return 0;
+    wd->x=x; wd->y=y; wd->w=width; wd->h=height;
+    scopy(wd->mtitle, title?title:"", sizeof(wd->mtitle));
+    wd->text[0]=0; wd->msub[0]=0; wd->color=g_theme.accent;
+    wd->max = mode;           /* reuse max as the chart mode */
+    init_margins(wd); w->dirty=1; return wd;
+}
+/* Set a metric's big value + sub-label (e.g. "12%", "2.1 GHz"). */
+void vui_set_metric(vui_widget *wd, const char *value, const char *sub) {
+    if (!wd) return;
+    if (sequal(wd->text, value?value:"") && sequal(wd->msub, sub?sub:"")) return;
+    scopy(wd->text, value?value:"", sizeof(wd->text));
+    scopy(wd->msub,  sub?sub:"",    sizeof(wd->msub));
+    dmg_add(wd->x, wd->y, wd->w, wd->h);
+    g_win.dirty=1;
+}
+/* Append a live sample (0..100) to a metric's history chart. */
+void vui_metric_push(vui_widget *wd, int sample) {
+    unsigned cap;
+    if (!wd) return;
+    if (sample < 0) sample = 0; if (sample > 100) sample = 100;
+    cap = (unsigned)sizeof(wd->hist);
+    wd->hist[wd->hist_head] = (unsigned char)sample;
+    wd->hist_head = (unsigned char)((wd->hist_head + 1) % cap);
+    if (wd->hist_n < cap) wd->hist_n++;
+    dmg_add(wd->x, wd->y, wd->w, wd->h);
+    g_win.dirty = 1;
 }
 vui_widget *vui_sparkline(vui_window *w, int x, int y, int width, int height) {
     vui_widget *wd = new_widget(w, W_SPARK);
@@ -502,11 +663,25 @@ void vui_set_text(vui_widget *wd, const char *t){
     if(sequal(wd->text, t?t:"")) return;
     dmg_add(wd->x, wd->y, wd->w, wd->h);   /* old extent */
     scopy(wd->text,t,sizeof(wd->text));
-    if(wd->type==W_BUTTON && !(wd->anchors & VUI_ANCHOR_RIGHT)) wd->w=slen(wd->text)*8+24;
-    if(wd->type==W_LABEL) wd->w=slen(wd->text)*8;
-    if(wd->type==W_BADGE) wd->w=slen(wd->text)*8+18;
+    /* Only auto-size widgets that own their geometry (root widgets). Box
+     * children keep the width their container assigned (e.g. fixed table
+     * columns), so changing the text must not reflow the column. */
+    if(wd->parent_idx == -1){
+        if(wd->type==W_BUTTON && !(wd->anchors & VUI_ANCHOR_RIGHT)) wd->w=text_px(wd->text,1)+24;
+        if(wd->type==W_LABEL) wd->w=text_px(wd->text, wd->value>1?wd->value:1);
+        if(wd->type==W_BADGE) wd->w=text_px(wd->text,1)+18;
+    }
     dmg_add(wd->x, wd->y, wd->w, wd->h);   /* new extent */
     g_win.dirty=1;
+}
+/* Integer text scale for a label (1 = normal 8x16, 2 = double, …). */
+void vui_set_text_scale(vui_widget *wd, int scale){
+    if(!wd || wd->type!=W_LABEL) return;
+    if(scale<1) scale=1;
+    if(wd->value==scale) return;
+    wd->value=scale;
+    wd->w=text_px(wd->text,scale); wd->h=16*scale;
+    dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1;
 }
 void vui_set_int(vui_widget *wd, int v){
     char b[16]; int i=0; unsigned n; char t[12]; int k=0;
@@ -522,6 +697,7 @@ void vui_set_value(vui_widget *wd, int v){ if(!wd||wd->value==v)return; wd->valu
 void vui_set_color(vui_widget *wd, vui_u32 c){ if(!wd||wd->color==c)return; wd->color=c; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
 void vui_set_user(vui_widget *wd, void *u){ if(wd) wd->user=u; }
 void *vui_get_user(vui_widget *wd){ return wd?wd->user:0; }
+const char *vui_input_text(vui_widget *wd){ return wd ? wd->text : ""; }
 void vui_set_visible(vui_widget *wd, int visible){ uint8_t v=(uint8_t)(visible?1:0); if(!wd||wd->visible==v)return; wd->visible=v; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
 void vui_set_bounds(vui_widget *wd, int x, int y, int width, int height){
     if(!wd)return;
@@ -656,7 +832,7 @@ static int dropdown_width(struct vui_window *w, int menu_idx) {
     for (i = 0; i < w->widget_count; ++i) {
         struct vui_widget *it = &w->widgets[i];
         if (it->type != W_MENUITEM || it->parent_idx != menu_idx || it->separator) continue;
-        int tw = slen(it->text) * 8 + 24; /* 12 px left padding + text + 12 px right */
+        int tw = text_px(it->text, 1) + 24; /* 12 px left padding + text + 12 px right */
         if (tw > max_w) max_w = tw;
     }
     return max_w;
@@ -690,7 +866,7 @@ static void layout_menubar(struct vui_window *w, int bar_idx) {
         if (m->type != W_MENU || m->parent_idx != bar_idx) continue;
         m->x = x;
         m->y = bar->y;
-        m->w = slen(m->text) * 8 + 16;
+        m->w = text_px(m->text, 1) + 16;
         m->h = bar->h;
         m->margin_l = m->x;
         x += m->w;
@@ -754,7 +930,7 @@ vui_widget *vui_menu(vui_window *w, vui_widget *menubar, const char *title) {
     scopy(wd->text, title ? title : "", sizeof(wd->text));
     /* Position is computed by layout_menubar; set a placeholder size. */
     wd->x = 0; wd->y = 0;
-    wd->w = slen(wd->text) * 8 + 16;
+    wd->w = text_px(wd->text, 1) + 16;
     wd->h = MENUBAR_H;
     wd->parent_idx = widget_index(w, menubar);
     w->dirty = 1; return wd;
@@ -943,7 +1119,8 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
     if (!wd->visible) return;
     /* Containers are layout-only; they render nothing. */
     if (wd->type == W_VBOX || wd->type == W_HBOX) {
-        if (wd->color != VUI_TEXT) glass_box(w, wd->x, wd->y, wd->w, wd->h, wd->color, 0);
+        /* Flat fill, no glass border — keeps table rows clean (no cell outlines). */
+        if (wd->color != VUI_TEXT) rect(w, wd->x, wd->y, wd->w, wd->h, wd->color);
         return;
     }
     /* Menu items are drawn as a dropdown overlay in repaint(), not here. */
@@ -979,7 +1156,9 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         if (wd->text[0]) text(w, wd->x + 12, wd->y + 9, wd->text, g_theme.text_dim);
         break;
     case W_LABEL:
-        text(w, wd->x, wd->y, wd->text, wd->color);
+        /* wd->value carries an optional integer text scale (1 = normal). */
+        if (wd->value > 1) text_scaled(w, wd->x, wd->y, wd->text, wd->color, wd->value);
+        else text(w, wd->x, wd->y, wd->text, wd->color);
         break;
     case W_BUTTON: {
         /* Restrained rounded button (themed): subtle surface fill, thin border
@@ -993,9 +1172,9 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
                                                  : mix(g_theme.border, accent, 1u, 3u);
         uint32_t tcol = (wd->hover || wd->pressed) ? g_theme.text
                                                    : mix(g_theme.text_dim, accent, 1u, 2u);
-        int tx = wd->x + (wd->w - (slen(wd->text) * 8)) / 2;
+        int tx = wd->x + (wd->w - text_px(wd->text, 1)) / 2;
         int ty = wd->y + (wd->h - 16) / 2;
-        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, 7, fill, bd);
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, g_theme.radius, fill, bd);
         text(w, tx, ty, wd->text, tcol);
         break; }
     case W_PILLBTN: {
@@ -1007,7 +1186,7 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
                                                     : mix(g_theme.surface, 0x00ffffffu, 1u, 16u);
         uint32_t bd = (wd->hover || wd->pressed) ? mix(g_theme.surface, accent, 1u, 2u)
                                                   : mix(g_theme.surface, 0x00cfe2f5u, 1u, 5u);
-        int tx = wd->x + (wd->w - (slen(wd->text) * 8)) / 2;
+        int tx = wd->x + (wd->w - text_px(wd->text, 1)) / 2;
         int ty = wd->y + (wd->h - 16) / 2;
         fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, r, fill, bd);
         text(w, tx, ty, wd->text, (wd->hover || wd->pressed) ? g_theme.text : g_theme.text_dim);
@@ -1037,7 +1216,7 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         if (wd->value > 0) {
             tile_icon(w, cx, cy, wd->value, ic);
         } else {
-            int glyph_w = slen(wd->text) * 8;
+            int glyph_w = text_px(wd->text, 1);
             int gx = wd->x + (wd->w - glyph_w) / 2;
             int gy = wd->y + (wd->h - 16) / 2 - 2;
             if (gx < wd->x + 6) gx = wd->x + 6;
@@ -1052,17 +1231,27 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         /* Rounded dark input field (all text/search fields). Subtle border that
          * turns to an accent focus ring on hover; dimmed placeholder text. */
         int tx = wd->x + 28;
+        int cy = wd->y + (wd->h - 16) / 2;       /* vertically-centred content */
+        int focused = ((int)(wd - w->widgets) == w->active_input);
         uint32_t ibg = mix(g_theme.bg, 0x00000000u, 1u, 3u);    /* darker than bg */
-        uint32_t bd  = wd->hover ? mix(g_theme.surface, g_theme.accent, 1u, 2u) : g_theme.border;
-        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, 8, ibg, bd);
-        /* small magnifier */
-        line_h(w, wd->x + 12, wd->y + 8, 5, g_theme.text_dim);
-        line_h(w, wd->x + 12, wd->y + 13, 5, g_theme.text_dim);
-        line_v(w, wd->x + 11, wd->y + 9, 4, g_theme.text_dim);
-        line_v(w, wd->x + 17, wd->y + 9, 4, g_theme.text_dim);
-        put(w, wd->x + 18, wd->y + 14, g_theme.text_dim);
-        put(w, wd->x + 19, wd->y + 15, g_theme.text_dim);
-        text(w, tx, wd->y + 5, wd->text, g_theme.text_dim);
+        uint32_t bd  = (focused || wd->hover) ? mix(g_theme.surface, g_theme.accent, 1u, 2u)
+                                              : g_theme.border;
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, g_theme.radius, ibg, bd);
+        /* small magnifier, centred with the text */
+        line_h(w, wd->x + 12, cy + 3, 5, g_theme.text_dim);
+        line_h(w, wd->x + 12, cy + 8, 5, g_theme.text_dim);
+        line_v(w, wd->x + 11, cy + 4, 4, g_theme.text_dim);
+        line_v(w, wd->x + 17, cy + 4, 4, g_theme.text_dim);
+        put(w, wd->x + 18, cy + 9, g_theme.text_dim);
+        put(w, wd->x + 19, cy + 10, g_theme.text_dim);
+        /* Typed value (bright) or placeholder (dim); blinking-less caret. */
+        if (wd->text[0]) {
+            text(w, tx, cy, wd->text, g_theme.text);
+            if (focused) rect(w, tx + text_px(wd->text,1), cy, 1, 16, g_theme.accent);
+        } else {
+            text(w, tx, cy, wd->mtitle, g_theme.text_dim);
+            if (focused) rect(w, tx, cy, 1, 16, g_theme.accent);
+        }
         break; }
     case W_BADGE: {
         /* Status pill: faint colour wash + matching border and text. The variant
@@ -1070,7 +1259,7 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         uint32_t c = wd->color ? wd->color : g_theme.text_dim;
         uint32_t fill = mix(g_theme.surface, c, 1u, 10u);
         uint32_t bd   = mix(g_theme.surface, c, 1u, 4u);
-        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, 6, fill, bd);
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, g_theme.radius, fill, bd);
         text(w, wd->x + 9, wd->y + 2, wd->text, mix(c, g_theme.text, 1u, 2u));
         break; }
     case W_TABS: {
@@ -1091,7 +1280,7 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
             while (wd->text[seg_start] && wd->text[seg_start] != '|' && li + 1 < (int)sizeof(label))
                 label[li++] = wd->text[seg_start++];
             label[li] = 0;
-            text(w, sx + (sw - slen(label) * 8) / 2, wd->y + 6, label,
+            text(w, sx + (sw - text_px(label, 1)) / 2, wd->y + 6, label,
                  active ? g_theme.text : g_theme.text_dim);
             if (active)
                 fill_round_rect(w, sx + 10, wd->y + wd->h - 2, sw - 20, 2, 1,
@@ -1099,27 +1288,54 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         }
         break; }
     case W_PILL: {
-        /* Large rounded pill — the dock bar surface. Radius is generous so the
-         * bar reads as a stadium/pill (per the reference), with a faint border. */
+        /* Dock bar surface with a restrained radius and a faint glass border. */
         uint32_t fill = wd->color ? wd->color : g_theme.surface;
         uint32_t bd = mix(fill, 0x00cfe2f5u, 1u, 3u);
-        int r = 16;   /* moderate corner radius (per reference — not a full stadium) */
+        int r = 10;
         if (r > wd->h / 2) r = wd->h / 2;
         fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, r, fill, bd);
         break; }
+    case W_METRIC: {
+        /* Self-contained metric card: title + big value + sub-label + a chart
+         * (max==0) or progress bar (max==1, value 0..100). One widget, one draw
+         * pass — robust against the layout quirks of stacked sub-widgets. */
+        uint32_t accent = wd->color ? wd->color : g_theme.accent;
+        uint32_t bd   = mix(g_theme.surface, 0x00cfe2f5u, 1u, 8u);  /* subtle border */
+        int ix = wd->x + wd->w / 2;             /* indicator left edge */
+        int iw = wd->w - (ix - wd->x) - 14;
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, g_theme.radius, g_theme.surface, bd);
+        text(w, wd->x + 14, wd->y + 10, wd->mtitle, g_theme.text_dim);
+        text_scaled(w, wd->x + 14, wd->y + 28, wd->text, accent, 2);
+        text(w, wd->x + 14, wd->y + wd->h - 18, wd->msub, g_theme.text_dim);
+        if (wd->max == 1) {                     /* progress bar */
+            int pct = wd->value; if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+            int by = wd->y + 34, bh = 10, fillw = iw * pct / 100;
+            fill_round_rect(w, ix, by, iw, bh, bh/2, mix(g_theme.surface, 0x00ffffffu, 1u, 10u), bd);
+            if (fillw >= bh) {
+                fill_round_rect(w, ix, by, fillw, bh, bh/2, accent, accent);
+                fill_round_rect(w, ix + fillw - bh, by, bh, bh, bh/2,
+                                mix(accent, 0x00ffffffu, 1u, 3u), mix(accent, 0x00ffffffu, 1u, 3u));
+            }
+        } else if (wd->max == 0 && wd->hist_n >= 2) {   /* live area chart */
+            unsigned char ord[32]; int n = wd->hist_n, k;
+            int start = (wd->hist_head + (int)sizeof(wd->hist) - n) % (int)sizeof(wd->hist);
+            for (k = 0; k < n; ++k) ord[k] = wd->hist[(start + k) % (int)sizeof(wd->hist)];
+            area_chart(w, ix, wd->y + 28, iw, 28, ord, n, accent);
+        }                                        /* max==2: value only (no chart) */
+        break; }
     case W_SPARK: {
-        /* Decorative mini bar-graph (a "tiny graph" per the design spec). */
-        static const unsigned char pat[24] = {
-            3,5,4,7,5,8,6,9,7,10,6,8,5,7,9,6,4,7,5,8,6,9,7,5
+        /* Smooth line graph (per the reference): a polyline across the widget. */
+        static const unsigned char pat[20] = {
+            3,5,4,6,5,7,6,8,7,9,7,6,5,7,8,6,5,7,6,8
         };
         uint32_t accent = wd->color ? wd->color : g_theme.accent;
-        uint32_t bar = mix(accent, g_theme.surface, 1u, 4u);  /* accent-tinted, visible */
-        int n = wd->w / 4; int i;
-        if (n > 24) n = 24;
+        int n = 16, i, px = -1, py = 0;
         for (i = 0; i < n; ++i) {
-            int hgt = 2 + (pat[i] * (wd->h - 2)) / 10;
-            if (hgt > wd->h) hgt = wd->h;
-            rect(w, wd->x + i * 4, wd->y + wd->h - hgt, 2, hgt, bar);
+            int v = pat[i];                                 /* 0..10 */
+            int x = wd->x + i * (wd->w - 1) / (n - 1);
+            int y = wd->y + (wd->h - 2) - v * (wd->h - 3) / 10;
+            if (px >= 0) draw_line(w, px, py, x, y, accent);
+            px = x; py = y;
         }
         break; }
     case W_BAR: {
@@ -1185,21 +1401,7 @@ static void repaint(struct vui_window *w) {
     for (i = 0; i < w->widget_count; ++i) draw_widget(w, &w->widgets[i]);
     /* Pass 2: dropdown overlay so it always appears on top. */
     draw_dropdown(w);
-    /* Present only the damaged region when we have a valid partial rect; the
-     * whole canvas is always redrawn (cheap, local), but pushing just the
-     * changed sub-rect to the compositor avoids a full-window recomposite. */
-    if (g_dmg_full || g_dmg_x1 <= g_dmg_x0 || g_dmg_y1 <= g_dmg_y0) {
-        sc4(SYS_WINDOW_PRESENT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas, (uint64_t)w->width, (uint64_t)w->height);
-    } else {
-        int x0 = g_dmg_x0 < 0 ? 0 : g_dmg_x0;
-        int y0 = g_dmg_y0 < 0 ? 0 : g_dmg_y0;
-        int x1 = g_dmg_x1 > w->width ? w->width : g_dmg_x1;
-        int y1 = g_dmg_y1 > w->height ? w->height : g_dmg_y1;
-        sc6(SYS_WINDOW_PRESENT_RECT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas,
-            (uint64_t)w->width, (uint64_t)w->height,
-            (uint64_t)(((x0 & 0xffff) << 16) | (y0 & 0xffff)),
-            (uint64_t)((((x1 - x0) & 0xffff) << 16) | ((y1 - y0) & 0xffff)));
-    }
+    sc4(SYS_WINDOW_PRESENT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas, (uint64_t)w->width, (uint64_t)w->height);
     dmg_reset();
 }
 
@@ -1247,7 +1449,7 @@ vui_window *vui_window_open_ex(const char *title, int width, int height,
     g_win.mouse_x=-1; g_win.mouse_y=-1; g_win.mouse_down=0;
     g_win.clear_color=g_theme.bg;
     g_win.widget_count=0; g_win.dirty=1; g_win.on_tick=0; g_win.on_resize=0; g_win.on_context_menu=0;
-    g_win.menu_count=0; g_win.active_menu_idx=-1;
+    g_win.menu_count=0; g_win.active_menu_idx=-1; g_win.active_input=-1;
     return &g_win;
 }
 
@@ -1279,6 +1481,19 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
             else if (ev.type == EV_CLOSE) { w->open=0; }
             else if (ev.type == EV_CONTEXT_MENU) { w->mouse_x=ev.x; w->mouse_y=ev.y; if(w->on_context_menu) w->on_context_menu(w, ev.x, ev.y); }
             else if (ev.type == EV_MENU_ACTION) { if (ev.key < (uint32_t)w->menu_count && w->menu_cbs[ev.key]) w->menu_cbs[ev.key](w); }
+            else if (ev.type == EV_KEY && w->active_input >= 0) {
+                /* Edit the focused input. */
+                struct vui_widget *in = &w->widgets[w->active_input];
+                unsigned k = ev.key;
+                int n = slen(in->text);
+                if (k == 0x08) { if (n > 0) in->text[n-1] = 0; }          /* backspace */
+                else if (k == 0x1b || k == '\n' || k == '\r') { w->active_input = -1; }
+                else if (k >= 0x20 && k < 0x7f && n + 1 < (int)sizeof(in->text)) {
+                    in->text[n] = (char)k; in->text[n+1] = 0;
+                }
+                if (in->on_click) in->on_click(in);   /* notify (e.g. re-filter) */
+                w->dirty = 1; dmg_add(in->x, in->y, in->w, in->h);
+            }
             else if (ev.type == EV_RESIZE) {
                 int nw=ev.x, nh=ev.y;
                 if(nw<1)nw=1; if(nh<1)nh=1;
@@ -1351,6 +1566,7 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
         }
 
         /* ---- Widget hover / click (only when no menu is consuming input) -- */
+        int input_clicked = 0;
         for (i = 0; i < w->widget_count; ++i) {
             struct vui_widget *wd = &w->widgets[i];
             if (wd->type != W_BUTTON && wd->type != W_PILLBTN && wd->type != W_TILE && wd->type != W_TABS && wd->type != W_INPUT) continue;
@@ -1359,6 +1575,9 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
             uint8_t prs = (uint8_t)(hov && w->mouse_down);
             if (hov != wd->hover || prs != wd->pressed) { wd->hover=hov; wd->pressed=prs; w->dirty=1; dmg_add(wd->x, wd->y, wd->w + 24, wd->h + 8); }
             if (click_x >= 0 && inside(wd, click_x, click_y)) {
+                if (wd->type == W_INPUT) {        /* focus this input for typing */
+                    w->active_input = (int)(wd - w->widgets); input_clicked = 1; w->dirty = 1;
+                }
                 if (wd->type == W_TABS) {
                     int n = tab_count(wd->text);
                     if (n > 0) {
@@ -1371,6 +1590,10 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
                 }
                 if (wd->on_click) wd->on_click(wd);
             }
+        }
+        /* Click outside any input drops keyboard focus. */
+        if (click_x >= 0 && !input_clicked && w->active_input >= 0) {
+            w->active_input = -1; w->dirty = 1;
         }
 
         /* While a dropdown overlay is open (or was, the frame it closes), force

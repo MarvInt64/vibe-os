@@ -48,17 +48,25 @@ enum {
     SYS_WINDOW_CREATE_EX = 35,
     SYS_SET_WALLPAPER = 36,
     SYS_WINDOW_SET_MENUBAR = 37,
-    SYS_WINDOW_PRESENT_RECT = 38
+    SYS_WINDOW_PRESENT_RECT = 38,
+    SYS_SYSTEM_INFO = 39,
+    SYS_TEXT_DRAW = 40,
+    SYS_TEXT_METRICS = 41,
+    SYS_SBRK = 42
 };
 
+/* Unused argument registers are explicitly zeroed: the kernel inspects rdi/rsi/
+ * rdx for several syscalls (e.g. SYS_PROCESS_SPAWN reads rsi as an optional arg
+ * pointer), so a stale caller value left in an unset arg register would be
+ * misread as a real argument. Pin them to 0. */
 static inline long __sc0(long n) {
-    long r; __asm__ volatile("int $0x80":"=a"(r):"a"(n):"rcx","r11","memory"); return r;
+    long r; __asm__ volatile("int $0x80":"=a"(r):"a"(n),"D"(0ull),"S"(0ull),"d"(0ull):"rcx","r11","memory"); return r;
 }
 static inline long __sc1(long n, uint64_t a0) {
-    long r; __asm__ volatile("int $0x80":"=a"(r):"a"(n),"D"(a0):"rcx","r11","memory"); return r;
+    long r; __asm__ volatile("int $0x80":"=a"(r):"a"(n),"D"(a0),"S"(0ull),"d"(0ull):"rcx","r11","memory"); return r;
 }
 static inline long __sc2(long n, uint64_t a0, uint64_t a1) {
-    long r; __asm__ volatile("int $0x80":"=a"(r):"a"(n),"D"(a0),"S"(a1):"rcx","r11","memory"); return r;
+    long r; __asm__ volatile("int $0x80":"=a"(r):"a"(n),"D"(a0),"S"(a1),"d"(0ull):"rcx","r11","memory"); return r;
 }
 static inline long __sc3(long n, uint64_t a0, uint64_t a1, uint64_t a2) {
     long r; __asm__ volatile("int $0x80":"=a"(r):"a"(n),"D"(a0),"S"(a1),"d"(a2):"rcx","r11","memory"); return r;

@@ -1,5 +1,6 @@
-/* umalloc — first-fit free-list allocator over a static arena. See umalloc.h. */
+/* umalloc — first-fit free-list allocator over SYS_SBRK heap pages. */
 #include "umalloc.h"
+#include <sys/syscall.h>
 
 /* ---- Thread safety -------------------------------------------------------
  * Multiple threads (e.g. a browser UI thread and a network worker) share one
@@ -17,8 +18,8 @@ static void alloc_unlock(void) {
     __atomic_clear(&g_alloc_lock, __ATOMIC_RELEASE);
 }
 
-#define UMALLOC_ARENA_BYTES (16u * 1024u * 1024u)  /* 16 MB */
 #define UMALLOC_ALIGN 16u
+#define UMALLOC_GROW_MIN (64u * 1024u)
 
 /* Address-ordered, doubly linked list of all blocks (free and used). Splitting
  * and coalescing keep the list contiguous so neighbours can always be merged.
@@ -31,22 +32,57 @@ struct block {
     unsigned int _pad;      /* keep sizeof(struct block) a multiple of 16 */
 };
 
-static unsigned char g_arena[UMALLOC_ARENA_BYTES] __attribute__((aligned(UMALLOC_ALIGN)));
 static struct block *g_head;   /* first block; 0 until initialised */
+static struct block *g_tail;
 static umsize_t g_used;
+static umsize_t g_capacity;
 
 static umsize_t align_up(umsize_t n) {
     return (n + (UMALLOC_ALIGN - 1u)) & ~((umsize_t)UMALLOC_ALIGN - 1u);
 }
 
-static void umalloc_init(void) {
-    g_head = (struct block *)g_arena;
-    g_head->size = UMALLOC_ARENA_BYTES - sizeof(struct block);
-    g_head->prev = 0;
-    g_head->next = 0;
-    g_head->free = 1;
-    g_head->_pad = 0;
-    g_used = 0;
+static void coalesce_forward(struct block *b);
+
+static umsize_t page_align(umsize_t n) {
+    return (n + 0xfffu) & ~(umsize_t)0xfffu;
+}
+
+static int grow_heap(umsize_t need) {
+    umsize_t bytes = need + sizeof(struct block);
+    struct block *b;
+    void *base;
+
+    if (bytes < UMALLOC_GROW_MIN) {
+        bytes = UMALLOC_GROW_MIN;
+    }
+    bytes = page_align(bytes);
+    base = (void *)(unsigned long)__sc1(SYS_SBRK, (uint64_t)bytes);
+    if ((unsigned long)base == ~(unsigned long)0) {
+        return 0;
+    }
+
+    b = (struct block *)base;
+    b->size = bytes - sizeof(struct block);
+    b->prev = g_tail;
+    b->next = 0;
+    b->free = 1;
+    b->_pad = 0;
+    if (g_tail) {
+        g_tail->next = b;
+    } else {
+        g_head = b;
+    }
+    g_tail = b;
+    g_capacity += b->size;
+
+    if (b->prev && b->prev->free) {
+        b = b->prev;
+        coalesce_forward(b);
+        if (b->next == 0) {
+            g_tail = b;
+        }
+    }
+    return 1;
 }
 
 static void *payload_of(struct block *b) {
@@ -85,6 +121,7 @@ static void coalesce_forward(struct block *b) {
         b->size += sizeof(struct block) + n->size;
         b->next = n->next;
         if (b->next) b->next->prev = b;
+        else g_tail = b;
     }
 }
 
@@ -95,20 +132,21 @@ static void *umalloc_nolock(umsize_t size) {
     if (size == 0) {
         return 0;
     }
-    if (g_head == 0) {
-        umalloc_init();
-    }
     need = align_up(size);
 
-    for (b = g_head; b != 0; b = b->next) {
-        if (b->free && b->size >= need) {
-            split_block(b, need);
-            b->free = 0;
-            g_used += b->size;
-            return payload_of(b);
+    for (;;) {
+        for (b = g_head; b != 0; b = b->next) {
+            if (b->free && b->size >= need) {
+                split_block(b, need);
+                b->free = 0;
+                g_used += b->size;
+                return payload_of(b);
+            }
+        }
+        if (!grow_heap(need)) {
+            return 0;
         }
     }
-    return 0; /* out of arena */
 }
 
 static void ufree_nolock(void *ptr) {
@@ -196,4 +234,4 @@ void *urealloc(void *ptr, umsize_t size) {
 }
 
 umsize_t umalloc_used(void) { return g_used; }
-umsize_t umalloc_capacity(void) { return UMALLOC_ARENA_BYTES; }
+umsize_t umalloc_capacity(void) { return g_capacity; }

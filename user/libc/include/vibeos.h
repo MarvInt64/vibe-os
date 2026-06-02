@@ -16,6 +16,19 @@ int  vos_spawn_arg(const char *path, const char *arg);
 void vos_yield(void);
 void vos_sleep_ticks(unsigned long ticks);
 
+struct vos_system_info {
+    uint64_t uptime_ticks;
+    uint32_t timer_hz;
+    uint32_t process_count;
+    uint32_t process_max;
+    uint32_t app_window_max;
+    uint64_t heap_used_bytes;
+    uint64_t heap_total_bytes;
+    char version[16];
+    char build[32];
+};
+int vos_system_info(struct vos_system_info *out);
+
 /* ---- threads ----
  * Threads share the caller's address space. fn runs as fn(arg) on a freshly
  * allocated stack (stack_size bytes, <=0 => 64 KB default). Returns a thread
@@ -29,6 +42,8 @@ enum { VOS_LOG_INFO = 0, VOS_LOG_WARN = 1, VOS_LOG_ERROR = 2, VOS_LOG_FAULT = 3,
 struct vos_journal_entry {
     uint64_t seq;
     uint64_t tick;
+    uint64_t boot_id;
+    uint32_t hz;
     uint32_t level;
     uint32_t pid;
     char msg[96];

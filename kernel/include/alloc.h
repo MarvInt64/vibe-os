@@ -29,5 +29,10 @@ void kfree(void *ptr);
  * @return Number of free bytes
  */
 size_t kmalloc_get_free(void);
+size_t kmalloc_get_total(void);
+size_t kmalloc_get_used(void);
+void kmalloc_set_physical_total(size_t total_bytes);
+size_t kmalloc_get_physical_total(void);
+size_t kmalloc_get_physical_used(void);
 
 #endif

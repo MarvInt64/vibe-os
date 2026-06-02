@@ -555,6 +555,24 @@ static void write_dec(uint64_t n) {
     write_str(buf);
 }
 
+static void write_hex64(uint64_t n) {
+    const char *hex = "0123456789abcdef";
+    char buf[16];
+    int i = 0;
+    write_str("0x");
+    if (n == 0) {
+        write_char('0');
+        return;
+    }
+    while (n && i < 16) {
+        buf[i++] = hex[n & 0xfu];
+        n >>= 4;
+    }
+    while (i > 0) {
+        write_char(buf[--i]);
+    }
+}
+
 static void write_ip(uint32_t ip) {
     write_dec((ip >> 24) & 0xff); write_str(".");
     write_dec((ip >> 16) & 0xff); write_str(".");
@@ -566,6 +584,8 @@ static void write_ip(uint32_t ip) {
 struct sh_journal_entry {
     uint64_t seq;
     uint64_t tick;
+    uint64_t boot_id;
+    uint32_t hz;
     uint32_t level;
     uint32_t pid;
     char msg[96];
@@ -581,8 +601,25 @@ static void cmd_dmesg(void) {
         if (syscall2(SYS_JOURNAL_READ, (uint64_t)seq, (uint64_t)(size_t)&e) != 1) {
             continue;   /* scrolled out of the ring */
         }
-        write_str("[");
-        write_dec(e.tick);
+        write_str("[#");
+        write_dec(e.seq);
+        write_str(" t=");
+        if (e.hz) {
+            write_dec(e.tick / e.hz);
+            write_str(".");
+            {
+                uint64_t ms = ((e.tick % e.hz) * 1000u) / e.hz;
+                if (ms < 100) write_str("0");
+                if (ms < 10) write_str("0");
+                write_dec(ms);
+            }
+            write_str("s");
+        } else {
+            write_dec(e.tick);
+            write_str(" ticks");
+        }
+        write_str(" boot=");
+        write_hex64(e.boot_id);
         write_str("] ");
         write_str(e.level < 5 ? tags[e.level] : "?????");
         write_str(" pid=");

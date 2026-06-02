@@ -42,6 +42,8 @@ SECTIONS
         *(COMMON)
         *(.bss*)
     }
+    . = ALIGN(4K);
+    PROVIDE(__kernel_end = .);
 
     /DISCARD/ :
     {

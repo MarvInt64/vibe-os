@@ -639,6 +639,8 @@ static uint8_t g_rxframe[2048];
 void net_poll(void) {
     int n;
 
+    net_tls_check_guard();   /* diagnostic: catch any BearSSL I/O-buffer overflow */
+
     if (!g_nic.present) {
         return;
     }

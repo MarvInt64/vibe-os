@@ -1,8 +1,11 @@
 #include "window.h"
+#include "alloc.h"
+#include "journal.h"
 #include "process.h"
 #include "render.h"
 #include "serial.h"
 #include "string.h"
+#include "timer.h"
 #include "types.h"
 #include "vfs.h"
 
@@ -370,6 +373,18 @@ static struct desktop_icon launcher_icon_at(const struct desktop_state *desktop,
 
 static int point_in_rect(int px, int py, int x, int y, int width, int height) {
     return px >= x && py >= y && px < x + width && py < y + height;
+}
+
+static void copy_capped(char *dst, size_t cap, const char *src) {
+    size_t i = 0;
+    if (cap == 0) return;
+    if (src != 0) {
+        while (i + 1 < cap && src[i] != '\0') {
+            dst[i] = src[i];
+            ++i;
+        }
+    }
+    dst[i] = '\0';
 }
 
 static int rects_intersect(const struct rect *a, const struct rect *b) {
@@ -996,21 +1011,48 @@ static void window_toggle_maximize(struct desktop_state *desktop, int index) {
 
 static void draw_shadow_block(struct framebuffer *fb, int x, int y, int width, int height);
 
-/* Blit a 1-bpp bitmap (one uint16_t per row, MSB = leftmost of `width`). */
-static void draw_bitmap(struct framebuffer *fb, int x, int y, const uint16_t *rows, int n, int width, uint32_t c) {
-    int r, col;
-    for (r = 0; r < n; ++r) {
-        uint16_t b = rows[r];
-        for (col = 0; col < width; ++col)
-            if ((b >> (width - 1 - col)) & 1u) fb_fill_rect(fb, x + col, y + r, 1, 1, c);
+static void draw_line(struct framebuffer *fb, int x0, int y0, int x1, int y1, uint32_t c) {
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1;
+    int sx = x0 < x1 ? 1 : -1;
+    int dy = y1 > y0 ? y0 - y1 : y1 - y0;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+
+    for (;;) {
+        fb_put_pixel(fb, x0, y0, c);
+        fb_put_pixel(fb, x0, y0 + 1, c);
+        if (x0 == x1 && y0 == y1) break;
+        {
+            int e2 = err * 2;
+            if (e2 >= dy) { err += dy; x0 += sx; }
+            if (e2 <= dx) { err += dx; y0 += sy; }
+        }
     }
 }
 
-/* Power symbol: an open ring with a stem at the top (12x12, 1bpp). */
-static const uint16_t s_power_glyph[12] = {
-    0x060, 0x060, 0x168, 0x264, 0x402, 0x402,
-    0x801, 0x402, 0x402, 0x204, 0x198, 0x0F0
-};
+static void draw_power_icon(struct framebuffer *fb, int x, int y, int size, uint32_t c) {
+    int cx = x + size / 2;
+    int cy = y + size / 2 + 1;
+    int r = size / 2 - 2;
+    int outer = r * r;
+    int inner = (r - 2) * (r - 2);
+    int px, py;
+
+    for (py = 0; py < size; ++py) {
+        for (px = 0; px < size; ++px) {
+            int ax = x + px;
+            int ay = y + py;
+            int dx = ax - cx;
+            int dy = ay - cy;
+            int d2 = dx * dx + dy * dy;
+            if (d2 <= outer && d2 >= inner && !(ay < cy - 1 && ax >= cx - 3 && ax <= cx + 3)) {
+                fb_put_pixel(fb, ax, ay, c);
+            }
+        }
+    }
+
+    fb_fill_rect(fb, cx - 1, y + 1, 2, size / 2, c);
+}
 
 int desktop_set_wallpaper(struct desktop_state *desktop, const uint32_t *src, int src_w, int src_h) {
     int sw, sh, x, y;
@@ -1235,6 +1277,170 @@ static void draw_topbar_menu_overlay(struct desktop_state *desktop, struct frame
     }
 }
 
+static void int_to_str(int value, char *dest, size_t cap) {
+    char digits[8];
+    size_t i = 0;
+    size_t offset = 0;
+
+    if (cap < 2) {
+        if (cap == 1) dest[0] = '\0';
+        return;
+    }
+
+    if (value < 0) {
+        value = -value;
+        if (offset + 1 < cap) dest[offset++] = '-';
+    }
+
+    if (value == 0) {
+        if (offset + 1 < cap) dest[offset++] = '0';
+    } else {
+        while (value > 0 && i < sizeof(digits)) {
+            digits[i++] = (char)('0' + (value % 10));
+            value /= 10;
+        }
+        while (i > 0 && offset < cap - 1) {
+            dest[offset++] = digits[--i];
+        }
+    }
+    dest[offset] = '\0';
+}
+
+static void format_uptime_time(char *dest, size_t cap) {
+    uint64_t seconds;
+    uint64_t hours;
+    uint64_t minutes;
+    if (cap < 9) {
+        if (cap > 0) dest[0] = '\0';
+        return;
+    }
+    seconds = timer_tick_count() / timer_frequency_hz();
+    hours = (seconds / 3600u) % 24u;
+    minutes = (seconds / 60u) % 60u;
+    seconds %= 60u;
+    dest[0] = (char)('0' + (hours / 10u));
+    dest[1] = (char)('0' + (hours % 10u));
+    dest[2] = ':';
+    dest[3] = (char)('0' + (minutes / 10u));
+    dest[4] = (char)('0' + (minutes % 10u));
+    dest[5] = ':';
+    dest[6] = (char)('0' + (seconds / 10u));
+    dest[7] = (char)('0' + (seconds % 10u));
+    dest[8] = '\0';
+}
+
+static int g_topbar_cpu_history[24];
+static int g_topbar_ui_history[24];
+static int g_topbar_cpu_history_pos;
+static uint8_t g_topbar_cpu_history_ready;
+static uint64_t g_desktop_activity_units;
+
+uint64_t desktop_activity_units(void) {
+    return g_desktop_activity_units;
+}
+
+static void desktop_note_activity(int pixels) {
+    uint64_t units = 1;
+    if (pixels > 0) {
+        units += (uint64_t)pixels / 32768u;
+    }
+    g_desktop_activity_units += units;
+}
+
+static void get_topbar_stats(int *cpu_out, int *mem_out, int *cpu_history_out, int *ui_history_out, int history_count) {
+    static uint64_t previous_runtime;
+    static uint64_t previous_activity;
+    static uint64_t previous_tick;
+    static int last_cpu_pct;
+    static int last_ui_pct;
+    uint64_t total_runtime = 0;
+    uint64_t total_activity;
+    uint32_t count = process_snapshot_count();
+    uint32_t i;
+
+    for (i = 0; i < count; ++i) {
+        struct process_snapshot snap;
+        if (process_get_snapshot(i, &snap) && snap.loaded) {
+            total_runtime += snap.runtime_ticks;
+        }
+    }
+
+    {
+        uint64_t now = timer_tick_count();
+        total_activity = desktop_activity_units();
+        if (previous_tick != 0 && now > previous_tick) {
+            uint64_t runtime_delta = total_runtime >= previous_runtime ? total_runtime - previous_runtime : 0;
+            uint64_t activity_delta = total_activity >= previous_activity ? total_activity - previous_activity : 0;
+            uint64_t tick_delta = now - previous_tick;
+            last_cpu_pct = (int)((runtime_delta * 100) / tick_delta);
+            last_ui_pct = (int)((activity_delta * 100) / (tick_delta * 4u));
+            if (last_cpu_pct > 99) last_cpu_pct = 99;
+            if (last_cpu_pct < 0) last_cpu_pct = 0;
+            if (last_ui_pct > 99) last_ui_pct = 99;
+            if (last_ui_pct < 0) last_ui_pct = 0;
+        }
+        if (now != previous_tick) {
+            g_topbar_cpu_history[g_topbar_cpu_history_pos] = last_cpu_pct;
+            g_topbar_ui_history[g_topbar_cpu_history_pos] = last_ui_pct;
+            g_topbar_cpu_history_pos = (g_topbar_cpu_history_pos + 1) % (int)(sizeof(g_topbar_cpu_history) / sizeof(g_topbar_cpu_history[0]));
+            g_topbar_cpu_history_ready = 1;
+        }
+        previous_tick = now;
+        previous_runtime = total_runtime;
+        previous_activity = total_activity;
+    }
+
+    {
+        uint64_t total_heap = kmalloc_get_physical_total();
+        uint64_t used_heap = kmalloc_get_physical_used();
+        int mem_pct = 0;
+        if (total_heap > 0) {
+            mem_pct = (int)((used_heap * 100) / total_heap);
+        }
+        if (mem_pct > 99) mem_pct = 99;
+        *mem_out = mem_pct;
+    }
+
+    if (cpu_history_out != 0 && history_count > 0) {
+        int n = (int)(sizeof(g_topbar_cpu_history) / sizeof(g_topbar_cpu_history[0]));
+        int start = g_topbar_cpu_history_ready ? g_topbar_cpu_history_pos : 0;
+        int h;
+        for (h = 0; h < history_count; ++h) {
+            int src = start + ((h * n) / history_count);
+            cpu_history_out[h] = g_topbar_cpu_history[src % n];
+            if (ui_history_out != 0) {
+                ui_history_out[h] = g_topbar_ui_history[src % n];
+            }
+        }
+    }
+
+    *cpu_out = last_cpu_pct;
+}
+
+static void draw_topbar_cpu_sparkline(struct framebuffer *fb, int x, int y, int width, int height, const int *values, int count) {
+    int i;
+    uint32_t base = mix_color(g_chrome_theme.surface_hi, g_chrome_theme.bg, 1u, 2u);
+    fb_fill_rect(fb, x, y + height - 2, width, 1, base);
+    for (i = 1; i < count; ++i) {
+        int x0 = x + ((i - 1) * (width - 1)) / (count - 1);
+        int x1 = x + (i * (width - 1)) / (count - 1);
+        int y0 = y + height - 1 - ((values[i - 1] * (height - 1)) / 100);
+        int y1 = y + height - 1 - ((values[i] * (height - 1)) / 100);
+        draw_line(fb, x0, y0, x1, y1, mix_color(g_chrome_theme.accent, g_chrome_theme.text, 1u, 4u));
+    }
+}
+
+static void draw_topbar_mem_bar(struct framebuffer *fb, int x, int y, int width, int height, int pct) {
+    int fill = (pct * width) / 100;
+    fb_fill_rect(fb, x, y, width, height, mix_color(g_chrome_theme.surface_hi, g_chrome_theme.bg, 1u, 2u));
+    if (fill > 0) {
+        fb_fill_rect(fb, x, y, fill, height, mix_color(g_chrome_theme.accent, g_chrome_theme.text, 1u, 3u));
+        fb_fill_rect(fb, x, y, fill, height / 2, mix_color(g_chrome_theme.accent, g_chrome_theme.text, 1u, 2u));
+    }
+    fb_draw_rect(fb, x, y, width, height, 1, g_chrome_theme.border);
+}
+
+
 static void render_background_surface(struct desktop_state *desktop) {
     struct framebuffer *fb = &desktop->background_fb;
     int order;
@@ -1267,37 +1473,71 @@ static void render_background_surface(struct desktop_state *desktop) {
     /* Thin outlined V mark in the accent colour. */
     {
         int i;
-        for (i = 0; i < 8; ++i) {
-            fb_fill_rect(fb, 22 + i, 15 + i * 2, 2, 2, g_chrome_theme.accent);
-            fb_fill_rect(fb, 38 - i, 15 + i * 2, 2, 2, g_chrome_theme.accent);
+        int anim = desktop->logo_hover_anim;
+        int steps = 8 + (anim / 85);
+        int stroke = 2 + (anim / 170);
+        int left_x = 22 - (anim / 128);
+        int right_x = 38 + (anim / 128);
+        int top_y = 15 - (anim / 128);
+        int step_y = 2;
+        uint32_t mark = anim > 0 ? mix_color(g_chrome_theme.accent, g_chrome_theme.text, (uint32_t)anim, 768u) : g_chrome_theme.accent;
+
+        for (i = 0; i < steps; ++i) {
+            fb_fill_rect(fb, left_x + i, top_y + i * step_y, stroke, stroke, mark);
+            fb_fill_rect(fb, right_x - i, top_y + i * step_y, stroke, stroke, mark);
         }
     }
     draw_text(fb, 50, 20, "VibeOS", g_chrome_theme.text, 1);
     draw_topbar_menu_labels(desktop, fb);
 
-    sx = w - 400;
+    sx = w - 430;
+    draw_text(fb, sx, 20, "NET", g_chrome_theme.text_dim, 1);
+    sx += 34;
+    fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
+    sx += 8;
     {
-        static const int hs[16] = {4, 6, 5, 8, 6, 10, 7, 9, 12, 8, 6, 9, 11, 7, 5, 8};
-        int i;
-        for (i = 0; i < 16; ++i) {
-            fb_fill_rect(fb, sx + i * 3, 31 - hs[i], 2, hs[i],
-                         mix_color(g_chrome_theme.accent, g_chrome_theme.surface_hi, 1u, 2u));
-        }
+        int cpu_pct, mem_pct;
+        int cpu_history[24];
+        int ui_history[24];
+        char cpu_buf[8];
+        char mem_buf[8];
+        get_topbar_stats(&cpu_pct, &mem_pct, cpu_history, ui_history, 24);
+        int_to_str(cpu_pct, cpu_buf, sizeof(cpu_buf));
+        int_to_str(mem_pct, mem_buf, sizeof(mem_buf));
+        draw_text(fb, sx, 20, "CPU ", g_chrome_theme.text, 1);
+        sx += 30;
+        draw_topbar_cpu_sparkline(fb, sx, 18, 42, 14, cpu_history, 24);
+        sx += 48;
+        draw_text(fb, sx, 20, cpu_buf, g_chrome_theme.text, 1);
+        draw_text(fb, sx + (int)strlen(cpu_buf) * 8, 20, "%", g_chrome_theme.text, 1);
+        sx += 30;
+        fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
+        sx += 8;
+        draw_text(fb, sx, 20, "UI ", g_chrome_theme.text_dim, 1);
+        sx += 24;
+        draw_topbar_cpu_sparkline(fb, sx, 18, 30, 14, ui_history, 24);
+        sx += 36;
+        fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
+        sx += 8;
+        draw_text(fb, sx, 20, "MEM ", g_chrome_theme.text, 1);
+        sx += 34;
+        draw_topbar_mem_bar(fb, sx, 22, 30, 8, mem_pct);
+        sx += 36;
+        draw_text(fb, sx, 20, mem_buf, g_chrome_theme.text, 1);
+        draw_text(fb, sx + (int)strlen(mem_buf) * 8, 20, "%", g_chrome_theme.text, 1);
+        sx += 30;
     }
-    sx += 16 * 3 + 16;
-    draw_text(fb, sx, 20, "NET 10.0.2.16", g_chrome_theme.text_dim, 1);
-    sx += 13 * 8 + 14;
     fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
-    sx += 12;
-    draw_text(fb, sx, 20, "CPU 12%", g_chrome_theme.text, 1);
-    sx += 7 * 8 + 14;
+    sx += 8;
+    {
+        char time_buf[9];
+        format_uptime_time(time_buf, sizeof(time_buf));
+        draw_text(fb, sx, 20, time_buf, g_chrome_theme.text, 1);
+    }
+    sx += 8 * 8 + 10;
     fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
-    sx += 12;
-    draw_text(fb, sx, 20, "MEM 42%", g_chrome_theme.text, 1);
-    sx += 7 * 8 + 16;
-    fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
-    sx += 14;
-    draw_bitmap(fb, sx, 15, s_power_glyph, 12, 12, g_chrome_theme.text_dim);
+    sx += 8;
+    draw_power_icon(fb, sx, 15, 18, g_chrome_theme.text);
 
     for (order = 0; order < desktop->launcher_count; ++order) {
         struct desktop_icon icon = launcher_icon_at(desktop, order);
@@ -1534,6 +1774,75 @@ static void draw_context_menu(struct desktop_state *desktop, struct framebuffer 
     (void)y;
 }
 
+static struct rect desktop_modal_rect(const struct desktop_state *desktop) {
+    int w = 430;
+    int h = 168;
+    int sw = (int)desktop->screen_width;
+    int sh = (int)desktop->screen_height;
+    if (w > sw - 32) w = sw - 32;
+    if (w < 260) w = 260;
+    return rect_from_bounds((sw - w) / 2, (sh - h) / 2, w, h);
+}
+
+static struct rect desktop_modal_button_rect(const struct rect *modal) {
+    return rect_from_bounds(modal->x + modal->width - 104, modal->y + modal->height - 48, 76, 30);
+}
+
+void desktop_show_error(struct desktop_state *desktop, const char *title, const char *message) {
+    struct rect r;
+    if (desktop == 0) return;
+    copy_capped(desktop->modal_title, sizeof(desktop->modal_title), title ? title : "Error");
+    copy_capped(desktop->modal_message, sizeof(desktop->modal_message), message ? message : "The operation could not be completed.");
+    desktop->modal_open = 1;
+    r = desktop_modal_rect(desktop);
+    mark_dirty_rect(desktop, rect_from_bounds(r.x - 16, r.y - 16, r.width + 32, r.height + 32));
+}
+
+static void draw_modal_message(struct framebuffer *fb, int x, int y, int max_chars, const char *message, uint32_t color) {
+    char line[56];
+    int line_pos = 0;
+    int line_y = y;
+    int i = 0;
+    if (max_chars > (int)sizeof(line) - 1) max_chars = (int)sizeof(line) - 1;
+    while (message != 0 && message[i] != '\0' && line_y < y + 52) {
+        char ch = message[i++];
+        if (ch == '\n' || line_pos >= max_chars) {
+            line[line_pos] = '\0';
+            draw_text(fb, x, line_y, line, color, 1);
+            line_y += 20;
+            line_pos = 0;
+            if (ch == '\n') continue;
+        }
+        line[line_pos++] = ch;
+    }
+    if (line_pos > 0 && line_y < y + 60) {
+        line[line_pos] = '\0';
+        draw_text(fb, x, line_y, line, color, 1);
+    }
+}
+
+static void draw_desktop_modal(struct desktop_state *desktop, struct framebuffer *fb) {
+    struct rect r;
+    struct rect b;
+    uint32_t shade = mix_color(g_chrome_theme.bg, 0x00000000u, 1u, 2u);
+    if (!desktop->modal_open) return;
+    r = desktop_modal_rect(desktop);
+    b = desktop_modal_button_rect(&r);
+
+    fb_fill_rect(fb, 0, 0, (int)desktop->screen_width, (int)desktop->screen_height, shade);
+    draw_rounded_panel(fb, r.x, r.y, r.width, r.height, 10,
+                       mix_color(g_chrome_theme.surface_hi, g_chrome_theme.bg, 1u, 4u),
+                       g_chrome_theme.surface, g_chrome_theme.border_hi, g_chrome_theme.surface_hi);
+    draw_text(fb, r.x + 24, r.y + 22, desktop->modal_title, g_chrome_theme.text, 1);
+    fb_fill_rect(fb, r.x + 24, r.y + 50, r.width - 48, 1, g_chrome_theme.border);
+    draw_modal_message(fb, r.x + 24, r.y + 68, (r.width - 48) / 8, desktop->modal_message, g_chrome_theme.text_dim);
+    draw_rounded_panel(fb, b.x, b.y, b.width, b.height, 6,
+                       mix_color(g_chrome_theme.accent, g_chrome_theme.surface, 1u, 5u),
+                       mix_color(g_chrome_theme.accent, g_chrome_theme.bg, 1u, 4u),
+                       g_chrome_theme.border_hi, g_chrome_theme.accent);
+    draw_text(fb, b.x + 26, b.y + 8, "OK", g_chrome_theme.text, 1);
+}
+
 static int context_menu_item_at(struct desktop_state *desktop, int x, int y) {
     struct ctx_entry entries[CTX_MAX_ENTRIES];
     int count = build_context_entries(desktop, desktop->context_menu_window, entries);
@@ -1590,6 +1899,7 @@ static void compose_scene_rect(struct desktop_state *desktop, struct framebuffer
 
     draw_context_menu(desktop, fb);
     draw_topbar_menu_overlay(desktop, fb);
+    draw_desktop_modal(desktop, fb);
 }
 
 void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t screen_height) {
@@ -1637,6 +1947,12 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
     desktop->context_menu_hover = -1;
     desktop->topbar_menu_open = -1;
     desktop->topbar_menu_hover = -1;
+    desktop->topbar_last_refresh_tick = 0;
+    desktop->logo_anim_last_tick = 0;
+    desktop->logo_hover_anim = 0;
+    desktop->modal_open = 0;
+    desktop->modal_title[0] = '\0';
+    desktop->modal_message[0] = '\0';
     desktop->launcher_count = 0;
     desktop->dragging_launcher = -1;
     desktop->launcher_drag_offset_x = 0;
@@ -1814,10 +2130,40 @@ static void apply_window_resize(struct desktop_state *desktop, int index, int mo
 void desktop_handle_input(struct desktop_state *desktop, const struct mouse_state *mouse, const struct keyboard_state *keyboard) {
     size_t i;
     int index;
+    int old_mouse_x = desktop->mouse_x;
+    int old_mouse_y = desktop->mouse_y;
 
     desktop->mouse_x = mouse->x;
     desktop->mouse_y = mouse->y;
     desktop->mouse_buttons = mouse->buttons;
+    if (mouse->left_pressed) {
+        journal_log_hex(JOURNAL_APP, 0, "desktop left press buttons=", mouse->buttons);
+    }
+    if (point_in_rect(mouse->x, mouse->y, 14, 8, 96, 36) ||
+        point_in_rect(old_mouse_x, old_mouse_y, 14, 8, 96, 36)) {
+        mark_background_dirty(desktop);
+        mark_dirty_rect(desktop, rect_from_bounds(0, 0, 116, 54));
+    }
+
+    if (desktop->modal_open) {
+        size_t ki;
+        int close_modal = 0;
+        struct rect r = desktop_modal_rect(desktop);
+        struct rect b = desktop_modal_button_rect(&r);
+        for (ki = 0; ki < keyboard->count; ++ki) {
+            if (keyboard->chars[ki] == 0x1b || keyboard->chars[ki] == '\n' || keyboard->chars[ki] == '\r') {
+                close_modal = 1;
+            }
+        }
+        if (mouse->left_pressed) {
+            close_modal = point_in_rect(mouse->x, mouse->y, b.x, b.y, b.width, b.height);
+        }
+        if (close_modal) {
+            desktop->modal_open = 0;
+            mark_dirty_rect(desktop, rect_from_bounds(r.x - 16, r.y - 16, r.width + 32, r.height + 32));
+        }
+        return;
+    }
 
     if (desktop->resizing_window >= 0 && (mouse->buttons & 0x01u) != 0u) {
         apply_window_resize(desktop, desktop->resizing_window, mouse->x, mouse->y);
@@ -1883,6 +2229,18 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
         }
     }
     if (mouse->left_pressed) {
+        if (point_in_rect(mouse->x, mouse->y, 14, 8, 96, 36)) {
+            int pid = process_spawn_path("/bin/sysinfo", 0, 0);
+            if (pid == -SYSCALL_ENOMEM) {
+                desktop_show_error(desktop, "Not Enough Memory",
+                                   "There is not enough memory or no free process slot available to start System Info.");
+            } else if (pid < 0) {
+                desktop_show_error(desktop, "System Info Missing",
+                                   "The /bin/sysinfo app could not be started.");
+            }
+            return;
+        }
+
         int tl = tb_label_at(desktop, mouse->x, mouse->y);
         if (tl >= 0) {
             int prev = desktop->topbar_menu_open;
@@ -1960,6 +2318,7 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
         }
 
         index = topmost_window_at(desktop, mouse->x, mouse->y);
+        journal_log_hex(JOURNAL_APP, 0, "mouse down hit window=", (uint64_t)(index < 0 ? 0xffffu : (uint32_t)index));
         if (index >= 0) {
             struct window_state *window = &desktop->windows[index];
             struct rect before = window_rect(window);
@@ -2027,7 +2386,14 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
                 mark_background_dirty(desktop);
                 mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, (int)desktop->screen_height));
             } else {
-                (void)process_spawn_path(desktop->launcher_execs[li], 0, 0);
+                int pid = process_spawn_path(desktop->launcher_execs[li], 0, 0);
+                if (pid == -SYSCALL_ENOMEM) {
+                    desktop_show_error(desktop, "Not Enough Memory",
+                                       "There is not enough memory or no free process slot available to start this app.");
+                } else if (pid < 0) {
+                    desktop_show_error(desktop, "App Could Not Start",
+                                       "The app could not be started. Check whether the file is still available.");
+                }
             }
         }
         desktop->dragging_launcher = -1;
@@ -2054,6 +2420,7 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
             app_enqueue_event_slot(desktop, s, WINSYS_EVENT_SCROLL, 0, mouse->wheel, 0, 0);
         }
         if (mouse->left_pressed) {
+            journal_log_hex(JOURNAL_APP, desktop->user_apps[s].pid, "mouse down enqueue window=", (uint64_t)(uint32_t)fw);
             app_enqueue_event_slot(desktop, s, WINSYS_EVENT_MOUSE_DOWN, mouse->x - ox, mouse->y - oy, 1, 0);
         }
         if (mouse->left_released) {
@@ -2100,6 +2467,29 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
 
 void desktop_poll_apps(struct desktop_state *desktop) {
 	size_t i;
+    uint64_t now = timer_tick_count();
+    int logo_hover = point_in_rect(desktop->mouse_x, desktop->mouse_y, 14, 8, 96, 36);
+
+    if (now != desktop->logo_anim_last_tick) {
+        uint8_t old_logo_anim = desktop->logo_hover_anim;
+        desktop->logo_anim_last_tick = now;
+        if (logo_hover) {
+            desktop->logo_hover_anim = desktop->logo_hover_anim > 231u ? 255u : (uint8_t)(desktop->logo_hover_anim + 24u);
+        } else {
+            desktop->logo_hover_anim = desktop->logo_hover_anim < 24u ? 0u : (uint8_t)(desktop->logo_hover_anim - 24u);
+        }
+
+        if (desktop->logo_hover_anim != old_logo_anim) {
+            mark_background_dirty(desktop);
+            mark_dirty_rect(desktop, rect_from_bounds(0, 0, 116, 54));
+        }
+    }
+
+    if (now - desktop->topbar_last_refresh_tick >= (TIMER_HZ / 4u)) {
+        desktop->topbar_last_refresh_tick = now;
+        mark_background_dirty(desktop);
+        mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
+    }
 
 	/* A kernel app whose owning process (e.g. the terminal's /bin/sh) has died
 	 * gets its window cleanly closed here. The app drops its session state and
@@ -2154,12 +2544,16 @@ void desktop_render(struct desktop_state *desktop, struct framebuffer *fb) {
     struct rect rect = rect_from_bounds(0, 0, (int)desktop->screen_width, (int)desktop->screen_height);
     fb_reset_clip(fb);
     compose_scene_rect(desktop, fb, &rect);
+    desktop_note_activity(rect.width * rect.height);
 }
 
 void desktop_render_rect(struct desktop_state *desktop, struct framebuffer *fb, const struct rect *rect) {
     fb_set_clip(fb, rect);
     compose_scene_rect(desktop, fb, rect);
     fb_reset_clip(fb);
+    if (!(rect->y == 0 && rect->height <= 54)) {
+        desktop_note_activity(rect->width * rect->height);
+    }
 }
 
 void desktop_draw_cursor_overlay(const struct desktop_state *desktop, struct framebuffer *fb) {
@@ -2211,6 +2605,7 @@ int desktop_app_create_ex(struct desktop_state *desktop, uint32_t pid, const str
     /* Reuse existing slot if this PID already has one; else find free slot. */
     slot = find_slot_by_pid(desktop, pid);
     if (slot < 0) slot = find_free_slot(desktop);
+    if (slot < 0) return -1;
     win_idx = WINDOW_APP_FIRST + slot;
     w = &desktop->windows[win_idx];
 
@@ -2328,6 +2723,7 @@ int desktop_app_present_rect(struct desktop_state *desktop, uint32_t pid, int wi
     /* If a full surface render is already pending, let it pick the content up;
      * a full present also goes the simple route (render whole surface). */
     if (full || desktop->window_dirty[win_idx]) {
+        desktop_note_activity(cw * ch);
         mark_window_dirty(desktop, win_idx);
         mark_dirty_rect(desktop, window_rect(&desktop->windows[win_idx]));
         return 0;
@@ -2350,6 +2746,7 @@ int desktop_app_present_rect(struct desktop_state *desktop, uint32_t pid, int wi
     }
     {
         struct window_state *wn = &desktop->windows[win_idx];
+        desktop_note_activity(dw * dh);
         mark_dirty_rect(desktop, rect_from_bounds(wn->x + cx + dx, wn->y + cy + dy, dw, dh));
     }
     return 0;

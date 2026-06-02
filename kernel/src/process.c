@@ -4,6 +4,7 @@
 #include "net.h"
 #include "paging.h"
 #include "process.h"
+#include "render.h"
 #include "serial.h"
 #include "syscall.h"
 #include "journal.h"
@@ -21,22 +22,99 @@ uint32_t kernel_current_resolution(void);
 uintptr_t g_kernel_resume_rsp;
 uint64_t g_kernel_resume_result;
 
+/* Fault register snapshot from pagefault_stub (interrupts.c). Indices:
+ * 0=rax 1=rbx 2=rcx 3=rdx 4=rsi 5=rdi 6=rbp 7=rip 8=user-rsp. */
+extern uint64_t g_fault_regs[16];
+
 static struct process g_processes[PROCESS_MAX_COUNT];
 static struct process *g_current_process;
 static uint32_t g_next_pid;
 static uint32_t g_scheduler_cursor;
 static uint8_t g_window_manager_requested;
+#define PROCESS_IMAGE_ALLOC_QUARANTINE_CAP 64u
+static void *g_image_alloc_quarantine[PROCESS_IMAGE_ALLOC_QUARANTINE_CAP];
+static uint32_t g_image_alloc_quarantine_count;
+
+static void desktop_show_resource_error(const char *detail) {
+    struct desktop_state *desktop = desktop_active();
+    if (desktop != 0) {
+        desktop_show_error(desktop, "Not Enough Memory",
+                           detail != 0 ? detail : "There is not enough memory available to start this app.");
+    }
+}
 static uint8_t g_user_stacks[PROCESS_MAX_COUNT][PROCESS_USER_STACK_SIZE] __attribute__((aligned(4096)));
 static uint64_t g_user_page_tables[PROCESS_MAX_COUNT][PROCESS_USER_PAGE_TABLE_COUNT][512] __attribute__((aligned(4096)));
 
+/* Per-process PRIVATE top-level paging tables (PML4 + PDP + low-1GB PD). Static
+ * kernel BSS, so they live below the user region and stay identity-accessible
+ * to the kernel under any CR3. Each process gets its own CR3 = &g_proc_pml4[slot];
+ * switching address space is a single load_cr3 instead of swapping shared PD
+ * entries — SMP-safe and free of cross-process mapping leaks. */
+static uint64_t g_proc_pml4[PROCESS_MAX_COUNT][512] __attribute__((aligned(4096)));
+static uint64_t g_proc_pdp[PROCESS_MAX_COUNT][512]  __attribute__((aligned(4096)));
+static uint64_t g_proc_pd0[PROCESS_MAX_COUNT][512]  __attribute__((aligned(4096)));
+
 /* Per-process ring-0 kernel stacks. Each process handles its syscalls/traps on
  * its own stack (TSS.rsp0 is repointed before the process runs) so a process
- * suspended mid-syscall keeps its kernel frames intact while others run. */
-#define PROCESS_KERNEL_STACK_SIZE 16384u
+ * suspended mid-syscall keeps its kernel frames intact while others run.
+ *
+ * 64KB (was 16KB): the deepest kernel call chain is a userspace network/TLS
+ * request — net_https_get -> BearSSL handshake -> TCP reassembly -> e1000 —
+ * which a 16KB stack could overflow into the ADJACENT slot, silently corrupting
+ * another process's saved context (the taskmgr<->browser "they kill each other"
+ * bug). The canary below catches any remaining overflow as a clean, logged
+ * process kill instead of cross-process corruption. */
+#define PROCESS_KERNEL_STACK_SIZE 65536u
 static uint8_t g_kernel_stacks[PROCESS_MAX_COUNT][PROCESS_KERNEL_STACK_SIZE] __attribute__((aligned(16)));
+
+static size_t align_up_page_size(size_t value) {
+    return (value + 0xfffu) & ~(size_t)0xfffu;
+}
+
+static uintptr_t align_up_page_uintptr(uintptr_t value) {
+    return (value + 0xfffu) & ~(uintptr_t)0xfffu;
+}
+
+static void process_free_heap_chunks(struct process *process);
+
+/* Magic written to the lowest 8 bytes of every kernel stack. The stack grows
+ * down toward this address, so an overflow clobbers the canary on its way into
+ * the previous slot — letting us detect it on the next context switch. */
+#define KSTACK_CANARY 0x4f56455242414421ull  /* "OVERBAD!" */
+#define KSTACK_POISON  0xABu                  /* fill for high-water measurement */
+static inline uint64_t *kstack_canary(uint32_t slot) {
+    return (uint64_t *)(void *)&g_kernel_stacks[slot][0];
+}
+static void kstack_canary_init(void) {
+    uint32_t i;
+    size_t j;
+    for (i = 0; i < PROCESS_MAX_COUNT; ++i) {
+        /* Poison the whole stack, then arm the canary at the lowest 8 bytes.
+         * Untouched bytes stay poisoned, so the deepest used point (high-water)
+         * is the lowest non-poison byte — see kstack_highwater(). */
+        for (j = 0; j < PROCESS_KERNEL_STACK_SIZE; ++j) {
+            g_kernel_stacks[i][j] = KSTACK_POISON;
+        }
+        *kstack_canary(i) = KSTACK_CANARY;
+    }
+}
+/* Peak kernel-stack bytes ever used by this slot (stack grows down from the
+ * top; poison below the deepest use is still intact). */
+static size_t kstack_highwater(uint32_t slot) {
+    size_t j;
+    for (j = 8u; j < PROCESS_KERNEL_STACK_SIZE; ++j) {
+        if (g_kernel_stacks[slot][j] != KSTACK_POISON) {
+            return PROCESS_KERNEL_STACK_SIZE - j;
+        }
+    }
+    return 0;
+}
+/* Defined below process_wake_waiter (forward declaration). */
+static int kstack_canary_check(void);
 
 static const struct fd_ops PROCESS_STDIO_FD_OPS;
 static const struct fd_ops PROCESS_VFS_FD_OPS;
+static void process_reap(struct process *process);
 
 static void process_wake_ready(uint64_t current_tick) {
     size_t i;
@@ -80,11 +158,12 @@ static uint8_t *align_ptr_4k(void *ptr) {
 static uintptr_t process_slot_base(uint32_t slot) {
     /* Every process is linked (non-PIE) at PROCESS_USER_BASE and therefore
      * must run at that same virtual address. Each slot keeps its own physical
-     * backing pages and its own page table; the kernel swaps the live page
-     * table in pd_table0 on every context switch (see
-     * paging_activate_user_table), so the slots never collide even though
-     * they share one virtual base. This is what lets more than one process
-     * (e.g. the desktop terminal's shell) address its globals correctly. */
+     * backing pages and its own PRIVATE page-table hierarchy (PML4/PDP/PD0);
+     * the scheduler loads that process's CR3 on every context switch (see
+     * paging_load_cr3 / paging_build_process_tables), so the slots never
+     * collide even though they share one virtual base. This is what lets more
+     * than one process (e.g. the desktop terminal's shell) address its globals
+     * correctly. */
     (void)slot;
     return PROCESS_USER_BASE;
 }
@@ -97,7 +176,11 @@ static int process_find_free_slot(void) {
     uint32_t slot;
 
     for (slot = 0; slot < PROCESS_MAX_COUNT; ++slot) {
-        if (!g_processes[slot].loaded || g_processes[slot].state == PROCESS_STATE_EXITED || g_processes[slot].state == PROCESS_STATE_EMPTY) {
+        if (!g_processes[slot].loaded || g_processes[slot].state == PROCESS_STATE_EMPTY) {
+            return (int)slot;
+        }
+        if (g_processes[slot].state == PROCESS_STATE_EXITED) {
+            process_reap(&g_processes[slot]);
             return (int)slot;
         }
     }
@@ -224,6 +307,22 @@ static void process_reap(struct process *process) {
         return;
     }
 
+    /* Report this tenant's peak kernel-stack usage before the slot is recycled
+     * — diagnostic for sizing PROCESS_KERNEL_STACK_SIZE (the deep path is the
+     * browser's network/TLS chain). */
+    if (process->loaded) {
+        uint32_t slot = (uint32_t)(process - &g_processes[0]);
+        if (slot < PROCESS_MAX_COUNT) {
+            uint64_t peak = (uint64_t)kstack_highwater(slot);
+            journal_log_hex(JOURNAL_INFO, process->pid, "kstack peak bytes=", peak);
+            serial_write("VIBEOS: kstack peak name=");
+            serial_write(process->name[0] ? process->name : "process");
+            serial_write(" bytes=");
+            serial_write_hex_u64(peak);
+            serial_write("\n");
+        }
+    }
+
     process->loaded = 0;
     process->state = PROCESS_STATE_EMPTY;
     process->pid = 0;
@@ -238,6 +337,7 @@ static void process_reap(struct process *process) {
      * frees them. Freeing here would pull the address space out from under the
      * still-running parent (and its other threads). */
     if (!process->is_thread && process->user_image_allocation != 0) {
+        process_free_heap_chunks(process);
         kfree(process->user_image_allocation);
     }
     process->is_thread = 0;
@@ -245,6 +345,10 @@ static void process_reap(struct process *process) {
     process->user_image_pages = 0;
     process->user_image_capacity = 0;
     process->user_page_tables = 0;
+    process->cr3 = 0;
+    process->heap_start = 0;
+    process->heap_break = 0;
+    process->heap_chunk_count = 0;
     process->runtime_ticks = 0;
     process->switch_count = 0;
     process->preempt_count = 0;
@@ -274,6 +378,184 @@ static void process_set_name(struct process *process, const char *name) {
         process->name[i] = name[i];
     }
     process->name[i] = '\0';
+}
+
+static int range_overlaps(uintptr_t a_start, size_t a_size, uintptr_t b_start, size_t b_size) {
+    uintptr_t a_end;
+    uintptr_t b_end;
+
+    if (a_size == 0 || b_size == 0) {
+        return 0;
+    }
+    a_end = a_start + a_size;
+    b_end = b_start + b_size;
+    if (a_end < a_start || b_end < b_start) {
+        return 1;
+    }
+    return a_start < b_end && b_start < a_end;
+}
+
+static int process_range_overlaps_live_image(uintptr_t start, size_t size, const struct process *skip, uint32_t *slot_out) {
+    uint32_t i;
+
+    for (i = 0; i < PROCESS_MAX_COUNT; ++i) {
+        const struct process *process = &g_processes[i];
+        if (process == skip || !process->loaded || process->is_thread ||
+            process->user_image_pages == 0 || process->user_image_capacity == 0) {
+            continue;
+        }
+        if (range_overlaps(start, size, (uintptr_t)process->user_image_pages, process->user_image_capacity)) {
+            if (slot_out != 0) {
+                *slot_out = i;
+            }
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void *process_kmalloc_no_image_overlap(size_t size, const struct process *skip, const char *tag) {
+    uint32_t attempt;
+
+    for (attempt = 0; attempt < 16u; ++attempt) {
+        void *ptr = kmalloc(size);
+        uint32_t slot = 0;
+
+        if (ptr == 0) {
+            return 0;
+        }
+        if (!process_range_overlaps_live_image((uintptr_t)ptr, size, skip, &slot)) {
+            return ptr;
+        }
+
+        serial_write("VIBEOS: kmalloc image-overlap guard tag=");
+        serial_write(tag != 0 ? tag : "?");
+        serial_write(" ptr=");
+        serial_write_hex_u64((uint64_t)(uintptr_t)ptr);
+        serial_write(" size=");
+        serial_write_hex_u64((uint64_t)size);
+        serial_write(" overlaps slot=");
+        serial_write_hex_u64(slot);
+        serial_write(" imgpages=");
+        serial_write_hex_u64((uint64_t)(uintptr_t)g_processes[slot].user_image_pages);
+        serial_write("\n");
+
+        if (g_image_alloc_quarantine_count >= PROCESS_IMAGE_ALLOC_QUARANTINE_CAP) {
+            return 0;
+        }
+        g_image_alloc_quarantine[g_image_alloc_quarantine_count++] = ptr;
+    }
+    return 0;
+}
+
+static struct process *process_address_space_owner(struct process *process) {
+    size_t i;
+
+    if (process == 0) {
+        return 0;
+    }
+    if (!process->is_thread) {
+        return process;
+    }
+    for (i = 0; i < PROCESS_MAX_COUNT; ++i) {
+        if (g_processes[i].loaded &&
+            !g_processes[i].is_thread &&
+            g_processes[i].user_page_tables == process->user_page_tables &&
+            g_processes[i].cr3 == process->cr3) {
+            return &g_processes[i];
+        }
+    }
+    return process;
+}
+
+static void process_free_heap_chunks(struct process *process) {
+    uint32_t i;
+
+    if (process == 0 || process->is_thread) {
+        return;
+    }
+    for (i = 0; i < process->heap_chunk_count; ++i) {
+        if (process->heap_chunks[i] != 0) {
+            kfree(process->heap_chunks[i]);
+            process->heap_chunks[i] = 0;
+        }
+    }
+    process->heap_chunk_count = 0;
+    process->heap_start = 0;
+    process->heap_break = 0;
+}
+
+static uint64_t process_sbrk(struct process *process, int64_t increment) {
+    struct process *owner = process_address_space_owner(process);
+    uintptr_t old_break;
+    uintptr_t new_break;
+    uintptr_t old_page_end;
+    uintptr_t new_page_end;
+    size_t map_size;
+    void *allocation;
+    uint8_t *pages;
+    size_t i;
+
+    if (owner == 0 || owner->user_page_tables == 0 || owner->heap_start == 0) {
+        return (uint64_t)(uintptr_t)-1;
+    }
+    old_break = owner->heap_break;
+    if (increment == 0) {
+        return (uint64_t)old_break;
+    }
+    if (increment < 0) {
+        return (uint64_t)(uintptr_t)-1;
+    }
+    if ((uintptr_t)increment > ~(uintptr_t)0 - old_break) {
+        return (uint64_t)(uintptr_t)-1;
+    }
+
+    new_break = old_break + (uintptr_t)increment;
+    if (new_break < old_break ||
+        new_break > owner->user_virtual_base + PROCESS_USER_IMAGE_SIZE) {
+        return (uint64_t)(uintptr_t)-1;
+    }
+
+    old_page_end = align_up_page_uintptr(old_break);
+    new_page_end = align_up_page_uintptr(new_break);
+    if (new_page_end == old_page_end) {
+        owner->heap_break = new_break;
+        return (uint64_t)old_break;
+    }
+
+    if (owner->heap_chunk_count >= PROCESS_HEAP_MAX_CHUNKS) {
+        return (uint64_t)(uintptr_t)-1;
+    }
+    map_size = (size_t)(new_page_end - old_page_end);
+    allocation = kmalloc(map_size + 0x1000u);
+    if (allocation == 0) {
+        return (uint64_t)(uintptr_t)-1;
+    }
+    pages = align_ptr_4k(allocation);
+    memory_zero(pages, map_size);
+
+    for (i = 0; i < map_size / 0x1000u; ++i) {
+        uintptr_t va = old_page_end + (i * 0x1000u);
+        size_t page = (size_t)((va - owner->user_virtual_base) / 0x1000u);
+        size_t table = page / 512u;
+        size_t entry = page % 512u;
+
+        if (table >= PROCESS_USER_PAGE_TABLE_COUNT) {
+            kfree(allocation);
+            return (uint64_t)(uintptr_t)-1;
+        }
+        owner->user_page_tables[(table * 512u) + entry] =
+            (uint64_t)(uintptr_t)(pages + (i * 0x1000u)) | 0x07u;
+    }
+
+    owner->heap_chunks[owner->heap_chunk_count++] = allocation;
+    owner->heap_break = new_break;
+    if (process != owner) {
+        process->heap_start = owner->heap_start;
+        process->heap_break = owner->heap_break;
+    }
+    paging_load_cr3(paging_read_cr3());
+    return (uint64_t)old_break;
 }
 
 static void process_copy_name_to_snapshot(struct process_snapshot *snapshot, const char *name) {
@@ -316,7 +598,54 @@ static void process_wake_waiter(struct process *child) {
     process_reap(child);
 }
 
+static int kstack_canary_check(void) {
+    uint32_t i;
+    int found = 0;
+    for (i = 0; i < PROCESS_MAX_COUNT; ++i) {
+        if (!g_processes[i].loaded) {
+            continue;
+        }
+        if (*kstack_canary(i) != KSTACK_CANARY) {
+            journal_log_hex(JOURNAL_FAULT, g_processes[i].pid,
+                            "KERNEL STACK OVERFLOW, killed; slot=", i);
+            serial_write("VIBEOS: KERNEL STACK OVERFLOW pid=");
+            serial_write_hex_u64(g_processes[i].pid);
+            serial_write(" name=");
+            serial_write(g_processes[i].name[0] ? g_processes[i].name : "process");
+            serial_write("\n");
+            *kstack_canary(i) = KSTACK_CANARY;   /* re-arm: report once */
+            if (g_processes[i].state != PROCESS_STATE_EXITED &&
+                g_processes[i].state != PROCESS_STATE_EMPTY) {
+                struct desktop_state *d = desktop_active();
+                if (d != 0) {
+                    desktop_app_close_for_pid(d, g_processes[i].pid);
+                }
+                g_processes[i].exit_code = -SYSCALL_EFAULT;
+                g_processes[i].state = PROCESS_STATE_EXITED;
+                process_wake_waiter(&g_processes[i]);
+                if (g_current_process == &g_processes[i]) {
+                    g_current_process = 0;
+                }
+            }
+            found = 1;
+        }
+    }
+    return found;
+}
+
 static void process_setup_context(struct process *process) {
+    /* Re-poison this slot's kernel stack so high-water measurement is per-tenant
+     * (and re-arm the overflow canary). The stack is not in use yet. */
+    {
+        uint32_t slot = (uint32_t)(process - &g_processes[0]);
+        if (slot < PROCESS_MAX_COUNT) {
+            size_t j;
+            for (j = 0; j < PROCESS_KERNEL_STACK_SIZE; ++j) {
+                g_kernel_stacks[slot][j] = KSTACK_POISON;
+            }
+            *kstack_canary(slot) = KSTACK_CANARY;
+        }
+    }
     /* A freshly set-up process is never mid-syscall: clear any stale parked
      * kernel stack left over from a previous tenant of this slot. */
     process->kresume_rsp = 0;
@@ -565,13 +894,15 @@ static int process_load_image_slot(struct process *process, uint32_t slot, const
     }
 
     image_capacity = align_up_size(image_capacity, 0x1000u);
-    if (process->user_image_allocation != 0) {
+    if (!process->is_thread && process->user_image_allocation != 0) {
+        process_free_heap_chunks(process);
         kfree(process->user_image_allocation);
-        process->user_image_allocation = 0;
-        process->user_image_pages = 0;
-        process->user_image_capacity = 0;
     }
-    image_allocation = kmalloc(image_capacity + 0x1000u);
+    process->is_thread = 0;
+    process->user_image_allocation = 0;
+    process->user_image_pages = 0;
+    process->user_image_capacity = 0;
+    image_allocation = process_kmalloc_no_image_overlap(image_capacity + 0x1000u, process, "user_image");
     if (image_allocation == 0) {
         serial_write("VIBEOS:   -> Out of heap for user image\n");
         return 0;
@@ -597,6 +928,10 @@ static int process_load_image_slot(struct process *process, uint32_t slot, const
 
     serial_write("VIBEOS:   Mapping process memory...\n");
     paging_map_user_process(slot_base, stack_top, (uintptr_t)image_pages, image_capacity, (uintptr_t)g_user_stacks[slot], PROCESS_USER_STACK_SIZE, &g_user_page_tables[slot][0][0], PROCESS_USER_PAGE_TABLE_COUNT);
+    /* Build this process's private PML4/PDP/PD0 around those user tables; the
+     * resulting CR3 is loaded by the scheduler on every switch. */
+    process->cr3 = paging_build_process_tables(&g_proc_pml4[slot][0], &g_proc_pdp[slot][0],
+        &g_proc_pd0[slot][0], slot_base, &g_user_page_tables[slot][0][0], PROCESS_USER_PAGE_TABLE_COUNT);
     serial_write("VIBEOS:   Memory mapping complete\n");
 
     process->pid = ++g_next_pid;
@@ -610,6 +945,12 @@ static int process_load_image_slot(struct process *process, uint32_t slot, const
     process->user_image_capacity = image_capacity;
     process->user_page_tables = &g_user_page_tables[slot][0][0];
     process->code_size = image_capacity;
+    process->heap_start = slot_base + image_capacity;
+    process->heap_break = process->heap_start;
+    for (i = 0; i < PROCESS_HEAP_MAX_CHUNKS; ++i) {
+        process->heap_chunks[i] = 0;
+    }
+    process->heap_chunk_count = 0;
     process->loaded = 1;
     process->state = PROCESS_STATE_READY;
     process->exit_code = 0;
@@ -642,6 +983,16 @@ static int process_load_image_slot(struct process *process, uint32_t slot, const
     process->syscalls.fd_table = &process->fd_table;
 
     process_setup_context(process);
+
+    /* Diagnostic (persisted to /journal.log on the next fault): record who got
+     * which slot/cr3 and from which parent, so a cross-app crash report shows
+     * the full process layout that led up to it. */
+    journal_log(JOURNAL_INFO, process->pid, process_name ? process_name : "process");
+    journal_log_hex(JOURNAL_INFO, process->pid, "  spawn slot=", slot);
+    journal_log_hex(JOURNAL_INFO, process->pid, "  spawn cr3=", process->cr3);
+    journal_log_hex(JOURNAL_INFO, process->pid, "  spawn parent=", parent_pid);
+    journal_log_hex(JOURNAL_INFO, process->pid, "  img=", (uint64_t)(uintptr_t)image_pages);
+    journal_log_hex(JOURNAL_INFO, process->pid, "  imgcap=", (uint64_t)image_capacity);
     return 1;
 }
 
@@ -686,6 +1037,11 @@ void process_init(void) {
         g_processes[i].user_image_pages = 0;
         g_processes[i].user_image_capacity = 0;
         g_processes[i].user_page_tables = 0;
+        g_processes[i].cr3 = 0;
+        g_processes[i].heap_start = 0;
+        g_processes[i].heap_break = 0;
+        memory_zero((uint8_t *)(void *)g_processes[i].heap_chunks, sizeof(g_processes[i].heap_chunks));
+        g_processes[i].heap_chunk_count = 0;
         g_processes[i].code_size = 0;
         g_processes[i].loaded = 0;
         g_processes[i].state = PROCESS_STATE_EMPTY;
@@ -708,6 +1064,7 @@ void process_init(void) {
         g_processes[i].spawn_arg[0] = '\0';
         g_processes[i].name[0] = '\0';
     }
+    kstack_canary_init();
 }
 
 static int process_try_blocking_tty_read(struct process *process, struct interrupt_frame *frame) {
@@ -808,7 +1165,7 @@ int process_spawn_path(const char *path, const struct fd_ops *stdio_ops, void *s
     if (file != 0) {
         int slot = process_find_free_slot();
         if (slot < 0) {
-            return -SYSCALL_EINVAL;
+            return -SYSCALL_ENOMEM;
         }
         if (!process_load_image_slot(&g_processes[slot], (uint32_t)slot, file->data, (size_t)(file->end - file->data), 0, stdio_ops, stdio_object, 0, path)) {
             return -SYSCALL_EINVAL;
@@ -832,7 +1189,7 @@ int process_spawn_path(const char *path, const struct fd_ops *stdio_ops, void *s
 
         if (ext2_stat(fs, ino, &inode) < 0) return -SYSCALL_EIO;
 
-        buf = (uint8_t *)kmalloc(inode.size);
+        buf = (uint8_t *)process_kmalloc_no_image_overlap(inode.size, 0, "spawn_path_elf");
         if (buf == 0) return -SYSCALL_ENOMEM;
 
         n = ext2_read(fs, ino, 0, inode.size, buf);
@@ -842,7 +1199,7 @@ int process_spawn_path(const char *path, const struct fd_ops *stdio_ops, void *s
             int slot = process_find_free_slot();
             if (slot < 0) {
                 kfree(buf);
-                return -SYSCALL_EINVAL;
+                return -SYSCALL_ENOMEM;
             }
             result = process_load_image_slot(&g_processes[slot], (uint32_t)slot, buf, (size_t)n, 0, stdio_ops, stdio_object, 0, path)
                 ? (int)g_processes[slot].pid
@@ -874,18 +1231,23 @@ static int process_create_thread(struct process *parent, uintptr_t entry,
 
     slot = process_find_free_slot();
     if (slot < 0) {
-        return -SYSCALL_EINVAL;   /* out of process/thread slots */
+        return -SYSCALL_ENOMEM;   /* out of process/thread slots */
     }
     thread = &g_processes[slot];
 
     /* Share the parent's address space: same page tables, same virtual base,
      * same image allocation (borrowed — see is_thread handling in reap). */
     thread->user_page_tables       = parent->user_page_tables;
+    thread->cr3                    = parent->cr3;   /* same address space */
     thread->user_virtual_base      = parent->user_virtual_base;
     thread->user_image_allocation  = parent->user_image_allocation;
     thread->user_image_pages       = parent->user_image_pages;
     thread->user_image_capacity    = parent->user_image_capacity;
     thread->code_size              = parent->code_size;
+    thread->heap_start             = parent->heap_start;
+    thread->heap_break             = parent->heap_break;
+    memory_zero((uint8_t *)(void *)thread->heap_chunks, sizeof(thread->heap_chunks));
+    thread->heap_chunk_count       = 0;
     thread->is_thread              = 1;
 
     /* Independent execution context: entry point, caller-provided stack, arg. */
@@ -927,7 +1289,55 @@ static int process_create_thread(struct process *parent, uintptr_t entry,
     process_copy_fd_table(&thread->fd_table, &parent->fd_table);
     process_set_name(thread, parent->name);
 
+    /* Diagnostic: a thread shares its parent's address space (cr3) but has its
+     * own slot + kernel stack. Logged so a crash report shows the thread layout
+     * (the browser's fetch worker is the only threaded app). */
+    journal_log_hex(JOURNAL_INFO, thread->pid, "thread spawn slot=", (uint64_t)slot);
+    journal_log_hex(JOURNAL_INFO, thread->pid, "  thread parent=", (uint64_t)parent->pid);
+    journal_log_hex(JOURNAL_INFO, thread->pid, "  thread cr3=", thread->cr3);
+
     return (int)thread->pid;
+}
+
+/*TMP-DETECT: checksum the top 256 bytes of every loaded process's user stack
+ * (read via the kernel identity map to g_user_stacks[slot]). Used to bracket a
+ * spawn and find which slot's live stack gets corrupted and by which step. */
+static uint64_t proc_image_sum(uint32_t slot) {
+    const struct process *p = &g_processes[slot];
+    const uint64_t *m = (const uint64_t *)(void *)p->user_image_pages;
+    uint64_t s = 0; size_t i, n;
+    if (m == 0 || p->user_image_capacity == 0) return 0;
+    n = p->user_image_capacity / 8u;
+    /* Sample every 64th word to keep it cheap but catch any overwrite. */
+    for (i = 0; i < n; i += 64) s = s * 1099511628211ull + m[i];
+    return s ? s : 1;
+}
+static void usum_snapshot(uint64_t *out) {
+    uint32_t i;
+    for (i = 0; i < PROCESS_MAX_COUNT; ++i)
+        out[i] = (g_processes[i].loaded && !g_processes[i].is_thread) ? proc_image_sum(i) : 0;
+}
+static void usum_check(const uint64_t *before, uint32_t skip_slot, const char *stage) {
+    uint32_t i;
+    for (i = 0; i < PROCESS_MAX_COUNT; ++i) {
+        if (i == skip_slot) continue;
+        if (g_processes[i].loaded && !g_processes[i].is_thread &&
+            before[i] != 0 && before[i] != proc_image_sum(i)) {
+            serial_write("VIBEOS: IMAGE CORRUPTED slot=");
+            serial_write_hex_u64(i);
+            serial_write(" pid=");
+            serial_write_hex_u64(g_processes[i].pid);
+            serial_write(" imgpages=");
+            serial_write_hex_u64((uint64_t)(uintptr_t)g_processes[i].user_image_pages);
+            serial_write(" during ");
+            serial_write(stage);
+            serial_write("\n");
+            journal_log_hex(JOURNAL_FAULT, g_processes[i].pid, "IMAGE corrupted slot=", i);
+            journal_log(JOURNAL_FAULT, g_processes[i].pid, stage);
+            journal_log_hex(JOURNAL_FAULT, g_processes[i].pid, "  imgpages=",
+                            (uint64_t)(uintptr_t)g_processes[i].user_image_pages);
+        }
+    }
 }
 
 static int process_spawn_named_from_parent(struct process *parent, const char *name) {
@@ -940,14 +1350,16 @@ static int process_spawn_named_from_parent(struct process *parent, const char *n
 
     slot = process_find_free_slot();
     if (slot < 0) {
-        return -SYSCALL_EINVAL;
+        return -SYSCALL_ENOMEM;
     }
 
     program = vfs_lookup(name);
     if (program != 0) {
+        uint64_t snap[PROCESS_MAX_COUNT]; usum_snapshot(snap);
         if (!process_load_image_slot(&g_processes[slot], (uint32_t)slot, program->data, (size_t)(program->end - program->data), &parent->fd_table, 0, 0, parent->pid, name)) {
             return -SYSCALL_EINVAL;
         }
+        usum_check(snap, (uint32_t)slot, "load_image(vfs)");
         return (int)g_processes[slot].pid;
     }
 
@@ -967,13 +1379,19 @@ static int process_spawn_named_from_parent(struct process *parent, const char *n
 
         if (ext2_stat(fs, ino, &inode) < 0) return -SYSCALL_EIO;
 
-        buf = (uint8_t *)kmalloc(inode.size);
+        uint64_t snap[PROCESS_MAX_COUNT]; usum_snapshot(snap);
+        buf = (uint8_t *)process_kmalloc_no_image_overlap(inode.size, 0, "spawn_named_elf");
         if (buf == 0) return -SYSCALL_ENOMEM;
+        usum_check(snap, (uint32_t)slot, "kmalloc(image)");
 
+        usum_snapshot(snap);
         n = ext2_read(fs, ino, 0, inode.size, buf);
         if (n <= 0) { kfree(buf); return -SYSCALL_EIO; }
+        usum_check(snap, (uint32_t)slot, "ext2_read");
 
+        usum_snapshot(snap);
         ok = process_load_image_slot(&g_processes[slot], (uint32_t)slot, buf, (size_t)n, &parent->fd_table, 0, 0, parent->pid, name);
+        usum_check(snap, (uint32_t)slot, "load_image(ext2)");
         kfree(buf);
         if (!ok) return -SYSCALL_EINVAL;
         return (int)g_processes[slot].pid;
@@ -1098,9 +1516,14 @@ static inline void fpu_save(void *area) { __asm__ volatile("fxsave (%0)" :: "r"(
 static inline void fpu_restore(const void *area) { __asm__ volatile("fxrstor (%0)" :: "r"(area) : "memory"); }
 
 int process_run_ready_slice(void) {
-    struct process *process = process_pick_next_ready();
+    struct process *process;
     int result;
 
+    /* Detect any kernel-stack overflow from the slice that just ran before we
+     * schedule again — the offender is marked EXITED so it is not picked. */
+    kstack_canary_check();
+
+    process = process_pick_next_ready();
     if (process == 0) {
         return PROCESS_RUN_NONE;
     }
@@ -1108,7 +1531,7 @@ int process_run_ready_slice(void) {
     g_current_process = process;
     process->state = PROCESS_STATE_RUNNING;
     ++process->switch_count;
-    paging_activate_user_table(process->user_virtual_base, process->user_page_tables, PROCESS_USER_PAGE_TABLE_COUNT);
+    paging_load_cr3(process->cr3);   /* activate this process's private address space */
 
     /* Traps from this process land on its own kernel stack. */
     interrupt_set_kernel_stack(process->kernel_stack_top);
@@ -1201,10 +1624,35 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             return 0;
         }
 
+        journal_log(JOURNAL_APP, process->pid, name);
         child_pid = process_spawn_named_from_parent(process, name);
+        if (child_pid == -SYSCALL_ENOMEM) {
+            desktop_show_resource_error("There is not enough memory or no free process slot available to start this app.");
+        } else if (child_pid < 0) {
+            struct desktop_state *d = desktop_active();
+            if (d != 0) {
+                /* Build "reason: path" so the path is visible on screen. */
+                static char diag[80];
+                const char *tag =
+                    (child_pid == -SYSCALL_ENOENT) ? "ENOENT: " :
+                    (child_pid == -SYSCALL_EIO)    ? "EIO: "    :
+                    (child_pid == -SYSCALL_EINVAL) ? "EINVAL: " : "ERR: ";
+                size_t ti = 0, ni = 0;
+                while (tag[ti] && ti + 1 < sizeof(diag)) { diag[ti] = tag[ti]; ti++; }
+                while (name[ni] && ti + ni + 1 < sizeof(diag)) { diag[ti + ni] = name[ni]; ni++; }
+                diag[ti + ni] = '\0';
+                desktop_show_error(d, "App Could Not Start", diag);
+            }
+        }
 
-        /* Optional: pass spawn_arg via rsi */
-        if (child_pid > 0 && frame->rsi != 0) {
+        /* Optional: pass spawn_arg via rsi. vos_spawn() (the single-arg form)
+         * uses __sc1, which historically left rsi holding an uninitialised
+         * caller value — a non-zero garbage pointer that must NOT be treated as
+         * an arg string (reading it would feed the child a bogus spawn_arg, the
+         * dock-vs-desktop launch divergence). Only honour rsi when it points
+         * into the caller's own user address window. */
+        if (child_pid > 0 && frame->rsi >= PROCESS_USER_BASE &&
+            frame->rsi < (uint64_t)PROCESS_USER_BASE + PROCESS_USER_REGION_BYTES) {
             struct process *child = process_find_by_pid((uint32_t)child_pid);
             if (child != 0) {
                 size_t k;
@@ -1224,6 +1672,9 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         /* rdi = entry fn (user ptr), rsi = stack top (user ptr), rdx = arg. */
         int tid = process_create_thread(process, (uintptr_t)frame->rdi,
                                         (uintptr_t)frame->rsi, frame->rdx);
+        if (tid == -SYSCALL_ENOMEM) {
+            desktop_show_resource_error("There is not enough memory or no free thread slot available.");
+        }
         frame->rax = (uint64_t)(int64_t)tid;
         return 0;
     }
@@ -1309,15 +1760,9 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
     }
 
     if (number == SYS_TIMER_SLEEP) {
-        uint64_t sleep_ticks = frame->rdi;
-
-        process->context = *frame;
-        process->context.rax = 0;
-        process->wake_tick = timer_tick_count() + (sleep_ticks == 0 ? 1u : sleep_ticks);
-        process->state = PROCESS_STATE_SLEEPING;
-        g_kernel_resume_result = PROCESS_RUN_YIELDED;
-        g_current_process = 0;
-        return 1;
+        (void)frame->rdi;
+        frame->rax = 0;
+        return 0;
     }
 
     if (number == SYS_WINDOWMGR_START) {
@@ -1359,6 +1804,67 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         return 0;
     }
 
+    if (number == SYS_SYSTEM_INFO) {
+        struct system_info_snapshot *out = (struct system_info_snapshot *)(uintptr_t)frame->rdi;
+        if (out == 0) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+            return 0;
+        }
+        out->uptime_ticks = timer_tick_count();
+        out->timer_hz = timer_frequency_hz();
+        out->process_count = process_loaded_count();
+        out->process_max = PROCESS_MAX_COUNT;
+        out->app_window_max = MAX_USER_APPS;
+        out->heap_used_bytes = kmalloc_get_used();
+        out->heap_total_bytes = kmalloc_get_total();
+        process_write_user_string(out->version, sizeof(out->version), "2.0");
+        process_write_user_string(out->build, sizeof(out->build), __DATE__ " " __TIME__);
+        frame->rax = 0;
+        return 0;
+    }
+
+    if (number == SYS_SBRK) {
+        frame->rax = process_sbrk(process, (int64_t)frame->rdi);
+        return 0;
+    }
+
+    if (number == SYS_TEXT_DRAW) {
+        /* rdi = ARGB buf, rsi = text, rdx = (buf_w<<16)|buf_h,
+         * r10 = ((x&0xffff)<<16)|(y&0xffff), r8 = color, r9 = scale.
+         * The app's address space is active, so buf is written directly. */
+        uint32_t *buf = (uint32_t *)(uintptr_t)frame->rdi;
+        char text[256];
+        int buf_w = (int)((frame->rdx >> 16) & 0xffffu);
+        int buf_h = (int)(frame->rdx & 0xffffu);
+        int x = (int)(int16_t)((frame->r10 >> 16) & 0xffffu);
+        int y = (int)(int16_t)(frame->r10 & 0xffffu);
+        if (buf == 0 ||
+            !process_copy_user_string(text, sizeof(text), (const char *)(uintptr_t)frame->rsi)) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+            return 0;
+        }
+        frame->rax = (uint64_t)(int64_t)draw_text_to_argb(buf, buf_w, buf_h, x, y,
+            text, (uint32_t)frame->r8, (int)frame->r9);
+        return 0;
+    }
+
+    if (number == SYS_TEXT_METRICS) {
+        /* rdi = text (or 0), rsi = scale. text != 0 -> proportional width;
+         * text == 0 -> packed font metrics. */
+        const char *user_text = (const char *)(uintptr_t)frame->rdi;
+        int scale = (int)frame->rsi;
+        if (user_text == 0) {
+            frame->rax = (uint64_t)font_metrics_packed(scale);
+        } else {
+            char text[256];
+            if (!process_copy_user_string(text, sizeof(text), user_text)) {
+                text[0] = '\0';
+            }
+            frame->rax = (uint64_t)(int64_t)text_width(text, scale);
+        }
+        return 0;
+    }
+
     if (number == SYS_WINDOW_CREATE) {
         /* rdi = title, rsi = width, rdx = height. Returns window id or <0. */
         struct desktop_state *d = desktop_active();
@@ -1370,7 +1876,13 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         if (!process_copy_user_string(title, sizeof(title), (const char *)(uintptr_t)frame->rdi)) {
             title[0] = '\0';
         }
-        frame->rax = (uint64_t)(int64_t)desktop_app_create(d, process->pid, title, (int)frame->rsi, (int)frame->rdx);
+        {
+            int result = desktop_app_create(d, process->pid, title, (int)frame->rsi, (int)frame->rdx);
+            if (result < 0) {
+                desktop_show_resource_error("There is no free window slot available. Close an app and try again.");
+            }
+            frame->rax = (uint64_t)(int64_t)result;
+        }
         return 0;
     }
 
@@ -1393,7 +1905,13 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             title[0] = '\0';
         }
         options.title = title;
-        frame->rax = (uint64_t)(int64_t)desktop_app_create_ex(d, process->pid, &options);
+        {
+            int result = desktop_app_create_ex(d, process->pid, &options);
+            if (result < 0) {
+                desktop_show_resource_error("There is no free window slot available. Close an app and try again.");
+            }
+            frame->rax = (uint64_t)(int64_t)result;
+        }
         return 0;
     }
 
@@ -1417,15 +1935,6 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             (const uint32_t *)(uintptr_t)frame->rsi, (int)frame->rdx, (int)frame->r10,
             dx, dy, dw, dh);
         frame->rax = (uint64_t)(int64_t)present_result;
-        if (present_result == 0) {
-            process->context = *frame;
-            process->context.rax = 0;
-            process->wake_tick = timer_tick_count() + 1u;
-            process->state = PROCESS_STATE_SLEEPING;
-            g_kernel_resume_result = PROCESS_RUN_YIELDED;
-            g_current_process = 0;
-            return 1;
-        }
         return 0;
     }
 
@@ -1887,10 +2396,12 @@ int process_get_snapshot(uint32_t slot, struct process_snapshot *snapshot) {
     snapshot->loaded = process->loaded;
     process_copy_name_to_snapshot(snapshot, process->name);
 
-    /* Physical RAM footprint: the allocated ELF image (code+data+BSS, which
-     * includes the userspace umalloc heap) plus the 1 MB user stack and the
-     * 16 KB kernel stack. */
+    /* Physical RAM footprint: loaded ELF image, demand-grown heap backing, the
+     * 1 MB user stack and the per-slot kernel stack. */
     snapshot->mem_bytes = (uint64_t)process->user_image_capacity
+                        + (uint64_t)(process->heap_break >= process->heap_start
+                            ? align_up_page_size((size_t)(process->heap_break - process->heap_start))
+                            : 0)
                         + (uint64_t)PROCESS_USER_STACK_SIZE
                         + (uint64_t)PROCESS_KERNEL_STACK_SIZE;
 
@@ -1944,6 +2455,18 @@ int process_handle_user_fault(uint64_t vector, uint64_t rip, uint64_t cr2, uint6
         return 0;
     }
 
+    /* First: was any process's kernel stack overflowed? A victim of a neighbour's
+     * overflow faults with a corrupted context — checking here names the real
+     * culprit. Also report this faulter's own kernel-stack peak. */
+    kstack_canary_check();
+    {
+        uint32_t slot = (uint32_t)(process - &g_processes[0]);
+        if (slot < PROCESS_MAX_COUNT) {
+            journal_log_hex(JOURNAL_FAULT, process->pid, "  kstack peak bytes=",
+                            (uint64_t)kstack_highwater(slot));
+        }
+    }
+
     serial_write("VIBEOS: terminating user process pid=");
     serial_write_hex_u64(process->pid);
     serial_write(" name=");
@@ -1966,8 +2489,42 @@ int process_handle_user_fault(uint64_t vector, uint64_t rip, uint64_t cr2, uint6
 
     process->exit_code = -SYSCALL_EFAULT;
     process->state = PROCESS_STATE_EXITED;
+    journal_log(JOURNAL_FAULT, process->pid, process->name[0] ? process->name : "process");
     journal_log_hex(JOURNAL_FAULT, process->pid, "user fault, killed; rip=", rip);
     journal_log_hex(JOURNAL_FAULT, process->pid, "  cr2=", cr2);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  err=", error_code);
+    /* Full register snapshot at the fault (g_fault_regs from pagefault_stub):
+     * compare the saved context vs. what actually ran to localize where a
+     * register/stack pointer got corrupted. */
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  rbx=", g_fault_regs[1]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  rbp=", g_fault_regs[6]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  rsp=", g_fault_regs[8]);
+    /* What the scheduler last RESTORED into this process's context before it
+     * ran — if these already differ from a sane value, the kernel corrupted the
+     * saved context; if they were sane, the corruption happened in user space. */
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  ctx.rbx=", process->context.rbx);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  ctx.rsp=", process->context.rsp);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  ctx.rip=", process->context.rip);
+    /* Dump the words at the top of this process's user stack. The faulting
+     * process's CR3 is still live here, so a guarded read is safe. This reveals
+     * the CORRUPTING BYTES that smashed the return address (e.g. ASCII = a
+     * string overran, 0xAB = kstack poison, page-table-like = a stray PT write,
+     * zeros = a memory_zero overran). */
+    {
+        uint64_t sp = process->context.rsp;
+        if (sp >= 0x21f00000ull && sp + 0x20ull <= 0x22000000ull) {
+            const uint64_t *s = (const uint64_t *)(uintptr_t)sp;
+            journal_log_hex(JOURNAL_FAULT, process->pid, "  [rsp+0]=", s[0]);
+            journal_log_hex(JOURNAL_FAULT, process->pid, "  [rsp+8]=", s[1]);
+            journal_log_hex(JOURNAL_FAULT, process->pid, "  [rsp+16]=", s[2]);
+            journal_log_hex(JOURNAL_FAULT, process->pid, "  [rsp+24]=", s[3]);
+        }
+    }
+    /* Address-space sanity: if the live CR3 differs from this process's own
+     * cr3, the scheduler ran it under the WRONG page tables — a cross-process
+     * corruption smoking gun. Both values are logged so we can compare. */
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  cr3 expected=", process->cr3);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  cr3 actual=", paging_read_cr3());
     process_wake_waiter(process);
     g_kernel_resume_result = PROCESS_RUN_EXITED;
     g_current_process = 0;
@@ -2038,11 +2595,15 @@ void process_wake_tty_reader(struct tty *tty) {
     serial_write("\n");
 
     /* pending_read_buffer is a user virtual address in this process's own
-     * address space. Make that space live before writing the line into it,
-     * otherwise the data would land in whichever process is currently mapped. */
-    paging_activate_user_table(process->user_virtual_base, process->user_page_tables, PROCESS_USER_PAGE_TABLE_COUNT);
-
-    read_result = fd_read(&process->fd_table, process->pending_read_fd, process->pending_read_buffer, process->pending_read_count);
+     * address space. Switch to its CR3 before writing the line into it,
+     * otherwise the data would land in whichever process is currently mapped.
+     * Save/restore the prior CR3 so the caller's context is undisturbed. */
+    {
+        uintptr_t prev_cr3 = paging_read_cr3();
+        paging_load_cr3(process->cr3);
+        read_result = fd_read(&process->fd_table, process->pending_read_fd, process->pending_read_buffer, process->pending_read_count);
+        paging_load_cr3(prev_cr3);
+    }
     process->pending_read_fd = -1;
     process->pending_read_buffer = 0;
     process->pending_read_count = 0;

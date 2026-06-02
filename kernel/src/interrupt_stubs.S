@@ -191,6 +191,13 @@ pagefault_stub:
     mov [rip + g_fault_regs + 32], rsi
     mov [rip + g_fault_regs + 40], rdi
     mov [rip + g_fault_regs + 48], rbp
+    /* Also snapshot the interrupted RIP and user RSP from the CPU-pushed
+     * exception frame so the journal shows a fully consistent fault state
+     * (index 7 = rip, 8 = user rsp). rax is already saved, so reuse it. */
+    mov rax, [rsp + 8]                  /* faulting RIP  */
+    mov [rip + g_fault_regs + 56], rax
+    mov rax, [rsp + 32]                 /* interrupted RSP */
+    mov [rip + g_fault_regs + 64], rax
     mov rsi, [rsp]      /* error code */
     mov rdx, [rsp + 8]  /* faulting RIP */
     mov r8, [rsp + 16]  /* CS */

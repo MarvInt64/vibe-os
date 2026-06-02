@@ -830,3 +830,34 @@ int text_width(const char *text, int scale) {
     }
     return w;
 }
+
+/* Render a string into a caller-supplied 32-bit ARGB buffer (no pitch padding)
+ * using the shared atlas — this is what userspace apps reach through
+ * SYS_TEXT_DRAW so vexui widgets get the same anti-aliased glyphs as the chrome.
+ * Out-of-bounds pixels are clipped by fb_put_pixel. Returns the advance width. */
+int draw_text_to_argb(uint32_t *buf, int buf_w, int buf_h, int x, int y,
+                      const char *text, uint32_t color, int scale) {
+    struct framebuffer fb;
+    if (buf == 0 || buf_w <= 0 || buf_h <= 0) {
+        return 0;
+    }
+    fb.base = buf;
+    fb.width = (uint32_t)buf_w;
+    fb.height = (uint32_t)buf_h;
+    fb.pitch = (uint32_t)buf_w * 4u;
+    fb.bpp = 32;
+    fb.clip_enabled = 0;
+    fb.clip_x = fb.clip_y = fb.clip_width = fb.clip_height = 0;
+    draw_text(&fb, x, y, text, color, scale);
+    return text_width(text, scale);
+}
+
+/* Packed atlas metrics for a size: lineh | ascent<<8 | cellw<<16 | space<<24.
+ * Each field fits in a byte (max glyph box is well under 256px). */
+uint32_t font_metrics_packed(int scale) {
+    int i = atlas_idx(scale);
+    return (uint32_t)FONT_ATLAS_LINEH[i]
+         | ((uint32_t)FONT_ATLAS_ASCENT[i] << 8)
+         | ((uint32_t)FONT_ATLAS_CELLW[i] << 16)
+         | ((uint32_t)FONT_ATLAS_SPACE[i] << 24);
+}

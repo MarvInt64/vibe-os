@@ -21,6 +21,9 @@ void net_init(void);
  * ICMP echo replies/requests). Called from the kernel main loop. */
 void net_poll(void);
 
+/* Diagnostic: verify the TLS I/O buffer guard words are intact (net_tls.c). */
+void net_tls_check_guard(void);
+
 /* Serialize access to the single TCP/DNS connection across processes. A waiter
  * yields the CPU (desktop + other processes keep running) until the lock is
  * free. Wrap a whole request (resolve / http / https / ping) in a matching

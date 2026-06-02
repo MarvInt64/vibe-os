@@ -59,6 +59,7 @@ endif
 # "max" exposes RDRAND under TCG; the default qemu64 CPU does not, and the TLS
 # layer needs it for entropy (otherwise it falls back to an insecure seed).
 QEMU_CPU ?= max
+QEMU_MEM ?= 512M
 
 CFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -mno-mmx -mno-sse -mno-sse2 -fno-vectorize -fno-slp-vectorize -fno-builtin -Wall -Wextra -Wpedantic -std=c11 -Ikernel/include -Ithird_party/bearssl/inc -MMD -MP
 KCXXFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -mno-mmx -mno-sse -mno-sse2 -fno-vectorize -fno-slp-vectorize -fno-builtin -Wall -Wextra -Wpedantic -std=c++20 -fno-exceptions -fno-rtti -Ikernel/include -MMD -MP
@@ -138,6 +139,11 @@ apps: $(DISK_IMG) $(LIBC_A)
 		build/user/taskmgr_task_manager.o build/user/vexui.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/taskmgr.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/taskmgr.elf /bin/taskmgr
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/sysinfo/sysinfo.cpp -o build/user/sysinfo.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/sysinfo.elf \
+		$(LIBC_CRT0) build/user/sysinfo.o build/user/vexui.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/sysinfo.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/sysinfo.elf /bin/sysinfo
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/dock/dock.cpp -o build/user/dock.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/dock.elf \
 		$(LIBC_CRT0) build/user/dock.o build/user/vexui.o $(LIBC_A)
@@ -205,19 +211,19 @@ kernel: user $(OUT_DIR)/vibeos.elf
 iso: $(OUT_DIR)/vibeos.iso
 
 run: $(OUT_DIR)/vibeos.iso $(DISK_IMG)
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m 256M -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_DISK)
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_DISK)
 
 run-disk: $(OUT_DIR)/vibeos.elf
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m 256M -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) -drive file=$(OUT_DIR)/disk.img,format=raw,index=0,media=disk
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) -drive file=$(OUT_DIR)/disk.img,format=raw,index=0,media=disk
 
 run-disk-serial: $(OUT_DIR)/vibeos.elf
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m 256M -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) -hda $(OUT_DIR)/disk.img -serial stdio -monitor none
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) -hda $(OUT_DIR)/disk.img -serial stdio -monitor none
 
 run-debug: $(OUT_DIR)/vibeos.iso $(DISK_IMG)
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m 256M -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_DISK) -no-shutdown
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_DISK) -no-shutdown
 
 run-serial: $(OUT_DIR)/vibeos.iso $(DISK_IMG)
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m 256M -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_DISK) -serial stdio -monitor none
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_DISK) -serial stdio -monitor none
 
 clean:
 	rm -rf $(OUT_DIR)

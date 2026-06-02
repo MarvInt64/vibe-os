@@ -1,5 +1,6 @@
 #include "input.h"
 #include "io.h"
+#include "journal.h"
 #include "serial.h"
 
 static int g_mouse_x;
@@ -13,6 +14,8 @@ static uint8_t g_ctrl_down;
 static uint8_t g_extended_code;
 static uint32_t g_screen_width;
 static uint32_t g_screen_height;
+static uint8_t g_raw_diag_bytes;
+static uint8_t g_mouse_diag_packets;
 
 static void keyboard_push_char(struct keyboard_state *keyboard, char c) {
     if (keyboard->count < (sizeof(keyboard->chars) / sizeof(keyboard->chars[0]))) {
@@ -178,6 +181,8 @@ void input_init(uint32_t screen_width, uint32_t screen_height) {
     g_mouse_buttons = 0;
     g_mouse_cycle = 0;
     g_mouse_wheel = 0;
+    g_raw_diag_bytes = 0;
+    g_mouse_diag_packets = 0;
     g_shift_down = 0;
     g_ctrl_down = 0;
     g_extended_code = 0;
@@ -201,7 +206,7 @@ void input_init(uint32_t screen_width, uint32_t screen_height) {
 
     ps2_write_mouse(0xF6);   /* set defaults */
     ps2_ack_mouse();
-    mouse_enable_wheel();    /* try to switch into 4-byte wheel mode */
+    mouse_enable_wheel();    /* runs magic-knock + reads device-ID byte from buffer */
     ps2_write_mouse(0xF4);   /* enable data reporting */
     ps2_ack_mouse();
 }
@@ -227,6 +232,12 @@ void input_poll(struct mouse_state *mouse, struct keyboard_state *keyboard) {
         uint8_t status = inb(0x64);
         uint8_t value = inb(0x60);
 
+        if ((status & 0x20u) != 0u && g_raw_diag_bytes < 12u) {
+            journal_log_hex(JOURNAL_APP, 0, "input raw status=", status);
+            journal_log_hex(JOURNAL_APP, 0, "input raw value=", value);
+            ++g_raw_diag_bytes;
+        }
+
         if ((status & 0x20u) != 0u) {
             if (g_mouse_cycle == 0 && (value & 0x08u) == 0u) {
                 continue;
@@ -245,6 +256,10 @@ void input_poll(struct mouse_state *mouse, struct keyboard_state *keyboard) {
                 }
 
                 g_mouse_cycle = 0;
+                if (g_mouse_diag_packets < 8u) {
+                    journal_log_hex(JOURNAL_APP, 0, "input mouse pkt0=", g_mouse_packet[0]);
+                    ++g_mouse_diag_packets;
+                }
                 g_mouse_x += dx;
                 g_mouse_y -= dy;
                 mouse->wheel += dz;
@@ -257,6 +272,12 @@ void input_poll(struct mouse_state *mouse, struct keyboard_state *keyboard) {
                 mouse->left_released = mouse->left_released || (((buttons & 0x01u) == 0u) && ((g_mouse_buttons & 0x01u) != 0u));
                 mouse->right_pressed = mouse->right_pressed || (((buttons & 0x02u) != 0u) && ((g_mouse_buttons & 0x02u) == 0u));
                 mouse->right_released = mouse->right_released || (((buttons & 0x02u) == 0u) && ((g_mouse_buttons & 0x02u) != 0u));
+                if (mouse->left_pressed) {
+                    journal_log_hex(JOURNAL_APP, 0, "input left press pkt=", g_mouse_packet[0]);
+                }
+                if (mouse->left_released) {
+                    journal_log_hex(JOURNAL_APP, 0, "input left release pkt=", g_mouse_packet[0]);
+                }
                 g_mouse_buttons = buttons;
                 mouse->buttons = g_mouse_buttons;
                 mouse->x = g_mouse_x;

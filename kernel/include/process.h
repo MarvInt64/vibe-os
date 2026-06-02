@@ -9,10 +9,10 @@
 struct tty;
 
 /* Max concurrent processes/threads. Threads share their parent's address space
- * but still occupy a slot here, so this also bounds total threads. 8 leaves
- * room for sh + a couple of GUI apps + each app's worker threads. Each slot
+ * but still occupy a slot here, so this also bounds total threads. 48 leaves
+ * room for sh + dock + several GUI apps + browser worker threads. Each slot
  * costs ~1.1 MB (1 MB user stack + 16 KB kernel stack + page tables). */
-#define PROCESS_MAX_COUNT 8
+#define PROCESS_MAX_COUNT 48
 #define PROCESS_USER_BASE 0x20000000u
 #define PROCESS_USER_TEMPLATE_BASE PROCESS_USER_BASE
 #define PROCESS_USER_REGION_BYTES 0x02000000u
@@ -85,6 +85,21 @@ struct process {
     uint8_t *user_image_pages;
     size_t user_image_capacity;
     uint64_t *user_page_tables;
+    /* CR3 (physical PML4 address) for this process's PRIVATE address space.
+     * The scheduler loads it on every switch; threads borrow the parent's. */
+    uintptr_t cr3;
+    /* Demand-grown heap (SYS_SBRK). heap_start = first heap virtual address
+     * (just above the loaded image); heap_break = current top of mapped heap.
+     * Pages between them are backed by per-process physical chunks. Threads
+     * share the owner's heap (they share the address space). */
+    uintptr_t heap_start;
+    uintptr_t heap_break;
+    /* Physical backing for the demand-grown heap: each SYS_SBRK growth kmallocs
+     * a chunk and records it here so it can be freed when the process exits.
+     * Only the address-space owner (not threads) owns/frees these. */
+#define PROCESS_HEAP_MAX_CHUNKS 32
+    void *heap_chunks[PROCESS_HEAP_MAX_CHUNKS];
+    uint32_t heap_chunk_count;
     uint8_t loaded;
     uint8_t state;
     int32_t exit_code;

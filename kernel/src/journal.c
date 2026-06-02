@@ -5,10 +5,13 @@
 
 static struct journal_entry g_ring[JOURNAL_CAPACITY];
 static uint64_t g_next_seq;     /* seq of the next record to write */
+static uint64_t g_boot_id;
 static int g_persist_pending;   /* a WARN/ERROR/FAULT needs flushing to disk */
 
 void journal_init(void) {
+    uintptr_t stack_sample = (uintptr_t)&stack_sample;
     g_next_seq = 0;
+    g_boot_id = 0x564942454f530000ull ^ stack_sample ^ timer_tick_count();
     g_persist_pending = 0;
 }
 
@@ -39,6 +42,8 @@ void journal_log(enum journal_level level, uint32_t pid, const char *msg) {
 
     e->seq = g_next_seq;
     e->tick = timer_tick_count();
+    e->boot_id = g_boot_id;
+    e->hz = timer_frequency_hz();
     e->level = (uint32_t)level;
     e->pid = pid;
     copy_msg(e->msg, msg);
@@ -55,6 +60,12 @@ void journal_log(enum journal_level level, uint32_t pid, const char *msg) {
 
     /* Mirror to serial for host-side debugging. */
     serial_write("[");
+    serial_write_hex_u64(g_boot_id);
+    serial_write(" #");
+    serial_write_hex_u64(e->seq);
+    serial_write(" t=");
+    serial_write_hex_u64(e->tick);
+    serial_write(" ");
     serial_write(level_tag(level));
     serial_write(" pid=");
     serial_write_hex_u64(pid);
@@ -107,6 +118,25 @@ static size_t put_str(char *b, size_t pos, size_t cap, const char *s) {
     while (s && *s && pos + 1 < cap) b[pos++] = *s++;
     return pos;
 }
+static size_t put_hex(char *b, size_t pos, size_t cap, uint64_t v) {
+    const char *hex = "0123456789abcdef";
+    char tmp[16];
+    int n = 0;
+    if (pos + 2 < cap) {
+        b[pos++] = '0';
+        b[pos++] = 'x';
+    }
+    if (v == 0) {
+        if (pos + 1 < cap) b[pos++] = '0';
+        return pos;
+    }
+    while (v && n < 16) {
+        tmp[n++] = hex[v & 0xfu];
+        v >>= 4;
+    }
+    while (n && pos + 1 < cap) b[pos++] = tmp[--n];
+    return pos;
+}
 
 size_t journal_format_all(char *buf, size_t cap) {
     static const char *tags[] = {"INFO ", "WARN ", "ERROR", "FAULT", "APP  "};
@@ -114,11 +144,33 @@ size_t journal_format_all(char *buf, size_t cap) {
     uint64_t s;
     size_t pos = 0;
 
+    pos = put_str(buf, pos, cap, "# VibeOS journal boot=");
+    pos = put_hex(buf, pos, cap, g_boot_id);
+    pos = put_str(buf, pos, cap, " hz=");
+    pos = put_dec(buf, pos, cap, timer_frequency_hz());
+    pos = put_str(buf, pos, cap, " total=");
+    pos = put_dec(buf, pos, cap, g_next_seq);
+    pos = put_str(buf, pos, cap, "\n");
+
     for (s = start; s < g_next_seq && pos + 1 < cap; ++s) {
         struct journal_entry *e = &g_ring[s % JOURNAL_CAPACITY];
-        pos = put_str(buf, pos, cap, "[");
+        uint32_t hz = e->hz ? e->hz : timer_frequency_hz();
+        pos = put_str(buf, pos, cap, "[boot=");
+        pos = put_hex(buf, pos, cap, e->boot_id);
+        pos = put_str(buf, pos, cap, " seq=");
+        pos = put_dec(buf, pos, cap, e->seq);
+        pos = put_str(buf, pos, cap, " tick=");
         pos = put_dec(buf, pos, cap, e->tick);
-        pos = put_str(buf, pos, cap, "] ");
+        pos = put_str(buf, pos, cap, " t=");
+        pos = put_dec(buf, pos, cap, hz ? e->tick / hz : e->tick);
+        pos = put_str(buf, pos, cap, ".");
+        {
+            uint64_t ms = hz ? ((e->tick % hz) * 1000u) / hz : 0;
+            if (ms < 100) pos = put_str(buf, pos, cap, "0");
+            if (ms < 10) pos = put_str(buf, pos, cap, "0");
+            pos = put_dec(buf, pos, cap, ms);
+        }
+        pos = put_str(buf, pos, cap, "s] ");
         pos = put_str(buf, pos, cap, e->level < 5 ? tags[e->level] : "?????");
         pos = put_str(buf, pos, cap, " pid=");
         pos = put_dec(buf, pos, cap, e->pid);

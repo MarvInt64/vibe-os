@@ -14,19 +14,66 @@ static const DockEntry kEntries[] = {
     {"Tasks", 2, 0x0076e0b5u, "/bin/taskmgr"},
     {"Demo", 3, 0x00f4c36bu, "/bin/uidemo"},
     {"C++", 4, 0x008f7bf0u, "/bin/cpptest"},
+    {"Info", 2, 0x00a8c7ffu, "/bin/sysinfo"},
 };
+
+static void append_str(char *buf, int *pos, int cap, const char *s) {
+    while (s && *s && *pos + 1 < cap) {
+        buf[(*pos)++] = *s++;
+    }
+    buf[*pos] = '\0';
+}
+
+static void append_int(char *buf, int *pos, int cap, int value) {
+    char tmp[16];
+    unsigned int n;
+    int len = 0;
+    if (value < 0) {
+        append_str(buf, pos, cap, "-");
+        n = (unsigned int)(-value);
+    } else {
+        n = (unsigned int)value;
+    }
+    if (n == 0) {
+        append_str(buf, pos, cap, "0");
+        return;
+    }
+    while (n && len < (int)sizeof(tmp)) {
+        tmp[len++] = (char)('0' + (n % 10u));
+        n /= 10u;
+    }
+    while (len > 0 && *pos + 1 < cap) {
+        buf[(*pos)++] = tmp[--len];
+    }
+    buf[*pos] = '\0';
+}
 
 static void launch_app(vui_widget *self) {
     const char *path = (const char *)vui_get_user(self);
-    if (path) vos_spawn(path);
+    if (path) {
+        char msg[96];
+        int pos = 0;
+        int pid;
+        append_str(msg, &pos, sizeof(msg), "dock launch ");
+        append_str(msg, &pos, sizeof(msg), path);
+        vos_log(VOS_LOG_APP, msg);
+
+        pid = vos_spawn(path);
+        pos = 0;
+        append_str(msg, &pos, sizeof(msg), "dock launch result ");
+        append_str(msg, &pos, sizeof(msg), path);
+        append_str(msg, &pos, sizeof(msg), " pid=");
+        append_int(msg, &pos, sizeof(msg), pid);
+        vos_log(VOS_LOG_APP, msg);
+    }
 }
 
 int main() {
     uint32_t mode = (uint32_t)__sc2(SYS_DISPLAY_MODE, 0, 0);
     int screen_w = (int)((mode >> 16) & 0xffffu);
     int screen_h = (int)(mode & 0xffffu);
-    int width = 372;
-    int height = 92;
+    int width = 464;
+    int height = 52;
     int x;
     int y;
 
@@ -34,8 +81,10 @@ int main() {
     if (screen_h <= 0) screen_h = 768;
     if (width > screen_w - 24) width = screen_w - 24;
     x = (screen_w - width) / 2;
-    y = screen_h - height - 22;
+    y = screen_h - height - 18;
     if (y < 0) y = 0;
+
+    vos_log(VOS_LOG_APP, "dock ready");
 
     vui_window *win = vui_window_open_ex(
         "Dock", width, height,
@@ -46,11 +95,11 @@ int main() {
     vui_set_clear_color(win, VUI_COLOR_TRANSPARENT);
 
     vui_widget *surface = vui_pill(win, 0, 0, width, height);
-    vui_set_color(surface, 0x00263a54u);   /* dock glass bar (medium slate, per reference) */
+    vui_set_color(surface, 0x00263a54u);
 
-    vui_widget *row = vui_hbox(win, 30, 18, width - 60, height - 36);
-    vui_set_gap(row, 24);
-    vui_set_padding(row, 2);
+    vui_widget *row = vui_hbox(win, 26, 4, width - 52, height - 8);
+    vui_set_gap(row, 22);
+    vui_set_padding(row, 0);
 
     for (unsigned i = 0; i < sizeof(kEntries) / sizeof(kEntries[0]); ++i) {
         vui_widget *button = vui_tile_button(win, 0, 0, "");

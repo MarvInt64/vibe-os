@@ -1,0 +1,706 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VibeOS Web Emulator</title>
+  <meta name="description" content="Boot VibeOS in a browser-based x86 emulator.">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101114;
+      --panel: #191b20;
+      --panel-2: #22252b;
+      --text: #f2f5f1;
+      --muted: #aab0aa;
+      --line: #333943;
+      --accent: #6ee7a8;
+      --accent-2: #55b7ff;
+      --warn: #ffca6a;
+      --danger: #ff7b8a;
+      --shadow: 0 20px 60px rgba(0, 0, 0, 0.34);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      min-height: 100%;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--accent-2);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .shell {
+      min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      background: rgba(16, 17, 20, 0.94);
+      backdrop-filter: blur(14px);
+      position: sticky;
+      top: 0;
+      z-index: 4;
+    }
+
+    .topbar {
+      max-width: 1360px;
+      margin: 0 auto;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      justify-content: space-between;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      color: #06120c;
+      background: linear-gradient(135deg, var(--accent), #e7f98a);
+      font-weight: 900;
+      flex: 0 0 auto;
+    }
+
+    h1 {
+      font-size: 18px;
+      line-height: 1.2;
+      margin: 0;
+      font-weight: 760;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    button,
+    .file-button {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      color: var(--text);
+      padding: 0 13px;
+      font: inherit;
+      font-size: 14px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: transform 120ms ease, border-color 120ms ease, background 120ms ease;
+    }
+
+    button:hover,
+    .file-button:hover {
+      border-color: #556070;
+      background: #292d35;
+    }
+
+    button:active,
+    .file-button:active {
+      transform: translateY(1px);
+    }
+
+    button:disabled {
+      opacity: 0.48;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .primary {
+      background: var(--accent);
+      color: #06120c;
+      border-color: transparent;
+      font-weight: 760;
+    }
+
+    .primary:hover {
+      background: #7df2b4;
+      border-color: transparent;
+    }
+
+    .danger {
+      color: var(--danger);
+    }
+
+    input[type="file"] {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      clip: rect(0 0 0 0);
+      overflow: hidden;
+    }
+
+    main {
+      width: min(1360px, 100%);
+      margin: 0 auto;
+      padding: 18px 20px 24px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      gap: 18px;
+    }
+
+    .emulator {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .screen-frame {
+      background: #060708;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      min-height: 420px;
+      aspect-ratio: 16 / 10;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      position: relative;
+    }
+
+    #screen_container {
+      width: 100%;
+      height: 100%;
+      display: grid;
+      place-items: center;
+      background: #050607;
+    }
+
+    #screen_container > div {
+      white-space: pre;
+      font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      line-height: 14px;
+      color: #cfe8cf;
+    }
+
+    #screen_container canvas {
+      max-width: 100%;
+      max-height: 100%;
+      image-rendering: pixelated;
+    }
+
+    .empty-state {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      background:
+        linear-gradient(rgba(5, 6, 7, 0.50), rgba(5, 6, 7, 0.80)),
+        url("screen1.jpg") center / cover;
+      text-align: center;
+    }
+
+    .empty-state.hidden {
+      display: none;
+    }
+
+    .empty-box {
+      max-width: 560px;
+      padding: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 8px;
+      background: rgba(10, 12, 15, 0.74);
+      backdrop-filter: blur(10px);
+    }
+
+    .empty-box strong {
+      display: block;
+      font-size: 20px;
+      margin-bottom: 8px;
+    }
+
+    .empty-box span {
+      display: block;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .statusbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      min-height: 28px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 28px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 0 10px;
+      background: var(--panel);
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+
+    .dot.ok {
+      background: var(--accent);
+    }
+
+    .dot.warn {
+      background: var(--warn);
+    }
+
+    .dot.fail {
+      background: var(--danger);
+    }
+
+    aside {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      overflow: hidden;
+    }
+
+    .panel h2 {
+      font-size: 14px;
+      margin: 0;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .panel-body {
+      padding: 14px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 90px minmax(0, 1fr);
+      gap: 8px;
+      font-size: 13px;
+      align-items: start;
+    }
+
+    .kv span:first-child {
+      color: var(--muted);
+    }
+
+    .kv code {
+      overflow-wrap: anywhere;
+      font-size: 12px;
+      color: #d9e5dd;
+    }
+
+    .notice {
+      border-left: 3px solid var(--warn);
+      padding: 10px 12px;
+      background: rgba(255, 202, 106, 0.08);
+      color: #f1dfbd;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .serial {
+      height: 220px;
+      overflow: auto;
+      white-space: pre-wrap;
+      border: 1px solid var(--line);
+      background: #08090b;
+      border-radius: 8px;
+      padding: 10px;
+      color: #c8f5d6;
+      font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    @media (max-width: 980px) {
+      main {
+        grid-template-columns: 1fr;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .actions {
+        justify-content: flex-start;
+      }
+
+      .screen-frame {
+        min-height: 300px;
+      }
+    }
+
+    @media (max-width: 560px) {
+      main,
+      .topbar {
+        padding-left: 12px;
+        padding-right: 12px;
+      }
+
+      .actions,
+      button,
+      .file-button {
+        width: 100%;
+      }
+
+      .statusbar {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      .kv {
+        grid-template-columns: 1fr;
+        gap: 2px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div class="topbar">
+        <div class="brand">
+          <div class="mark" aria-hidden="true">V</div>
+          <div>
+            <h1>VibeOS Web Emulator</h1>
+            <div class="subtitle">Bootable GitHub Pages front end for the VibeOS image</div>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="primary" id="bootButton" type="button">Boot</button>
+          <button id="pauseButton" type="button" disabled>Pause</button>
+          <button id="resetButton" type="button" disabled>Reset</button>
+          <button id="fullscreenButton" type="button" disabled>Fullscreen</button>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="emulator" aria-label="VibeOS emulator">
+        <div class="screen-frame">
+          <div id="screen_container">
+            <div></div>
+            <canvas style="display: none"></canvas>
+          </div>
+          <div class="empty-state" id="emptyState">
+            <div class="empty-box">
+              <strong>VibeOS</strong>
+              <span id="emptyText">Checking for boot media...</span>
+            </div>
+          </div>
+        </div>
+        <div class="statusbar">
+          <span class="pill"><span class="dot warn" id="statusDot"></span><span id="statusText">Preparing</span></span>
+          <span id="runtimeText">No emulator running</span>
+        </div>
+      </section>
+
+      <aside>
+        <section class="panel">
+          <h2>Boot Media</h2>
+          <div class="panel-body">
+            <div class="kv"><span>ISO</span><code id="isoPath">assets/vibeos.iso</code></div>
+            <div class="kv"><span>Disk</span><code id="diskPath">assets/vibeos-disk.img</code></div>
+            <label class="file-button" for="isoFile">Select ISO</label>
+            <input id="isoFile" type="file" accept=".iso,application/x-iso9660-image">
+            <label class="file-button" for="diskFile">Select Disk Image</label>
+            <input id="diskFile" type="file" accept=".img,.bin,application/octet-stream">
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Compatibility</h2>
+          <div class="panel-body">
+            <div class="notice">
+              VibeOS enters x86_64 long mode. v86 is wired here because it is the practical static GitHub Pages emulator, but its public compatibility notes say 64-bit kernels are not supported.
+            </div>
+            <div class="kv"><span>Emulator</span><code>v86 via jsDelivr</code></div>
+            <div class="kv"><span>Memory</span><code>256 MiB RAM, 16 MiB VGA</code></div>
+            <div class="kv"><span>Override</span><code>?iso=https://...&amp;disk=https://...</code></div>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>Serial</h2>
+          <div class="panel-body">
+            <pre class="serial" id="serialLog" aria-live="polite"></pre>
+          </div>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/v86@0.5.359/build/libv86.js"></script>
+  <script>
+    "use strict";
+
+    const V86_BASE = "https://cdn.jsdelivr.net/npm/v86@0.5.359/build/";
+    const params = new URLSearchParams(window.location.search);
+    const defaultIsoUrl = params.get("iso") || "assets/vibeos.iso";
+    const defaultDiskUrl = params.get("disk") || "assets/vibeos-disk.img";
+
+    const bootButton = document.getElementById("bootButton");
+    const pauseButton = document.getElementById("pauseButton");
+    const resetButton = document.getElementById("resetButton");
+    const fullscreenButton = document.getElementById("fullscreenButton");
+    const statusDot = document.getElementById("statusDot");
+    const statusText = document.getElementById("statusText");
+    const runtimeText = document.getElementById("runtimeText");
+    const emptyState = document.getElementById("emptyState");
+    const emptyText = document.getElementById("emptyText");
+    const isoPath = document.getElementById("isoPath");
+    const diskPath = document.getElementById("diskPath");
+    const isoFile = document.getElementById("isoFile");
+    const diskFile = document.getElementById("diskFile");
+    const serialLog = document.getElementById("serialLog");
+
+    let emulator = null;
+    let paused = false;
+    let bootStartedAt = 0;
+    let runtimeTimer = 0;
+    let selectedIsoBuffer = null;
+    let selectedDiskBuffer = null;
+    let isoAvailable = false;
+    let diskAvailable = false;
+
+    isoPath.textContent = defaultIsoUrl;
+    diskPath.textContent = defaultDiskUrl;
+
+    function setStatus(kind, text) {
+      statusDot.className = "dot " + kind;
+      statusText.textContent = text;
+    }
+
+    function logSerial(text) {
+      serialLog.textContent += text;
+      serialLog.scrollTop = serialLog.scrollHeight;
+    }
+
+    async function urlExists(url) {
+      if (/^https?:\/\//i.test(url) && !url.startsWith(window.location.origin)) {
+        return true;
+      }
+
+      try {
+        const response = await fetch(url, { method: "HEAD", cache: "no-store" });
+        return response.ok;
+      } catch (_) {
+        return false;
+      }
+    }
+
+    function updateRuntime() {
+      if (!bootStartedAt || paused) {
+        return;
+      }
+
+      const seconds = Math.floor((Date.now() - bootStartedAt) / 1000);
+      const minutes = Math.floor(seconds / 60);
+      const rest = String(seconds % 60).padStart(2, "0");
+      runtimeText.textContent = `Running ${minutes}:${rest}`;
+    }
+
+    function mediaConfig() {
+      const config = {
+        cdrom: selectedIsoBuffer ? { buffer: selectedIsoBuffer } : { url: defaultIsoUrl },
+      };
+
+      if (selectedDiskBuffer) {
+        config.hda = { buffer: selectedDiskBuffer };
+      } else if (diskAvailable) {
+        config.hda = { url: defaultDiskUrl, async: true };
+      }
+
+      return config;
+    }
+
+    async function boot() {
+      if (emulator) {
+        return;
+      }
+
+      if (!selectedIsoBuffer && !isoAvailable) {
+        setStatus("fail", "ISO missing");
+        emptyText.textContent = "Place build/vibeos.iso at docs/assets/vibeos.iso or select an ISO.";
+        return;
+      }
+
+      if (typeof V86 === "undefined") {
+        setStatus("fail", "v86 failed to load");
+        emptyText.textContent = "The emulator library could not be loaded from jsDelivr.";
+        return;
+      }
+
+      serialLog.textContent = "";
+      emptyState.classList.add("hidden");
+      setStatus("ok", "Booting");
+      runtimeText.textContent = "Starting emulator";
+      bootButton.disabled = true;
+      pauseButton.disabled = false;
+      resetButton.disabled = false;
+      fullscreenButton.disabled = false;
+
+      const media = mediaConfig();
+      emulator = new V86({
+        wasm_path: V86_BASE + "v86.wasm",
+        memory_size: 256 * 1024 * 1024,
+        vga_memory_size: 16 * 1024 * 1024,
+        screen_container: document.getElementById("screen_container"),
+        bios: { url: V86_BASE + "seabios.bin" },
+        vga_bios: { url: V86_BASE + "vgabios.bin" },
+        autostart: true,
+        ...media,
+      });
+
+      emulator.add_listener("emulator-ready", () => {
+        bootStartedAt = Date.now();
+        setStatus("ok", "Running");
+        runtimeTimer = window.setInterval(updateRuntime, 1000);
+      });
+
+      emulator.add_listener("serial0-output-byte", (byte) => {
+        logSerial(String.fromCharCode(byte));
+      });
+    }
+
+    function pauseOrRun() {
+      if (!emulator) {
+        return;
+      }
+
+      if (paused) {
+        emulator.run();
+        paused = false;
+        pauseButton.textContent = "Pause";
+        setStatus("ok", "Running");
+      } else {
+        emulator.stop();
+        paused = true;
+        pauseButton.textContent = "Resume";
+        setStatus("warn", "Paused");
+        runtimeText.textContent = "Paused";
+      }
+    }
+
+    function reset() {
+      if (!emulator) {
+        return;
+      }
+
+      emulator.restart();
+      bootStartedAt = Date.now();
+      paused = false;
+      pauseButton.textContent = "Pause";
+      setStatus("ok", "Running");
+    }
+
+    function fullscreen() {
+      if (emulator) {
+        emulator.screen_go_fullscreen();
+      }
+    }
+
+    isoFile.addEventListener("change", async () => {
+      const file = isoFile.files[0];
+      if (!file) {
+        return;
+      }
+
+      selectedIsoBuffer = await file.arrayBuffer();
+      isoPath.textContent = file.name;
+      isoAvailable = true;
+      setStatus("ok", "ISO selected");
+      emptyText.textContent = "Ready to boot with the selected ISO.";
+    });
+
+    diskFile.addEventListener("change", async () => {
+      const file = diskFile.files[0];
+      if (!file) {
+        return;
+      }
+
+      selectedDiskBuffer = await file.arrayBuffer();
+      diskPath.textContent = file.name;
+      diskAvailable = true;
+      setStatus("ok", "Disk selected");
+    });
+
+    bootButton.addEventListener("click", boot);
+    pauseButton.addEventListener("click", pauseOrRun);
+    resetButton.addEventListener("click", reset);
+    fullscreenButton.addEventListener("click", fullscreen);
+
+    window.addEventListener("load", async () => {
+      const checks = await Promise.all([urlExists(defaultIsoUrl), urlExists(defaultDiskUrl)]);
+      isoAvailable = checks[0];
+      diskAvailable = checks[1];
+
+      if (isoAvailable) {
+        setStatus("ok", "Ready");
+        emptyText.textContent = diskAvailable
+          ? "Ready to boot with ISO and persistent disk image."
+          : "Ready to boot from ISO. Persistent disk image not found.";
+      } else {
+        setStatus("fail", "ISO missing");
+        emptyText.textContent = "Place build/vibeos.iso at docs/assets/vibeos.iso or select an ISO.";
+      }
+    });
+  </script>
+</body>
+</html>

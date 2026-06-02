@@ -7,7 +7,7 @@
 #include "winsys.h"
 
 /* Number of concurrent userspace app windows supported. */
-#define MAX_USER_APPS 4
+#define MAX_USER_APPS 16
 
 enum window_id {
     WINDOW_INFO = 0,
@@ -138,6 +138,13 @@ struct desktop_state {
     /* Global top-bar menu (Page/Edit/View/…). -1 = none open. */
     int topbar_menu_open;
     int topbar_menu_hover;
+    uint64_t topbar_last_refresh_tick;
+    uint64_t logo_anim_last_tick;
+    uint8_t logo_hover_anim;
+
+    uint8_t modal_open;
+    char modal_title[48];
+    char modal_message[160];
 
     /* User desktop launchers loaded from .desktop files in /home/user/Desktop.
      * Each launcher is a small text file with Name= and Exec= keys. */
@@ -164,6 +171,8 @@ void desktop_render_rect(struct desktop_state *desktop, struct framebuffer *fb, 
 void desktop_draw_cursor_overlay(const struct desktop_state *desktop, struct framebuffer *fb);
 void desktop_cursor_rect_at(const struct desktop_state *desktop, int x, int y, struct rect *rect);
 int desktop_take_dirty_rect(struct desktop_state *desktop, struct rect *rect);
+void desktop_show_error(struct desktop_state *desktop, const char *title, const char *message);
+uint64_t desktop_activity_units(void);
 
 /* ---- Window server: called by the syscall layer for userspace GUI apps ---- */
 

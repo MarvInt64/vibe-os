@@ -116,16 +116,57 @@ void paging_map_user_process(uintptr_t user_virtual_base, uintptr_t user_stack_t
     pdp_table[0] |= 0x04u;
 }
 
-void paging_activate_user_table(uintptr_t user_virtual_base, uint64_t *page_tables, size_t page_table_count) {
-    uint64_t pd_index = (user_virtual_base >> 21) & 0x1ffu;
+uintptr_t paging_build_process_tables(uint64_t *pml4, uint64_t *pdp, uint64_t *pd0,
+                                      uintptr_t user_virtual_base,
+                                      uint64_t *user_page_tables, size_t page_table_count) {
+    uint64_t pd_index = (user_virtual_base >> 21) & 0x1ffu;   /* 0x20000000 -> 256 */
     size_t i;
 
-    if (page_tables == 0) {
-        return;
+    if (pml4 == 0 || pdp == 0 || pd0 == 0 || user_page_tables == 0) {
+        return 0;
     }
 
-    for (i = 0; i < page_table_count; ++i) {
-        pd_table0[pd_index + i] = ((uint64_t)(uintptr_t)&page_tables[i * 512u]) | 0x07u;
+    /* Private low-1GB PD: start as a copy of the boot identity directory (2MB
+     * huge pages, kernel-only) so the kernel image/heap below the user region
+     * stay mapped, then splice the user region's own 4KB tables over it. */
+    for (i = 0; i < 512u; ++i) {
+        pd0[i] = pd_table0[i];
     }
-    flush_tlb();
+    for (i = 0; i < page_table_count; ++i) {
+        pd0[pd_index + i] = ((uint64_t)(uintptr_t)&user_page_tables[i * 512u]) | 0x07u;
+    }
+
+    /* PDP: private PD for 0..1GB (user bit so ring 3 can reach the user slice —
+     * the kernel huge pages keep their own no-user flag, so only the user
+     * region is actually reachable from user mode), shared kernel PDs for the
+     * upper 3GB (these hold the kernel heap and the remapped framebuffer). */
+    pdp[0] = ((uint64_t)(uintptr_t)pd0) | 0x07u;
+    pdp[1] = ((uint64_t)(uintptr_t)pd_table1) | 0x03u;
+    pdp[2] = ((uint64_t)(uintptr_t)pd_table2) | 0x03u;
+    pdp[3] = ((uint64_t)(uintptr_t)pd_table3) | 0x03u;
+    for (i = 4; i < 512u; ++i) {
+        pdp[i] = 0;
+    }
+
+    /* PML4: a single entry covering the low 512GB (everything we use). */
+    pml4[0] = ((uint64_t)(uintptr_t)pdp) | 0x07u;
+    for (i = 1; i < 512u; ++i) {
+        pml4[i] = 0;
+    }
+
+    /* Tables are identity-mapped, so the virtual address == physical == CR3. */
+    return (uintptr_t)pml4;
+}
+
+void paging_load_cr3(uintptr_t cr3) {
+    if (cr3 == 0) {
+        return;
+    }
+    __asm__ volatile("mov %0, %%cr3" : : "r"(cr3) : "memory");
+}
+
+uintptr_t paging_read_cr3(void) {
+    uintptr_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    return cr3;
 }

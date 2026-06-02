@@ -34,6 +34,53 @@ struct desktop_state *desktop_active(void) {
 }
 static struct tty g_cli_tty;
 static uint32_t g_backbuffer_storage[1920u * 1080u];
+extern uint8_t __kernel_end[];
+
+static void halt_forever(void);
+
+static uintptr_t align_up_uintptr(uintptr_t value, uintptr_t alignment) {
+    return (value + alignment - 1u) & ~(alignment - 1u);
+}
+
+static void kernel_init_heap_from_bootinfo(uintptr_t mbi_addr) {
+  struct boot_memory_info mem;
+  uintptr_t heap_start = align_up_uintptr((uintptr_t)__kernel_end, 0x200000u);
+  uint64_t heap_end;
+  uint64_t heap_size;
+  const uint64_t top_reserve = 16ull * 1024ull * 1024ull;
+  const uint64_t min_heap = 32ull * 1024ull * 1024ull;
+
+  serial_write("VIBEOS: kernel_end=");
+  serial_write_hex_u64((uint64_t)(uintptr_t)__kernel_end);
+  serial_write("\n");
+
+  if (!multiboot2_memory_info(mbi_addr, heap_start, &mem)) {
+    serial_write("VIBEOS: no multiboot memory map; using conservative heap fallback\n");
+    kmalloc_init(heap_start, 64 * 1024 * 1024);
+    kmalloc_set_physical_total(heap_start + 64 * 1024 * 1024);
+    return;
+  }
+
+  heap_start = align_up_uintptr((uintptr_t)mem.heap_region_base, 0x200000u);
+  heap_end = mem.heap_region_end > top_reserve ? mem.heap_region_end - top_reserve : mem.heap_region_end;
+  heap_end &= ~0x1fffffull;
+
+  if (heap_end <= heap_start || heap_end - heap_start < min_heap) {
+    serial_write("VIBEOS: detected RAM too small for dynamic heap\n");
+    halt_forever();
+  }
+
+  heap_size = heap_end - heap_start;
+  serial_write("VIBEOS: detected available RAM bytes=");
+  serial_write_hex_u64(mem.available_bytes);
+  serial_write(" heap_start=");
+  serial_write_hex_u64((uint64_t)heap_start);
+  serial_write(" heap_size=");
+  serial_write_hex_u64(heap_size);
+  serial_write("\n");
+  kmalloc_init(heap_start, (size_t)heap_size);
+  kmalloc_set_physical_total((size_t)mem.available_bytes);
+}
 
 static int rects_intersect(const struct rect *a, const struct rect *b) {
     return a->x < b->x + b->width &&
@@ -76,8 +123,8 @@ static void cli_write_kernel_text(const char *text) {
 
 /* Desired desktop resolution; changeable at runtime via the `display` tool.
  * Clamped to the statically-allocated backbuffer max (1920x1080). */
-static uint32_t g_req_width = 1024u;
-static uint32_t g_req_height = 768u;
+static uint32_t g_req_width = 1920u;
+static uint32_t g_req_height = 1080u;
 static volatile int g_resolution_change_requested = 0;
 
 void kernel_cxx_init(void);
@@ -163,11 +210,11 @@ static struct block_device *g_ide_device = NULL;
 
 static int ide_disk_read(void *ctx, uint64_t block_num, void *buffer, size_t count) {
     struct block_device *bdev = (struct block_device *)ctx;
-    serial_write("KERNEL: ide_disk_read called, bdev=");
-    serial_write_hex_u64((uint64_t)bdev);
-    serial_write(" read=");
-    serial_write_hex_u64((uint64_t)bdev->read);
-    serial_write("\n");
+    //serial_write("KERNEL: ide_disk_read called, bdev=");
+    //serial_write_hex_u64((uint64_t)bdev);
+    //serial_write(" read=");
+    //serial_write_hex_u64((uint64_t)bdev->read);
+    //serial_write("\n");
     if (!bdev || !bdev->read) return -1;
     return bdev->read(bdev, block_num, buffer, count);
 }
@@ -186,14 +233,22 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
 
   serial_init();
   serial_write("VIBEOS: entered kernel_main\n");
+  serial_write("VIBEOS: boot magic=");
+  serial_write_hex_u64(boot_magic);
+  serial_write("\n");
+  serial_write("VIBEOS: multiboot info=");
+  serial_write_hex_u64((uint64_t)mbi_addr);
+  serial_write("\n");
+
+  if (boot_magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
+    serial_write("VIBEOS: invalid multiboot magic\n");
+    vga_text_write_message("VIBEOS: INVALID MULTIBOOT2 MAGIC", 0x4fu);
+    halt_forever();
+  }
 
   /* Initialize kernel heap BEFORE any filesystem operations */
   serial_write("VIBEOS: Initializing kernel heap...\n");
-  /* Heap at 64 MB — safely ABOVE the kernel BSS (which reaches ~28 MB due to
-   * the large desktop/framebuffer arrays). The old 4 MB heap overlapped BSS,
-   * so kmalloc'd data (e.g. the ext2 inode table) was clobbered when the
-   * desktop surfaces were written — ext2 broke as soon as the GUI started. */
-  kmalloc_init(0x4000000, 128 * 1024 * 1024); /* 128MB heap at 64MB */
+  kernel_init_heap_from_bootinfo(mbi_addr);
   serial_write("VIBEOS: Kernel heap initialized\n");
   kernel_cxx_init();
   if (kernel_cxx_smoke_value() != 42) {
@@ -244,23 +299,11 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
     }
   }
 
-  serial_write("VIBEOS: boot magic=");
-  serial_write_hex_u64(boot_magic);
-  serial_write("\n");
-  serial_write("VIBEOS: multiboot info=");
-  serial_write_hex_u64((uint64_t)mbi_addr);
-  serial_write("\n");
-
-  if (boot_magic != MULTIBOOT2_BOOTLOADER_MAGIC) {
-    serial_write("VIBEOS: invalid multiboot magic\n");
-    vga_text_write_message("VIBEOS: INVALID MULTIBOOT2 MAGIC", 0x4fu);
-    halt_forever();
-  }
-
   vga_text_clear(0x1fu);
   interrupts_init();
   journal_init();
   journal_log(JOURNAL_INFO, 0, "VibeOS kernel boot");
+  journal_log(JOURNAL_APP, 0, "kernel inputdiag wheel-restored v4");
   process_init();
 
   /* Bring up the network card (best effort; networking stays optional). */

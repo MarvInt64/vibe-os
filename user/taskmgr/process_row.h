@@ -29,8 +29,9 @@ public:
     void init(vui_window *win, vui_widget *rows_vbox, int slot,
               void (*kill_cb)(vui_widget *));
 
-    /* Populate widgets from a live process snapshot and make the row visible. */
-    void update(const vui_process_info &p);
+    /* Populate widgets from a live process snapshot and make the row visible.
+     * cpu_tenths = cumulative CPU share in tenths of a percent (e.g. 21 = 2.1%). */
+    void update(const vui_process_info &p, int cpu_tenths);
 
     /* Hide all widgets (row stays in layout but renders nothing). */
     void hide();
@@ -45,5 +46,6 @@ private:
     vui_widget  *state_label_  = nullptr;
     vui_widget  *kill_button_  = nullptr;
     vui_widget  *metric_label_ = nullptr;
+    vui_widget  *sep_          = nullptr;   /* 1px hairline separating rows */
     unsigned int pid_          = 0;
 };

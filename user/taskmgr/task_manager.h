@@ -22,6 +22,10 @@ public:
     static TaskManager *s_instance_;
 
 private:
+    /* Number of process rows shown (active processes are packed top-down into
+     * these; kept small so each row is generously tall, like the reference). */
+    static constexpr int kRows = 8;
+
     /* --- UI construction ------------------------------------------------- */
     void build_ui();
 
@@ -42,6 +46,9 @@ private:
     /* Called from View → Quit. */
     static void on_quit_cb(vui_widget *self);
 
+    /* Called as the user types in the search box → re-filter the process list. */
+    static void on_search_cb(vui_widget *self);
+
     /* Called by the VexUI event loop roughly 18 times per second.
      * Triggers a data refresh once every 18 ticks (~1 s). */
     static void on_tick_cb(vui_window *win);
@@ -52,6 +59,7 @@ private:
     vui_widget *ready_label_   = nullptr; /* "READY n   SLEEP n"  */
     vui_widget *mem_label_     = nullptr; /* "RAM x.x MB  n thr"  */
     vui_widget *status_label_  = nullptr; /* last action feedback  */
+    vui_widget *search_        = nullptr; /* process-name filter box */
 
     std::array<ProcessRow, VUI_PROCESS_MAX> rows_;
     vui_widget *rows_vbox_ = nullptr; /* VBox that owns all ProcessRow slots */

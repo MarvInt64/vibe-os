@@ -55,7 +55,35 @@ enum syscall_number {
 	/* Present only a damaged sub-rectangle of the window's canvas.
 	 * rdi = win id, rsi = pixels, rdx = full w, r10 = full h,
 	 * r8 = (dx<<16)|dy, r9 = (dw<<16)|dh. */
-	SYS_WINDOW_PRESENT_RECT = 38
+	SYS_WINDOW_PRESENT_RECT = 38,
+	SYS_SYSTEM_INFO = 39,
+	/* Rasterize a string into a user-supplied ARGB buffer using the kernel's
+	 * anti-aliased TrueType atlas. rdi = buf, rsi = text, rdx = (buf_w<<16)|buf_h,
+	 * r10 = ((x&0xffff)<<16)|(y&0xffff) (x,y signed 16-bit), r8 = color, r9 = scale
+	 * (1..3). Returns the proportional advance width drawn. */
+	SYS_TEXT_DRAW = 40,
+	/* Query atlas metrics. rdi = text (or 0), rsi = scale (1..3). With text != 0
+	 * returns the proportional pixel width of the string; with text == 0 returns
+	 * packed font metrics: lineh | (ascent<<8) | (cellw<<16) | (space<<24). */
+	SYS_TEXT_METRICS = 41,
+	/* Grow/query the process heap (brk/sbrk style). rdi = signed byte increment
+	 * (0 = query). Maps fresh physical pages into the process's heap region on
+	 * demand and returns the PREVIOUS break (start of the newly available bytes),
+	 * or (void*)-1 on failure. This replaces baking a fixed heap arena into every
+	 * binary's BSS — heap memory now grows lazily like a real OS. */
+	SYS_SBRK = 42
+};
+
+struct system_info_snapshot {
+    uint64_t uptime_ticks;
+    uint32_t timer_hz;
+    uint32_t process_count;
+    uint32_t process_max;
+    uint32_t app_window_max;
+    uint64_t heap_used_bytes;
+    uint64_t heap_total_bytes;
+    char version[16];
+    char build[32];
 };
 
 enum syscall_error {

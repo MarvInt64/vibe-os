@@ -21,6 +21,8 @@ enum journal_level {
 struct journal_entry {
     uint64_t seq;      /* monotonically increasing record number */
     uint64_t tick;     /* timer tick when logged */
+    uint64_t boot_id;  /* per-boot identifier; changes on every kernel boot */
+    uint32_t hz;       /* timer ticks per second for tick->time conversion */
     uint32_t level;
     uint32_t pid;      /* originating pid, or 0 for kernel */
     char msg[JOURNAL_MSG_MAX];
