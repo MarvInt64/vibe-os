@@ -56,31 +56,29 @@ enum syscall_number {
 	 * rdi = win id, rsi = pixels, rdx = full w, r10 = full h,
 	 * r8 = (dx<<16)|dy, r9 = (dw<<16)|dh. */
 	SYS_WINDOW_PRESENT_RECT = 38,
-	/* Request a shared memory buffer for window surfaces (Zero-Copy). */
-	SYS_WINDOW_SHARED_BUFFER = 39,
-	SYS_SYSTEM_INFO = 40,
+	SYS_SYSTEM_INFO = 39,
 	/* Rasterize a string into a user-supplied ARGB buffer using the kernel's
 	 * anti-aliased TrueType atlas. rdi = buf, rsi = text, rdx = (buf_w<<16)|buf_h,
 	 * r10 = ((x&0xffff)<<16)|(y&0xffff) (x,y signed 16-bit), r8 = color, r9 = scale
 	 * (1..3). Returns the proportional advance width drawn. */
-	SYS_TEXT_DRAW = 41,
+	SYS_TEXT_DRAW = 40,
 	/* Query atlas metrics. rdi = text (or 0), rsi = scale (1..3). With text != 0
 	 * returns the proportional pixel width of the string; with text == 0 returns
 	 * packed font metrics: lineh | (ascent<<8) | (cellw<<16) | (space<<24). */
-	SYS_TEXT_METRICS = 42,
+	SYS_TEXT_METRICS = 41,
 	/* Grow/query the process heap (brk/sbrk style). rdi = signed byte increment
 	 * (0 = query). Maps fresh physical pages into the process's heap region on
 	 * demand and returns the PREVIOUS break (start of the newly available bytes),
 	 * or (void*)-1 on failure. This replaces baking a fixed heap arena into every
 	 * binary's BSS — heap memory now grows lazily like a real OS. */
-	SYS_SBRK = 43,
+	SYS_SBRK = 42,
 	/* Fill a struct winsys_desktop_status (user ptr in rdi) with the data the
 	 * top-bar app needs: uptime, CPU/UI/MEM load, focused app label and its
 	 * menu bar. Returns 0 on success. */
-	SYS_DESKTOP_STATUS = 44,
+	SYS_DESKTOP_STATUS = 43,
 	/* Deliver a menu action (rdi = action_id) to the focused window as a
 	 * WINSYS_EVENT_MENU_ACTION, exactly as the old kernel top bar did. */
-	SYS_MENU_DISPATCH = 45
+	SYS_MENU_DISPATCH = 44
 };
 
 struct system_info_snapshot {
