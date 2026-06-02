@@ -224,41 +224,55 @@ int main(void) {
         log_stage("wallpaper: vwp read failed");
     }
 
-    log_stage("wallpaper: before png read");
-    size = 0;
-    if (stat_path(path, &kind, &size) == 0) {
-        snprintf(msg, sizeof(msg), "wallpaper: png stat kind=%lu size=%lu", kind, size);
-        vos_log(VOS_LOG_APP, msg);
-    }
-    if (read_all_exact(path, (size_t)size, &data, &len) != 0) {
-        log_stage("wallpaper: png read failed");
-        vos_log(VOS_LOG_APP, "wallpaper: cannot read image file");
-        return 1;
-    }
-    log_stage("wallpaper: png read ok");
-    snprintf(msg, sizeof(msg), "wallpaper: read %d bytes from %s heap=%lu/%lu",
-             len, path, (unsigned long)umalloc_used(), (unsigned long)umalloc_capacity());
-    vos_log(VOS_LOG_APP, msg);
-
-    log_stage("wallpaper: before png decode");
-    px = image_decode(data, len, &w, &h);
-    free(data);
-    log_stage("wallpaper: after png decode");
-    if (!px || w <= 0 || h <= 0) {
-        snprintf(msg, sizeof(msg), "wallpaper: decode failed (%s), heap=%lu/%lu, using fallback",
-                 image_decode_failure_reason(),
-                 (unsigned long)umalloc_used(), (unsigned long)umalloc_capacity());
-        vos_log(VOS_LOG_APP, msg);
+    if (alen <= 0) {
+        log_stage("wallpaper: using generated fallback");
         px = make_fallback_wallpaper(&w, &h);
         if (!px) {
             log_stage("wallpaper: fallback alloc failed");
             vos_log(VOS_LOG_APP, "wallpaper: fallback allocation failed");
             return 1;
         }
-    } else {
-        snprintf(msg, sizeof(msg), "wallpaper: decoded real image %dx%d heap=%lu/%lu",
+        snprintf(msg, sizeof(msg), "wallpaper: generated fallback %dx%d heap=%lu/%lu",
                  w, h, (unsigned long)umalloc_used(), (unsigned long)umalloc_capacity());
         vos_log(VOS_LOG_APP, msg);
+    } else {
+        log_stage("wallpaper: before png read");
+        size = 0;
+        if (stat_path(path, &kind, &size) == 0) {
+            snprintf(msg, sizeof(msg), "wallpaper: png stat kind=%lu size=%lu", kind, size);
+            vos_log(VOS_LOG_APP, msg);
+        }
+        if (read_all_exact(path, (size_t)size, &data, &len) != 0) {
+            log_stage("wallpaper: png read failed");
+            vos_log(VOS_LOG_APP, "wallpaper: cannot read image file");
+            return 1;
+        }
+        log_stage("wallpaper: png read ok");
+        snprintf(msg, sizeof(msg), "wallpaper: read %d bytes from %s heap=%lu/%lu",
+                 len, path, (unsigned long)umalloc_used(), (unsigned long)umalloc_capacity());
+        vos_log(VOS_LOG_APP, msg);
+
+        log_stage("wallpaper: before png decode");
+        px = image_decode(data, len, &w, &h);
+        free(data);
+        data = 0;
+        log_stage("wallpaper: after png decode");
+        if (!px || w <= 0 || h <= 0) {
+            snprintf(msg, sizeof(msg), "wallpaper: decode failed (%s), heap=%lu/%lu, using fallback",
+                     image_decode_failure_reason(),
+                     (unsigned long)umalloc_used(), (unsigned long)umalloc_capacity());
+            vos_log(VOS_LOG_APP, msg);
+            px = make_fallback_wallpaper(&w, &h);
+            if (!px) {
+                log_stage("wallpaper: fallback alloc failed");
+                vos_log(VOS_LOG_APP, "wallpaper: fallback allocation failed");
+                return 1;
+            }
+        } else {
+            snprintf(msg, sizeof(msg), "wallpaper: decoded real image %dx%d heap=%lu/%lu",
+                     w, h, (unsigned long)umalloc_used(), (unsigned long)umalloc_capacity());
+            vos_log(VOS_LOG_APP, msg);
+        }
     }
 
     log_stage("wallpaper: before set_wallpaper");

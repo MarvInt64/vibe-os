@@ -787,12 +787,6 @@ static void focus_window(struct desktop_state *desktop, int index) {
     if (previous_focus != index) {
         mark_window_dirty(desktop, index);
         mark_dirty_rect(desktop, window_rect(&desktop->windows[index]));
-        /* The top-bar menu bar belongs to the focused app, so refresh it. Any
-         * open menu belongs to the old app — close it too. */
-        desktop->topbar_menu_open = -1;
-        desktop->topbar_menu_hover = -1;
-        desktop->background_dirty = 1;
-        mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
     }
 }
 
@@ -1701,11 +1695,6 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
     desktop->context_menu_y = 0;
     desktop->context_menu_window = -1;
     desktop->context_menu_hover = -1;
-    desktop->topbar_menu_open = -1;
-    desktop->topbar_menu_hover = -1;
-    desktop->topbar_last_refresh_tick = 0;
-    desktop->logo_anim_last_tick = 0;
-    desktop->logo_hover_anim = 0;
     desktop->modal_open = 0;
     desktop->modal_title[0] = '\0';
     desktop->modal_message[0] = '\0';
@@ -2151,29 +2140,6 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
 
 void desktop_poll_apps(struct desktop_state *desktop) {
 	size_t i;
-    uint64_t now = timer_tick_count();
-    int logo_hover = point_in_rect(desktop->mouse_x, desktop->mouse_y, 14, 8, 96, 36);
-
-    if (now != desktop->logo_anim_last_tick) {
-        uint8_t old_logo_anim = desktop->logo_hover_anim;
-        desktop->logo_anim_last_tick = now;
-        if (logo_hover) {
-            desktop->logo_hover_anim = desktop->logo_hover_anim > 231u ? 255u : (uint8_t)(desktop->logo_hover_anim + 24u);
-        } else {
-            desktop->logo_hover_anim = desktop->logo_hover_anim < 24u ? 0u : (uint8_t)(desktop->logo_hover_anim - 24u);
-        }
-
-        if (desktop->logo_hover_anim != old_logo_anim) {
-            mark_background_dirty(desktop);
-            mark_dirty_rect(desktop, rect_from_bounds(0, 0, 116, 54));
-        }
-    }
-
-    if (now - desktop->topbar_last_refresh_tick >= (TIMER_HZ / 4u)) {
-        desktop->topbar_last_refresh_tick = now;
-        mark_background_dirty(desktop);
-        mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
-    }
 
 	/* A kernel app whose owning process (e.g. the terminal's /bin/sh) has died
 	 * gets its window cleanly closed here. The app drops its session state and
@@ -2545,9 +2511,6 @@ int desktop_app_set_menubar(struct desktop_state *desktop, uint32_t pid, int win
         desktop->user_apps[slot].menubar[i].action_id = items[i].action_id;
     }
     desktop->user_apps[slot].menubar_count = count;
-    /* Repaint the top bar so the focused app's menus show immediately. */
-    desktop->background_dirty = 1;
-    mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
     return 0;
 }
 

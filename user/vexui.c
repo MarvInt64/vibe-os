@@ -1725,9 +1725,9 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
             prev_menu = w->active_menu_idx;
         }
         if (w->dirty) { repaint(w); w->dirty = 0; }
-        /* Pace the loop at the scheduler tick instead of busy-yielding: input
-         * stays responsive (~1 tick latency) while idle frames cost nothing. */
-        nap(1);
+        /* Pace idle UI apps near 16 Hz. Input is still sampled by the kernel;
+         * this loop only needs to refresh app state and repaint dirty widgets. */
+        nap(6);
     }
     sc1(SYS_EXIT, 0);
     for(;;){}

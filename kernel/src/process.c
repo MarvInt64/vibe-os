@@ -1794,9 +1794,31 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
     }
 
     if (number == SYS_TIMER_SLEEP) {
-        (void)frame->rdi;
+        uint64_t ticks = frame->rdi;
+        uint64_t now;
+        uint64_t wake_tick;
+        const uint64_t max_u64 = ~0ull;
+
+        if (ticks == 0) {
+            frame->rax = 0;
+            return 0;
+        }
+
+        now = timer_tick_count();
+        if (ticks >= max_u64 - now) {
+            wake_tick = max_u64;
+        } else {
+            wake_tick = now + ticks;
+        }
+
+        process->context = *frame;
+        process->context.rax = 0;
+        process->wake_tick = wake_tick;
+        process->state = PROCESS_STATE_SLEEPING;
+        g_kernel_resume_result = PROCESS_RUN_YIELDED;
+        g_current_process = 0;
         frame->rax = 0;
-        return 0;
+        return 1;
     }
 
     if (number == SYS_WINDOWMGR_START) {

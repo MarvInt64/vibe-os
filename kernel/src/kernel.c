@@ -168,8 +168,8 @@ static void cli_write_kernel_text(const char *text) {
 
 /* Desired desktop resolution; changeable at runtime via the `display` tool.
  * Clamped to the statically-allocated backbuffer max (1920x1080). */
-static uint32_t g_req_width = 1920u;
-static uint32_t g_req_height = 1080u;
+static uint32_t g_req_width = 1024u;
+static uint32_t g_req_height = 768u;
 static volatile int g_resolution_change_requested = 0;
 
 void kernel_cxx_init(void);

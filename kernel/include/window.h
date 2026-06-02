@@ -149,13 +149,6 @@ struct desktop_state {
     int context_menu_window;
     int context_menu_hover;
 
-    /* Global top-bar menu (Page/Edit/View/…). -1 = none open. */
-    int topbar_menu_open;
-    int topbar_menu_hover;
-    uint64_t topbar_last_refresh_tick;
-    uint64_t logo_anim_last_tick;
-    uint8_t logo_hover_anim;
-
     uint8_t modal_open;
     char modal_title[48];
     char modal_message[160];
