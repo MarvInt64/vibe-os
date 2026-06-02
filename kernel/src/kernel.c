@@ -484,11 +484,13 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
                 struct rect present;
                 int have_present = 0;
 
-                if (desktop_take_dirty_rect(&g_desktop, &dirty_rect)) {
+                int tiles_processed = 0;
+                while (tiles_processed < 64 && desktop_take_dirty_rect(&g_desktop, &dirty_rect)) {
                     desktop_render_rect(&g_desktop, &g_backbuffer, &dirty_rect);
-                    present = dirty_rect;
+                    present = have_present ? rect_union(&present, &dirty_rect) : dirty_rect;
                     have_present = 1;
                     had_dirty = 1;
+                    tiles_processed++;
                 }
 
                 desktop_cursor_rect_at(&g_desktop, presented_cursor_x, presented_cursor_y, &old_cursor_rect);
