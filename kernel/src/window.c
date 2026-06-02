@@ -437,32 +437,32 @@ static void clip_rect_to_screen(const struct desktop_state *desktop, struct rect
     rect->height = y1 - y0;
 }
 
-static void mark_dirty_rect(struct desktop_state *desktop, struct rect rect) {
-    int x0;
-    int y0;
-    int x1;
-    int y1;
+/* Mark a specific tile as dirty */
+static void mark_tile_dirty(struct desktop_state *desktop, int x, int y) {
+    int tile_x = x / desktop->tile_size;
+    int tile_y = y / desktop->tile_size;
+    if (tile_x < 0 || tile_y < 0 || tile_x >= desktop->tiles_x || tile_y >= desktop->tiles_y) return;
 
+    int tile_idx = tile_y * desktop->tiles_x + tile_x;
+    if (tile_idx / 8 < MAX_TILE_BIT_ARRAY) {
+        desktop->dirty_tiles[tile_idx / 8] |= (1 << (tile_idx % 8));
+        desktop->dirty = 1;
+    }
+}
+
+static void mark_dirty_rect(struct desktop_state *desktop, struct rect rect) {
     clip_rect_to_screen(desktop, &rect);
     if (rect_is_empty(&rect)) {
         return;
     }
-
-    if (!desktop->dirty) {
-        desktop->dirty = 1;
-        desktop->dirty_rect = rect;
-        return;
+    
+    for (int y = rect.y; y < rect.y + rect.height; y += desktop->tile_size) {
+        for (int x = rect.x; x < rect.x + rect.width; x += desktop->tile_size) {
+            mark_tile_dirty(desktop, x, y);
+        }
     }
-
-    x0 = rect.x < desktop->dirty_rect.x ? rect.x : desktop->dirty_rect.x;
-    y0 = rect.y < desktop->dirty_rect.y ? rect.y : desktop->dirty_rect.y;
-    x1 = rect.x + rect.width > desktop->dirty_rect.x + desktop->dirty_rect.width ? rect.x + rect.width : desktop->dirty_rect.x + desktop->dirty_rect.width;
-    y1 = rect.y + rect.height > desktop->dirty_rect.y + desktop->dirty_rect.height ? rect.y + rect.height : desktop->dirty_rect.y + desktop->dirty_rect.height;
-
-    desktop->dirty_rect.x = x0;
-    desktop->dirty_rect.y = y0;
-    desktop->dirty_rect.width = x1 - x0;
-    desktop->dirty_rect.height = y1 - y0;
+    // Mark the last tile
+    mark_tile_dirty(desktop, rect.x + rect.width - 1, rect.y + rect.height - 1);
 }
 
 static void mark_background_dirty(struct desktop_state *desktop) {
@@ -1733,6 +1733,13 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
     desktop->mouse_x = (int)(screen_width / 2u);
     desktop->mouse_y = (int)(screen_height / 2u);
     desktop->mouse_buttons = 0;
+    
+    /* Initialize tile-based dirty tracking */
+    desktop->tile_size = 32;
+    desktop->tiles_x = (int)(screen_width / desktop->tile_size) + 1;
+    desktop->tiles_y = (int)(screen_height / desktop->tile_size) + 1;
+    for(int i = 0; i < MAX_TILE_BIT_ARRAY; i++) desktop->dirty_tiles[i] = 0;
+
     desktop->background_dirty = 1;
     desktop->window_dirty[WINDOW_INFO] = 1;
     desktop->window_dirty[WINDOW_FILES] = 1;
@@ -2214,15 +2221,40 @@ void desktop_cursor_rect_at(const struct desktop_state *desktop, int x, int y, s
     *rect = cursor_rect(desktop, x, y);
 }
 
+/* Get the next dirty tile */
 int desktop_take_dirty_rect(struct desktop_state *desktop, struct rect *rect) {
     if (!desktop->dirty) {
         return 0;
     }
 
-    *rect = desktop->dirty_rect;
+    for (int tile_idx = 0; tile_idx < desktop->tiles_x * desktop->tiles_y; tile_idx++) {
+        if (desktop->dirty_tiles[tile_idx / 8] & (1 << (tile_idx % 8))) {
+            int tile_x = tile_idx % desktop->tiles_x;
+            int tile_y = tile_idx / desktop->tiles_x;
+            
+            *rect = rect_from_bounds(tile_x * desktop->tile_size, 
+                                     tile_y * desktop->tile_size, 
+                                     desktop->tile_size, 
+                                     desktop->tile_size);
+            
+            // Clear the dirty bit
+            desktop->dirty_tiles[tile_idx / 8] &= ~(1 << (tile_idx % 8));
+            
+            // Check if there are any dirty tiles left
+            int any_dirty = 0;
+            for(int i = 0; i < MAX_TILE_BIT_ARRAY; i++) {
+                if (desktop->dirty_tiles[i]) {
+                    any_dirty = 1;
+                    break;
+                }
+            }
+            desktop->dirty = any_dirty;
+            return 1;
+        }
+    }
+    
     desktop->dirty = 0;
-    desktop->dirty_rect = rect_from_bounds(0, 0, 0, 0);
-    return 1;
+    return 0;
 }
 
 /* ---- Window server (userspace GUI apps) ---- */

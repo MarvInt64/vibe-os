@@ -125,6 +125,14 @@ struct desktop_state {
     uint8_t background_dirty;
     uint8_t window_dirty[WINDOW_COUNT];
     uint8_t dirty;
+    
+    /* Tile-based dirty tracking for efficient rendering */
+    #define MAX_TILE_BIT_ARRAY 1024
+    uint8_t dirty_tiles[MAX_TILE_BIT_ARRAY];
+    int tile_size;
+    int tiles_x;
+    int tiles_y;
+
     struct rect dirty_rect;
     struct rect window_dirty_rects[WINDOW_COUNT];
     /* Optional desktop wallpaper. wallpaper_active=0 => procedural gradient.
