@@ -133,6 +133,7 @@ struct vui_widget {
     int value, max;
     vui_callback on_click;
     void *user;
+    char icon_svg[512];
 
     /* anchor / resize system (used by root widgets and vui_set_anchor) */
     uint8_t anchors;
@@ -494,6 +495,325 @@ static void area_chart(struct vui_window *w,int x,int y,int wd,int ht,
 static void line_diag(struct vui_window *w,int x,int y,int len,int dx,int dy,vui_u32 c){
     int i; for(i=0;i<len;++i){ put(w,x+i*dx,y+i*dy,c); put(w,x+i*dx+1,y+i*dy,c); }
 }
+
+static int svg_is_space(char ch) {
+    return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' || ch == ',';
+}
+
+static int svg_match_name(const char *p, const char *name) {
+    int i = 0;
+    while (name[i]) {
+        if (p[i] != name[i]) return 0;
+        ++i;
+    }
+    return 1;
+}
+
+static const char *svg_tag_end(const char *tag) {
+    while (*tag && *tag != '>') ++tag;
+    return tag;
+}
+
+static int svg_parse_num(const char **pp, int *out) {
+    const char *p = *pp;
+    int sign = 1;
+    int whole = 0;
+    int frac = 0;
+    int div = 1;
+    int seen = 0;
+
+    while (svg_is_space(*p)) ++p;
+    if (*p == '-') { sign = -1; ++p; }
+    else if (*p == '+') { ++p; }
+    while (*p >= '0' && *p <= '9') {
+        whole = whole * 10 + (*p - '0');
+        ++p;
+        seen = 1;
+    }
+    if (*p == '.') {
+        ++p;
+        while (*p >= '0' && *p <= '9' && div < 1000) {
+            frac = frac * 10 + (*p - '0');
+            div *= 10;
+            ++p;
+            seen = 1;
+        }
+        while (*p >= '0' && *p <= '9') ++p;
+    }
+    if (!seen) return 0;
+    *out = sign * (whole * 1000 + (frac * 1000) / div);
+    *pp = p;
+    return 1;
+}
+
+static int svg_attr_num(const char *tag, const char *name, int fallback) {
+    const char *end = svg_tag_end(tag);
+    const char *p = tag;
+    while (p < end) {
+        if (svg_match_name(p, name)) {
+            const char *q = p;
+            while (q < end && *q != '=') ++q;
+            if (q < end && q[1] == '"') {
+                int value;
+                q += 2;
+                if (svg_parse_num(&q, &value)) return value;
+            }
+        }
+        ++p;
+    }
+    return fallback;
+}
+
+static const char *svg_attr_text(const char *tag, const char *name, const char **end_out) {
+    const char *end = svg_tag_end(tag);
+    const char *p = tag;
+    while (p < end) {
+        if (svg_match_name(p, name)) {
+            const char *q = p;
+            while (q < end && *q != '=') ++q;
+            if (q < end && q[1] == '"') {
+                q += 2;
+                if (end_out) {
+                    const char *e = q;
+                    while (e < end && *e != '"') ++e;
+                    *end_out = e;
+                }
+                return q;
+            }
+        }
+        ++p;
+    }
+    if (end_out) *end_out = 0;
+    return 0;
+}
+
+/* ---- SVG icon renderer (signed-distance anti-aliased line art) ----
+ * The icon's viewBox geometry is collected as stroke primitives — straight
+ * line segments (rect edges, path lines, flattened Beziers) and analytic
+ * circles. Each output pixel then derives its coverage from the *minimum
+ * signed distance* to the nearest stroke surface, with a 1px-wide analytic
+ * anti-aliasing band. This gives crisp, resolution-independent strokes with
+ * smooth round caps/joins for free — no lumpy binary supersample mask. */
+
+#define SVG_VIEW       28      /* viewBox side; all dock icons use 0..28      */
+#define SVG_SUB        64      /* sub-pixel fixed-point units per output px   */
+#define SVG_MARGIN_NUM 1       /* inset art by NUM/DEN of the box so strokes  */
+#define SVG_MARGIN_DEN 14      /* never touch / clip at the tile edge         */
+#define SVG_MAX_ICON   64      /* clamp; output side in px                    */
+#define SVG_MAX_SEG    256
+#define SVG_MAX_CIRC   8
+#define SVG_CURVE_STEPS 32
+
+typedef struct { int x0, y0, x1, y1, half; } svg_seg;   /* sub-pixel coords */
+typedef struct { int cx, cy, r, half; } svg_circ;
+
+static svg_seg  g_svg_segs[SVG_MAX_SEG];
+static int      g_svg_seg_n;
+static svg_circ g_svg_circs[SVG_MAX_CIRC];
+static int      g_svg_circ_n;
+static int      g_svg_size;            /* output icon side, px            */
+static int      g_svg_inset;           /* sub-pixel inset on each side    */
+static long     g_svg_span;            /* sub-pixel drawable span         */
+static int      g_svg_half;            /* current stroke half-width, sub  */
+
+/* 64-bit integer square root (binary digit-by-digit). */
+static int svg_isqrt(long v) {
+    long x = 0, b = 1L << 30;
+    if (v <= 0) return 0;
+    while (b > v) b >>= 2;
+    while (b) {
+        if (v >= x + b) { v -= x + b; x = (x >> 1) + b; }
+        else x >>= 1;
+        b >>= 2;
+    }
+    return (int)x;
+}
+
+/* viewBox milliunit -> sub-pixel output coordinate (inset + scaled). */
+static int svg_tx(int v1000) {
+    return (int)(g_svg_inset + (long)v1000 * g_svg_span / ((long)SVG_VIEW * 1000L));
+}
+
+static void svg_set_stroke_width(const char *tag) {
+    int sw = svg_attr_num(tag, "stroke-width", 2000);   /* milliunits */
+    long half = (long)sw * g_svg_span / ((long)SVG_VIEW * 1000L) / 2;
+    if (half < SVG_SUB / 2) half = SVG_SUB / 2;          /* >= ~1px wide */
+    g_svg_half = (int)half;
+}
+
+/* Emit one stroke segment; inputs are viewBox milliunits. */
+static void svg_emit_seg(int x0, int y0, int x1, int y1) {
+    svg_seg *s;
+    if (g_svg_seg_n >= SVG_MAX_SEG) return;
+    s = &g_svg_segs[g_svg_seg_n++];
+    s->x0 = svg_tx(x0); s->y0 = svg_tx(y0);
+    s->x1 = svg_tx(x1); s->y1 = svg_tx(y1);
+    s->half = g_svg_half;
+}
+
+static void svg_emit_circle(int cx, int cy, int r) {
+    svg_circ *c;
+    if (g_svg_circ_n >= SVG_MAX_CIRC) return;
+    c = &g_svg_circs[g_svg_circ_n++];
+    c->cx = svg_tx(cx); c->cy = svg_tx(cy);
+    /* radius scales with the span (not via the inset offset) */
+    c->r = (int)((long)r * g_svg_span / ((long)SVG_VIEW * 1000L));
+    c->half = g_svg_half;
+}
+
+static void svg_emit_rect(int x, int y, int w, int h) {
+    int x2 = x + w, y2 = y + h;
+    svg_emit_seg(x, y, x2, y);
+    svg_emit_seg(x2, y, x2, y2);
+    svg_emit_seg(x2, y2, x, y2);
+    svg_emit_seg(x, y2, x, y);
+}
+
+/* Flatten a cubic Bezier (milliunits) into SVG_CURVE_STEPS segments. */
+static void svg_emit_curve(int x0, int y0, int x1, int y1,
+                           int x2, int y2, int x3, int y3) {
+    int i, px = x0, py = y0;
+    for (i = 1; i <= SVG_CURVE_STEPS; ++i) {
+        long t = (long)i * 1000L / SVG_CURVE_STEPS;
+        long u = 1000L - t;
+        long nx = (u*u*u*x0 + 3L*u*u*t*x1 + 3L*u*t*t*x2 + t*t*t*x3) / 1000000000L;
+        long ny = (u*u*u*y0 + 3L*u*u*t*y1 + 3L*u*t*t*y2 + t*t*t*y3) / 1000000000L;
+        svg_emit_seg(px, py, (int)nx, (int)ny);
+        px = (int)nx; py = (int)ny;
+    }
+}
+
+static int svg_path_cmd(char ch) {
+    return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+}
+
+static void svg_parse_path(const char *p, const char *end) {
+    char cmd = 0;
+    int cx = 0, cy = 0, sx = 0, sy = 0;
+
+    while (p && p < end && *p) {
+        int x, y, x1, y1, x2, y2;
+        while (p < end && svg_is_space(*p)) ++p;
+        if (p >= end || *p == '"') break;
+        if (svg_path_cmd(*p)) {
+            cmd = *p++;
+            if (cmd == 'Z' || cmd == 'z') {
+                svg_emit_seg(cx, cy, sx, sy);
+                cx = sx; cy = sy;
+                continue;
+            }
+        }
+        if (cmd == 'M' || cmd == 'm') {
+            if (!svg_parse_num(&p, &x) || !svg_parse_num(&p, &y)) break;
+            if (cmd == 'm') { x += cx; y += cy; }
+            cx = sx = x; cy = sy = y;
+            cmd = (cmd == 'm') ? 'l' : 'L';
+        } else if (cmd == 'L' || cmd == 'l') {
+            if (!svg_parse_num(&p, &x) || !svg_parse_num(&p, &y)) break;
+            if (cmd == 'l') { x += cx; y += cy; }
+            svg_emit_seg(cx, cy, x, y);
+            cx = x; cy = y;
+        } else if (cmd == 'H' || cmd == 'h') {
+            if (!svg_parse_num(&p, &x)) break;
+            if (cmd == 'h') x += cx;
+            svg_emit_seg(cx, cy, x, cy);
+            cx = x;
+        } else if (cmd == 'V' || cmd == 'v') {
+            if (!svg_parse_num(&p, &y)) break;
+            if (cmd == 'v') y += cy;
+            svg_emit_seg(cx, cy, cx, y);
+            cy = y;
+        } else if (cmd == 'C' || cmd == 'c') {
+            if (!svg_parse_num(&p, &x1) || !svg_parse_num(&p, &y1) ||
+                !svg_parse_num(&p, &x2) || !svg_parse_num(&p, &y2) ||
+                !svg_parse_num(&p, &x) || !svg_parse_num(&p, &y)) break;
+            if (cmd == 'c') { x1 += cx; y1 += cy; x2 += cx; y2 += cy; x += cx; y += cy; }
+            svg_emit_curve(cx, cy, x1, y1, x2, y2, x, y);
+            cx = x; cy = y;
+        } else {
+            break;
+        }
+    }
+}
+
+/* Sub-pixel distance from point (px,py) to a segment's centerline. */
+static int svg_seg_dist(int px, int py, const svg_seg *s) {
+    long dx = s->x1 - s->x0, dy = s->y1 - s->y0;
+    long len2 = dx * dx + dy * dy, t, nx, ny, ex, ey;
+    if (len2 <= 0) { ex = px - s->x0; ey = py - s->y0; return svg_isqrt(ex*ex + ey*ey); }
+    t = (long)(px - s->x0) * dx + (long)(py - s->y0) * dy;
+    if (t < 0) t = 0; else if (t > len2) t = len2;
+    nx = s->x0 + dx * t / len2;
+    ny = s->y0 + dy * t / len2;
+    ex = px - nx; ey = py - ny;
+    return svg_isqrt(ex*ex + ey*ey);
+}
+
+/* Rasterize all collected geometry into the canvas at (ox,oy). */
+static void svg_render(struct vui_window *w, int ox, int oy, vui_u32 color) {
+    int px, py, i;
+    int band = SVG_SUB / 2;     /* half the AA falloff width (1px total) */
+    for (py = 0; py < g_svg_size; ++py) {
+        int sy = py * SVG_SUB + SVG_SUB / 2;
+        for (px = 0; px < g_svg_size; ++px) {
+            int sx = px * SVG_SUB + SVG_SUB / 2;
+            int best = 1 << 30;             /* min signed dist to a surface */
+            int a;
+            for (i = 0; i < g_svg_seg_n; ++i) {
+                int sd = svg_seg_dist(sx, sy, &g_svg_segs[i]) - g_svg_segs[i].half;
+                if (sd < best) best = sd;
+            }
+            for (i = 0; i < g_svg_circ_n; ++i) {
+                int ddx = sx - g_svg_circs[i].cx, ddy = sy - g_svg_circs[i].cy;
+                int d = svg_isqrt((long)ddx*ddx + (long)ddy*ddy) - g_svg_circs[i].r;
+                if (d < 0) d = -d;
+                d -= g_svg_circs[i].half;
+                if (d < best) best = d;
+            }
+            if (best <= -band) a = 255;
+            else if (best >= band) a = 0;
+            else a = (band - best) * 255 / (2 * band);
+            if (a > 0) blend_put(w, ox + px, oy + py, color, a);
+        }
+    }
+}
+
+static void draw_svg_icon(struct vui_window *w, int x, int y, int size,
+                          const char *svg, vui_u32 color) {
+    const char *p = svg;
+    if (!svg || size <= 0) return;
+    if (size > SVG_MAX_ICON) size = SVG_MAX_ICON;
+    g_svg_size = size;
+    g_svg_seg_n = 0;
+    g_svg_circ_n = 0;
+    g_svg_inset = size * SVG_MARGIN_NUM / SVG_MARGIN_DEN * SVG_SUB;
+    g_svg_span = (long)size * SVG_SUB - 2L * g_svg_inset;
+    g_svg_half = SVG_SUB;
+    while (*p) {
+        if (p[0] == '<' && svg_match_name(p + 1, "rect")) {
+            int rx = svg_attr_num(p, "x", 0);
+            int ry = svg_attr_num(p, "y", 0);
+            int rw = svg_attr_num(p, "width", 0);
+            int rh = svg_attr_num(p, "height", 0);
+            svg_set_stroke_width(p);
+            svg_emit_rect(rx, ry, rw, rh);
+        } else if (p[0] == '<' && svg_match_name(p + 1, "circle")) {
+            int cx = svg_attr_num(p, "cx", 0);
+            int cy = svg_attr_num(p, "cy", 0);
+            int r = svg_attr_num(p, "r", 0);
+            svg_set_stroke_width(p);
+            svg_emit_circle(cx, cy, r);
+        } else if (p[0] == '<' && svg_match_name(p + 1, "path")) {
+            const char *d_end = 0;
+            const char *d = svg_attr_text(p, "d", &d_end);
+            svg_set_stroke_width(p);
+            if (d && d_end) svg_parse_path(d, d_end);
+        }
+        ++p;
+    }
+    svg_render(w, x, y, color);
+}
+
 /* Large monochrome outline icons (2px stroke) for the dock, matching the
  * reference: thin line-art glyphs that sit directly on the dock bar. */
 static void tile_icon(struct vui_window *w,int cx,int cy,int id,vui_u32 c){
@@ -551,7 +871,7 @@ static struct vui_widget *new_widget(struct vui_window *w, int type) {
     if (w->widget_count >= VUI_MAX_WIDGETS) return 0;
     wd = &w->widgets[w->widget_count++];
     wd->type = type; wd->x=wd->y=wd->w=wd->h=0; wd->text[0]=0;
-    wd->color = VUI_TEXT; wd->value=0; wd->max=100; wd->on_click=0; wd->user=0;
+    wd->color = VUI_TEXT; wd->value=0; wd->max=100; wd->on_click=0; wd->user=0; wd->icon_svg[0]=0;
     wd->anchors = VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP;
     wd->margin_l=wd->margin_t=wd->margin_r=wd->margin_b=0;
     wd->parent_idx=-1; wd->gap=4; wd->padding=0;
@@ -720,6 +1040,30 @@ void vui_set_int(vui_widget *wd, int v){
 int vui_get_int(vui_widget *wd){ return wd ? wd->value : 0; }
 void vui_set_value(vui_widget *wd, int v){ if(!wd||wd->value==v)return; wd->value=v; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
 void vui_set_color(vui_widget *wd, vui_u32 c){ if(!wd||wd->color==c)return; wd->color=c; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
+void vui_set_icon_svg(vui_widget *wd, const char *svg){
+    if(!wd) return;
+    scopy(wd->icon_svg, svg ? svg : "", sizeof(wd->icon_svg));
+    dmg_add(wd->x,wd->y,wd->w,wd->h);
+    g_win.dirty=1;
+}
+int vui_set_icon_svg_path(vui_widget *wd, const char *path){
+    int fd, n;
+    if(!wd || !path) return -1;
+    fd = (int)sc1(SYS_OPEN, (uint64_t)(size_t)path);
+    if(fd < 0) return fd;
+    n = (int)sc3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)wd->icon_svg,
+                 (uint64_t)(sizeof(wd->icon_svg) - 1));
+    sc1(SYS_CLOSE, (uint64_t)fd);
+    if(n <= 0) {
+        wd->icon_svg[0] = 0;
+        return -1;
+    }
+    if(n >= (int)sizeof(wd->icon_svg)) n = (int)sizeof(wd->icon_svg) - 1;
+    wd->icon_svg[n] = 0;
+    dmg_add(wd->x,wd->y,wd->w,wd->h);
+    g_win.dirty=1;
+    return 0;
+}
 void vui_set_user(vui_widget *wd, void *u){ if(wd) wd->user=u; }
 void *vui_get_user(vui_widget *wd){ return wd?wd->user:0; }
 const char *vui_input_text(vui_widget *wd){ return wd ? wd->text : ""; }
@@ -1236,7 +1580,10 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
                                : argb(mix(g_theme.surface, 0x00ffffffu, 1u, 18u), 150u);
         uint32_t ic = active ? mix(g_theme.text, accent, 1u, 4u) : mix(g_theme.text_dim, 0x00ffffffu, 1u, 6u);
         fill_round_rect(w, tx, ty, tw, th, 6, fill, bd);
-        if (wd->value > 0) {
+        if (wd->icon_svg[0]) {
+            int icon_size = 32;   /* renderer keeps a built-in edge margin */
+            draw_svg_icon(w, cx - icon_size / 2, cy - icon_size / 2, icon_size, wd->icon_svg, accent);
+        } else if (wd->value > 0) {
             tile_icon(w, cx, cy, wd->value, ic);
         } else {
             int glyph_w = text_px(wd->text, 1);

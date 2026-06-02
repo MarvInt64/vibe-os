@@ -171,6 +171,9 @@ apps: $(DISK_IMG) $(LIBC_A)
 	python3 scripts/png_to_vwp.py assets/wallpapers/default.png build/user/default.vwp
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/default.vwp /wallpapers/default.vwp
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/wallpapers/default.png /wallpapers/default.png
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/browser.svg /icons/dock/browser.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/taskmgr.svg /icons/dock/taskmgr.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/terminal.svg /icons/dock/terminal.svg
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/hello.c -o build/user/hello.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/hello.elf $(LIBC_CRT0) build/user/hello.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/hello.elf

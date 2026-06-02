@@ -7,14 +7,15 @@ struct DockEntry {
     int icon;            /* line-art icon id: 1=web 2=activity 3=grid 4=code 5=folder */
     uint32_t color;
     const char *path;
+    const char *icon_path;
 };
 
 static const DockEntry kEntries[] = {
-    {"Browser", 1, 0x006eb6ffu, "/bin/browser"},
-    {"Tasks", 2, 0x0076e0b5u, "/bin/taskmgr"},
-    {"Demo", 3, 0x00f4c36bu, "/bin/uidemo"},
-    {"C++", 4, 0x008f7bf0u, "/bin/cpptest"},
-    {"Info", 2, 0x00a8c7ffu, "/bin/sysinfo"},
+    {"Browser", 1, 0x006eb6ffu, "/bin/browser", "/icons/dock/browser.svg"},
+    {"Tasks", 2, 0x0076e0b5u, "/bin/taskmgr", "/icons/dock/taskmgr.svg"},
+    {"Demo", 3, 0x00f4c36bu, "/bin/uidemo", 0},
+    {"C++", 4, 0x008f7bf0u, "/bin/cpptest", "/icons/dock/terminal.svg"},
+    {"Info", 2, 0x00a8c7ffu, "/bin/sysinfo", 0},
 };
 
 static void append_str(char *buf, int *pos, int cap, const char *s) {
@@ -105,6 +106,9 @@ int main() {
         vui_widget *button = vui_tile_button(win, 0, 0, "");
         vui_set_color(button, kEntries[i].color);
         vui_set_value(button, kEntries[i].icon);
+        if (kEntries[i].icon_path) {
+            vui_set_icon_svg_path(button, kEntries[i].icon_path);
+        }
         vui_set_user(button, (void *)kEntries[i].path);
         vui_on_click(button, launch_app);
         vui_box_add(row, button);
