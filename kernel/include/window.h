@@ -6,13 +6,10 @@
 #include "input.h"
 #include "winsys.h"
 
-/* Number of concurrent userspace app windows supported. Each slot statically
- * reserves full-width (WINSYS_MAX_WIDTH) content + surface buffers, so this
- * count directly scales kernel BSS. With the full-width top bar raising
- * WINSYS_MAX_WIDTH to 1920 each slot roughly doubled (~10.7 MB), so this is
- * halved from 16 to keep the total memory budget that fit in RAM before.
- * The persistent shell panels (top bar + dock) use 2 slots, leaving 6 apps. */
-#define MAX_USER_APPS 8
+/* Number of concurrent userspace app windows supported. Slot backing buffers
+ * are now heap-allocated at each window's actual size (see user_app_slot), so
+ * this count costs only small fixed per-slot state, not full-screen buffers. */
+#define MAX_USER_APPS 16
 
 enum window_id {
     WINDOW_INFO = 0,
@@ -73,8 +70,16 @@ struct window_state {
  * concurrent app windows gets its own copy of these fields instead of the
  * single flat set that used to live directly in desktop_state. */
 struct user_app_slot {
-    uint32_t surface_storage[WINDOW_APP_SURFACE_MAX_WIDTH * WINDOW_APP_SURFACE_MAX_HEIGHT];
-    uint32_t content_storage[WINDOW_APP_CONTENT_MAX_WIDTH * WINDOW_APP_CONTENT_MAX_HEIGHT];
+    /* Window backing stores, allocated on the kernel heap at the window's
+     * actual size (not a fixed worst-case array), grown on resize and freed on
+     * close — so memory scales with what is really on screen, like a real OS.
+     * The content buffer's row stride is content_width; the surface buffer's
+     * stride is the framed window width. *_cap_px track the allocated pixel
+     * capacity so interactive resize grows the buffer without thrashing. */
+    uint32_t *surface_storage;
+    uint32_t *content_storage;
+    int surface_cap_px;
+    int content_cap_px;
     int content_width;
     int content_height;
     uint8_t created;

@@ -583,6 +583,8 @@ enum resize_edge {
 };
 
 static void app_enqueue_event_slot(struct desktop_state *desktop, int slot, uint32_t type, int x, int y, uint32_t buttons, uint32_t key);
+static int ensure_surface_buffer(struct desktop_state *desktop, int slot, int w, int h);
+static int ensure_content_buffer(struct desktop_state *desktop, int slot, int w, int h);
 
 /* ---- Multi-app slot helpers ---- */
 static int is_user_app_slot(int idx) {
@@ -718,6 +720,8 @@ static void update_app_content_size_slot(struct desktop_state *desktop, int slot
     if (cw > (int)WINDOW_APP_CONTENT_MAX_WIDTH) cw = (int)WINDOW_APP_CONTENT_MAX_WIDTH;
     if (ch > (int)WINDOW_APP_CONTENT_MAX_HEIGHT) ch = (int)WINDOW_APP_CONTENT_MAX_HEIGHT;
     if (desktop->user_apps[slot].content_width != cw || desktop->user_apps[slot].content_height != ch) {
+        /* Grow the backing store first; only adopt the new size if it fit. */
+        if (!ensure_content_buffer(desktop, slot, cw, ch)) return;
         desktop->user_apps[slot].content_width = cw;
         desktop->user_apps[slot].content_height = ch;
         app_enqueue_event_slot(desktop, slot, WINSYS_EVENT_RESIZE, cw, ch, 0, 0);
@@ -806,10 +810,11 @@ static int window_pixel_transparent(struct desktop_state *desktop, int index, in
     ly = py - window->y;
     if (lx < 0 || ly < 0 ||
         lx >= desktop->user_apps[s].content_width ||
-        ly >= desktop->user_apps[s].content_height) {
+        ly >= desktop->user_apps[s].content_height ||
+        desktop->user_apps[s].content_storage == 0) {
         return 1;   /* outside presented content = nothing drawn there */
     }
-    return desktop->user_apps[s].content_storage[(size_t)ly * WINDOW_APP_CONTENT_MAX_WIDTH + lx]
+    return desktop->user_apps[s].content_storage[(size_t)ly * desktop->user_apps[s].content_width + lx]
            == WINDOW_TRANSPARENT_KEY;
 }
 
@@ -966,6 +971,40 @@ static void draw_cursor(struct desktop_state *desktop, struct framebuffer *fb, i
     fb_fill_rect(fb, x + 1, y + 1, 1, size - 1, 0x00000000u);
 }
 
+/* Grow a user slot's surface buffer to at least w*h pixels (grow-only, so
+ * interactive resize doesn't thrash the heap). Returns 1 on success. */
+static int ensure_surface_buffer(struct desktop_state *desktop, int slot, int w, int h) {
+    struct user_app_slot *a = &desktop->user_apps[slot];
+    int need = w * h;
+    uint32_t *p;
+    if (need <= 0) return 1;
+    if (a->surface_storage && need <= a->surface_cap_px) return 1;
+    p = (uint32_t *)kmalloc((size_t)need * sizeof(uint32_t));
+    if (p == 0) return 0;
+    if (a->surface_storage) kfree(a->surface_storage);
+    a->surface_storage = p;
+    a->surface_cap_px = need;
+    return 1;
+}
+
+/* Grow a user slot's content buffer to at least w*h pixels (grow-only),
+ * clearing freshly grown storage to the transparent key so unpresented rows
+ * never leak heap garbage. Returns 1 on success. */
+static int ensure_content_buffer(struct desktop_state *desktop, int slot, int w, int h) {
+    struct user_app_slot *a = &desktop->user_apps[slot];
+    int need = w * h, i;
+    uint32_t *p;
+    if (need <= 0) return 1;
+    if (a->content_storage && need <= a->content_cap_px) return 1;
+    p = (uint32_t *)kmalloc((size_t)need * sizeof(uint32_t));
+    if (p == 0) return 0;
+    if (a->content_storage) kfree(a->content_storage);
+    a->content_storage = p;
+    a->content_cap_px = need;
+    for (i = 0; i < need; ++i) a->content_storage[i] = WINDOW_TRANSPARENT_KEY;
+    return 1;
+}
+
 static uint32_t *surface_storage_for_window(struct desktop_state *desktop, int index) {
     switch (index) {
         case WINDOW_INFO:
@@ -978,7 +1017,13 @@ static uint32_t *surface_storage_for_window(struct desktop_state *desktop, int i
             return desktop->tasks_surface_storage;
         default:
             if (is_user_app_slot(index)) {
-                return desktop->user_apps[slot_index(index)].surface_storage;
+                int s = slot_index(index);
+                struct window_state *w = &desktop->windows[index];
+                /* Grow the backing store to fit the (possibly just resized or
+                 * maximized) window before it is handed to fb_init. */
+                if (desktop->user_apps[s].created)
+                    (void)ensure_surface_buffer(desktop, s, w->width, w->height);
+                return desktop->user_apps[s].surface_storage;
             }
             return 0;
     }
@@ -1298,7 +1343,7 @@ static void render_window_surface(struct desktop_state *desktop, int index) {
             if (n <= 0) continue;
             {
                 uint32_t *dst = (uint32_t *)((uint8_t *)fb->base + (size_t)py * fb->pitch) + cx;
-                const uint32_t *src = &desktop->user_apps[s].content_storage[(size_t)row * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH];
+                const uint32_t *src = &desktop->user_apps[s].content_storage[(size_t)row * (size_t)desktop->user_apps[s].content_width];
                 memcpy(dst, src, (size_t)n * sizeof(uint32_t));
             }
         }
@@ -2293,6 +2338,13 @@ int desktop_app_create_ex(struct desktop_state *desktop, uint32_t pid, const str
         if (w->y > max_y) w->y = max_y;
     }
 
+    /* Allocate the window's backing stores at its actual size. If memory is
+     * exhausted, fail the create cleanly rather than leaving a half-built slot. */
+    if (!ensure_surface_buffer(desktop, slot, w->width, w->height) ||
+        !ensure_content_buffer(desktop, slot, width, height)) {
+        return -1;
+    }
+
     desktop->user_apps[slot].created = 1;
     desktop->user_apps[slot].pid = pid;
     desktop->user_apps[slot].content_width = width;
@@ -2349,6 +2401,7 @@ int desktop_app_present_rect(struct desktop_state *desktop, uint32_t pid, int wi
         if (slot < 0) return -1;
         win_idx = WINDOW_APP_FIRST + slot;
     }
+    if (desktop->user_apps[slot].content_storage == 0) return -1;
 
     cw = src_w < desktop->user_apps[slot].content_width ? src_w : desktop->user_apps[slot].content_width;
     ch = src_h < desktop->user_apps[slot].content_height ? src_h : desktop->user_apps[slot].content_height;
@@ -2367,7 +2420,7 @@ int desktop_app_present_rect(struct desktop_state *desktop, uint32_t pid, int wi
 
     /* Copy the damaged rows into the persistent content buffer. */
     for (row = 0; row < dh; ++row) {
-        uint32_t *dst = &desktop->user_apps[slot].content_storage[(size_t)(dy + row) * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH + (size_t)dx];
+        uint32_t *dst = &desktop->user_apps[slot].content_storage[(size_t)(dy + row) * (size_t)desktop->user_apps[slot].content_width + (size_t)dx];
         const uint32_t *s = &src[(size_t)(dy + row) * (size_t)src_w + (size_t)dx];
         memcpy(dst, s, (size_t)dw * sizeof(uint32_t));
     }
@@ -2392,7 +2445,7 @@ int desktop_app_present_rect(struct desktop_state *desktop, uint32_t pid, int wi
             int py = fy + r;
             if (py < 0 || py >= (int)fb->height) continue;
             uint32_t *dst = (uint32_t *)((uint8_t *)fb->base + (size_t)py * fb->pitch) + fx;
-            const uint32_t *s = &desktop->user_apps[slot].content_storage[(size_t)(dy + r) * (size_t)WINDOW_APP_CONTENT_MAX_WIDTH + (size_t)dx];
+            const uint32_t *s = &desktop->user_apps[slot].content_storage[(size_t)(dy + r) * (size_t)desktop->user_apps[slot].content_width + (size_t)dx];
             memcpy(dst, s, (size_t)n * sizeof(uint32_t));
         }
     }
@@ -2513,6 +2566,18 @@ void desktop_app_close_for_pid(struct desktop_state *desktop, uint32_t pid) {
     w = &desktop->windows[win_idx];
     before = window_rect(w);
     w->visible = 0;
+    /* Release the window's backing stores back to the heap. */
+    if (desktop->user_apps[slot].surface_storage) {
+        kfree(desktop->user_apps[slot].surface_storage);
+        desktop->user_apps[slot].surface_storage = 0;
+        desktop->user_apps[slot].surface_cap_px = 0;
+    }
+    if (desktop->user_apps[slot].content_storage) {
+        kfree(desktop->user_apps[slot].content_storage);
+        desktop->user_apps[slot].content_storage = 0;
+        desktop->user_apps[slot].content_cap_px = 0;
+    }
+    desktop->window_fbs[win_idx].base = 0;
     desktop->user_apps[slot].created = 0;
     desktop->user_apps[slot].pid = 0;
     desktop->user_apps[slot].content_width = 0;
