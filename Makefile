@@ -150,9 +150,9 @@ apps: $(DISK_IMG) $(LIBC_A)
 		$(LIBC_CRT0) build/user/dock.o build/user/vexui.o build/user/svg.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/dock.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/dock.elf /bin/dock
-	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/topbar/topbar.cpp -o build/user/topbar.o
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Ilib/svg -c user/topbar/topbar.cpp -o build/user/topbar.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/topbar.elf \
-		$(LIBC_CRT0) build/user/topbar.o build/user/vexui.o build/user/svg.o $(LIBC_A)
+		$(LIBC_CRT0) build/user/topbar.o build/user/svg.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/topbar.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/topbar.elf /bin/topbar
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/browser -c user/browser/weblayout.c  -o build/user/weblayout.o

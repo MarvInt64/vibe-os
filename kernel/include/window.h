@@ -94,6 +94,10 @@ struct desktop_state {
     struct framebuffer window_fbs[WINDOW_COUNT];
     int z_order[WINDOW_COUNT];
     int focused_window;
+    /* Last focused "real" app window (not a shell panel like the dock or top
+     * bar). The top-bar app shows this window's menu and is the target of menu
+     * actions, so clicking the bar itself doesn't hijack the menu. */
+    int menu_target_window;
     int dragging_window;
     int drag_offset_x;
     int drag_offset_y;
@@ -205,5 +209,10 @@ int desktop_shell_dock_active(const struct desktop_state *desktop);
  * calling app's address space. Returns 0 on success, negative on error. */
 int desktop_app_set_menu(struct desktop_state *desktop, uint32_t pid, int win_id, const struct winsys_menu_item *items, int count);
 int desktop_app_set_menubar(struct desktop_state *desktop, uint32_t pid, int win_id, const struct winsys_menubar_item *items, int count);
+
+/* Top-bar app support: snapshot status (load, uptime, focused menu bar) and
+ * deliver a picked menu action to the focused window. */
+void desktop_fill_status(struct desktop_state *desktop, struct winsys_desktop_status *out);
+void desktop_dispatch_menu_action(struct desktop_state *desktop, uint32_t action_id);
 
 #endif

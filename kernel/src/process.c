@@ -1992,6 +1992,32 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         return 0;
     }
 
+    if (number == SYS_DESKTOP_STATUS) {
+        /* rdi = struct winsys_desktop_status* (user). The calling app's address
+         * space is active, so the struct is filled directly. */
+        struct desktop_state *d = desktop_active();
+        struct winsys_desktop_status *out = (struct winsys_desktop_status *)(uintptr_t)frame->rdi;
+        if (d == 0 || out == 0) {
+            frame->rax = (uint64_t)(-SYSCALL_EPERM);
+            return 0;
+        }
+        desktop_fill_status(d, out);
+        frame->rax = 0;
+        return 0;
+    }
+
+    if (number == SYS_MENU_DISPATCH) {
+        /* rdi = action_id, delivered to the focused window. */
+        struct desktop_state *d = desktop_active();
+        if (d == 0) {
+            frame->rax = (uint64_t)(-SYSCALL_EPERM);
+            return 0;
+        }
+        desktop_dispatch_menu_action(d, (uint32_t)frame->rdi);
+        frame->rax = 0;
+        return 0;
+    }
+
     if (number == SYS_NET_INFO) {
         /* rdi = user pointer to struct net_info (filled in place). The calling
          * process's address space is active here, so the write lands correctly. */

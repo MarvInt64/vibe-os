@@ -9,7 +9,10 @@
  * input through an event queue. This header is the *only* contract an external
  * app needs — no kernel internals required. */
 
-#define WINSYS_MAX_WIDTH  900
+/* Max app window size. WIDTH spans the full screen so the top-bar app can be a
+ * single full-width window (the per-slot content/surface buffers scale with
+ * this). */
+#define WINSYS_MAX_WIDTH  1920
 #define WINSYS_MAX_HEIGHT 640
 
 #define WINSYS_WINDOW_FRAMELESS 0x00000001u
@@ -93,6 +96,22 @@ struct winsys_menubar_item {
     char shortcut[WINSYS_MENUBAR_SHORTCUT_MAX];
     uint32_t flags;
     uint32_t action_id;
+};
+
+/* ---- Desktop status for the userspace top-bar app ----
+ * Snapshot the top bar needs each frame: system load, uptime, the focused
+ * window's title and its declared menu bar. Filled by SYS_DESKTOP_STATUS. */
+#define WINSYS_APP_LABEL_MAX 20
+
+struct winsys_desktop_status {
+    uint32_t uptime_seconds;
+    uint32_t cpu_pct;
+    uint32_t ui_pct;
+    uint32_t mem_pct;
+    uint32_t net_up;                 /* 1 if the network has an IP */
+    char     app_label[WINSYS_APP_LABEL_MAX];   /* focused window title */
+    uint32_t menu_count;             /* valid entries in menu[] */
+    struct winsys_menubar_item menu[WINSYS_MAX_MENUBAR_ITEMS];
 };
 
 #endif

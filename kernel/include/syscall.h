@@ -71,7 +71,14 @@ enum syscall_number {
 	 * demand and returns the PREVIOUS break (start of the newly available bytes),
 	 * or (void*)-1 on failure. This replaces baking a fixed heap arena into every
 	 * binary's BSS — heap memory now grows lazily like a real OS. */
-	SYS_SBRK = 42
+	SYS_SBRK = 42,
+	/* Fill a struct winsys_desktop_status (user ptr in rdi) with the data the
+	 * top-bar app needs: uptime, CPU/UI/MEM load, focused app label and its
+	 * menu bar. Returns 0 on success. */
+	SYS_DESKTOP_STATUS = 43,
+	/* Deliver a menu action (rdi = action_id) to the focused window as a
+	 * WINSYS_EVENT_MENU_ACTION, exactly as the old kernel top bar did. */
+	SYS_MENU_DISPATCH = 44
 };
 
 struct system_info_snapshot {

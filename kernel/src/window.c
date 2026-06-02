@@ -752,6 +752,13 @@ static void focus_window(struct desktop_state *desktop, int index) {
     }
 
     desktop->focused_window = index;
+    /* Track the last focused real app window so the top bar keeps showing its
+     * menu even when a shell panel (dock / top bar) is clicked. Shell panels
+     * are frameless NO_DOCK windows. */
+    if (!((desktop->windows[index].flags & WINSYS_WINDOW_NO_DOCK) &&
+          window_frameless(&desktop->windows[index]))) {
+        desktop->menu_target_window = index;
+    }
     for (order = 0; order < WINDOW_COUNT; ++order) {
         if (desktop->z_order[order] == index) {
             position = order;
@@ -785,6 +792,27 @@ static void focus_window(struct desktop_state *desktop, int index) {
     }
 }
 
+/* A frameless app window's pixels are transparent where its presented content
+ * holds the transparent key. Clicks on those pixels fall through to the window
+ * below — this lets a mostly-transparent overlay (the top bar, the dock) cover
+ * a large area while only its opaque parts are interactive. */
+static int window_pixel_transparent(struct desktop_state *desktop, int index, int px, int py) {
+    struct window_state *window = &desktop->windows[index];
+    int s, lx, ly;
+    if (!is_user_app_slot(index) || !window_frameless(window)) return 0;
+    s = slot_index(index);
+    if (s < 0) return 0;
+    lx = px - window->x;
+    ly = py - window->y;
+    if (lx < 0 || ly < 0 ||
+        lx >= desktop->user_apps[s].content_width ||
+        ly >= desktop->user_apps[s].content_height) {
+        return 1;   /* outside presented content = nothing drawn there */
+    }
+    return desktop->user_apps[s].content_storage[(size_t)ly * WINDOW_APP_CONTENT_MAX_WIDTH + lx]
+           == WINDOW_TRANSPARENT_KEY;
+}
+
 static int topmost_window_at(struct desktop_state *desktop, int px, int py) {
     int order;
 
@@ -792,7 +820,8 @@ static int topmost_window_at(struct desktop_state *desktop, int px, int py) {
         int index = desktop->z_order[order];
         struct window_state *window = &desktop->windows[index];
 
-        if (window->visible && point_in_rect(px, py, window->x, window->y, window->width, window->height)) {
+        if (window->visible && point_in_rect(px, py, window->x, window->y, window->width, window->height) &&
+            !window_pixel_transparent(desktop, index, px, py)) {
             return index;
         }
     }
@@ -1016,49 +1045,6 @@ static void window_toggle_maximize(struct desktop_state *desktop, int index) {
 
 static void draw_shadow_block(struct framebuffer *fb, int x, int y, int width, int height);
 
-static void draw_line(struct framebuffer *fb, int x0, int y0, int x1, int y1, uint32_t c) {
-    int dx = x1 > x0 ? x1 - x0 : x0 - x1;
-    int sx = x0 < x1 ? 1 : -1;
-    int dy = y1 > y0 ? y0 - y1 : y1 - y0;
-    int sy = y0 < y1 ? 1 : -1;
-    int err = dx + dy;
-
-    for (;;) {
-        fb_put_pixel(fb, x0, y0, c);
-        fb_put_pixel(fb, x0, y0 + 1, c);
-        if (x0 == x1 && y0 == y1) break;
-        {
-            int e2 = err * 2;
-            if (e2 >= dy) { err += dy; x0 += sx; }
-            if (e2 <= dx) { err += dx; y0 += sy; }
-        }
-    }
-}
-
-static void draw_power_icon(struct framebuffer *fb, int x, int y, int size, uint32_t c) {
-    int cx = x + size / 2;
-    int cy = y + size / 2 + 1;
-    int r = size / 2 - 2;
-    int outer = r * r;
-    int inner = (r - 2) * (r - 2);
-    int px, py;
-
-    for (py = 0; py < size; ++py) {
-        for (px = 0; px < size; ++px) {
-            int ax = x + px;
-            int ay = y + py;
-            int dx = ax - cx;
-            int dy = ay - cy;
-            int d2 = dx * dx + dy * dy;
-            if (d2 <= outer && d2 >= inner && !(ay < cy - 1 && ax >= cx - 3 && ax <= cx + 3)) {
-                fb_put_pixel(fb, ax, ay, c);
-            }
-        }
-    }
-
-    fb_fill_rect(fb, cx - 1, y + 1, 2, size / 2, c);
-}
-
 int desktop_set_wallpaper(struct desktop_state *desktop, const uint32_t *src, int src_w, int src_h) {
     int sw, sh, x, y;
 
@@ -1093,8 +1079,8 @@ int desktop_set_wallpaper(struct desktop_state *desktop, const uint32_t *src, in
 
 /* The focused window's menu bar (a flat winsys_menubar_item list), or NULL. */
 static const struct winsys_menubar_item *tb_bar(struct desktop_state *d, int *count) {
-    int f = d->focused_window;
-    if (f >= 0 && f < WINDOW_COUNT && is_user_app_slot(f)) {
+    int f = d->menu_target_window;
+    if (f >= 0 && f < WINDOW_COUNT && is_user_app_slot(f) && d->windows[f].visible) {
         int sl = slot_index(f);
         if (sl >= 0 && sl < MAX_USER_APPS && d->user_apps[sl].created &&
             d->user_apps[sl].menubar_count > 0) {
@@ -1106,238 +1092,17 @@ static const struct winsys_menubar_item *tb_bar(struct desktop_state *d, int *co
     return 0;
 }
 
-/* Index in bar[] of the m-th top-level title, or -1. */
-static int tb_title_idx(const struct winsys_menubar_item *bar, int n, int m) {
-    int i, c = 0;
-    for (i = 0; i < n; ++i)
-        if (bar[i].flags & WINSYS_MB_TITLE) { if (c == m) return i; ++c; }
-    return -1;
-}
-static int tb_menu_count(const struct winsys_menubar_item *bar, int n) {
-    int i, c = 0;
-    for (i = 0; i < n; ++i) if (bar[i].flags & WINSYS_MB_TITLE) ++c;
-    return c;
-}
-
 /* The active-app label: focused window title (clamped) or "Desktop". */
 static void tb_app_label(struct desktop_state *d, char *out, int cap) {
     const char *t = "Desktop";
     int i;
-    if (d->focused_window >= 0 && d->focused_window < WINDOW_COUNT &&
-        d->windows[d->focused_window].visible && d->windows[d->focused_window].title[0])
-        t = d->windows[d->focused_window].title;
+    int f = d->menu_target_window;
+    if (f >= 0 && f < WINDOW_COUNT && d->windows[f].visible && d->windows[f].title[0])
+        t = d->windows[f].title;
     for (i = 0; t[i] && i < cap - 1 && i < 16; ++i) out[i] = t[i];
     out[i] = '\0';
 }
 
-/* x (and pixel width) of the m-th top-level menu title. */
-static int tb_menu_x(struct desktop_state *d, int m, int *w_out) {
-    const struct winsys_menubar_item *bar;
-    int n, adv = text_char_advance(1);
-    char aa[20];
-    int x, i, ti;
-    tb_app_label(d, aa, sizeof aa);
-    x = 122 + (int)strlen(aa) * adv + 24;
-    bar = tb_bar(d, &n);
-    for (i = 0; i < m; ++i) {
-        ti = tb_title_idx(bar, n, i);
-        if (ti >= 0) x += (int)strlen(bar[ti].label) * adv + 22;
-    }
-    ti = tb_title_idx(bar, n, m);
-    if (w_out) *w_out = (ti >= 0) ? (int)strlen(bar[ti].label) * adv : 0;
-    return x;
-}
-
-static int tb_label_at(struct desktop_state *d, int x, int y) {
-    int n, total, i;
-    const struct winsys_menubar_item *bar = tb_bar(d, &n);
-    if (y < 8 || y > 42 || !bar) return -1;
-    total = tb_menu_count(bar, n);
-    for (i = 0; i < total; ++i) {
-        int w, mx = tb_menu_x(d, i, &w);
-        if (x >= mx - 5 && x < mx + w + 5) return i;
-    }
-    return -1;
-}
-
-/* Row count (incl. dividers) of menu m; *first = bar[] index of its first row. */
-static int tb_menu_rows(const struct winsys_menubar_item *bar, int n, int m, int *first) {
-    int ti = tb_title_idx(bar, n, m);
-    int next = tb_title_idx(bar, n, m + 1);
-    if (ti < 0) { *first = 0; return 0; }
-    if (next < 0) next = n;
-    *first = ti + 1;
-    return next - (ti + 1);
-}
-
-static struct rect tb_dropdown_rect(struct desktop_state *desktop, int m) {
-    const struct winsys_menubar_item *bar;
-    int n, first, rows, adv = text_char_advance(1);
-    int i, longest = 0, w, h, mw, x;
-    bar = tb_bar(desktop, &n);
-    rows = tb_menu_rows(bar, n, m, &first);
-    for (i = 0; i < rows; ++i) {
-        const struct winsys_menubar_item *it = &bar[first + i];
-        int len;
-        if (it->flags & WINSYS_MB_DIVIDER) continue;
-        len = (int)strlen(it->label) + ((it->flags & WINSYS_MB_CHECK) ? 2 : 0);
-        if (it->shortcut[0]) len += (int)strlen(it->shortcut) + 4;
-        if (len > longest) longest = len;
-    }
-    w = longest * adv + 40; if (w < 200) w = 200; if (w > 360) w = 360;
-    h = rows * 22 + 12;
-    x = tb_menu_x(desktop, m, &mw) - 6;
-    if (x + w > (int)desktop->screen_width - 8) x = (int)desktop->screen_width - w - 8;
-    if (x < 6) x = 6;
-    return rect_from_bounds(x, 50, w, h);
-}
-
-/* bar[] index of the item under (x,y) in menu m's dropdown, or -1. */
-static int tb_item_at(struct desktop_state *desktop, int m, int x, int y) {
-    const struct winsys_menubar_item *bar;
-    int n, first, rows, row;
-    struct rect r = tb_dropdown_rect(desktop, m);
-    bar = tb_bar(desktop, &n);
-    rows = tb_menu_rows(bar, n, m, &first);
-    if (!point_in_rect(x, y, r.x, r.y, r.width, r.height)) return -1;
-    row = (y - (r.y + 6)) / 22;
-    if (row < 0 || row >= rows) return -1;
-    if (bar[first + row].flags & WINSYS_MB_DIVIDER) return -1;
-    return first + row;
-}
-
-static void draw_topbar_menu_labels(struct desktop_state *desktop, struct framebuffer *fb) {
-    const struct winsys_menubar_item *bar;
-    int n, total, i;
-    char aa[20];
-    bar = tb_bar(desktop, &n);
-    tb_app_label(desktop, aa, sizeof aa);
-    fb_fill_rect(fb, 110, 16, 1, 22, g_chrome_theme.border);
-    draw_text(fb, 122, 20, aa, g_chrome_theme.text, 1);
-    if (!bar) return;
-    total = tb_menu_count(bar, n);
-    for (i = 0; i < total; ++i) {
-        int w, mx = tb_menu_x(desktop, i, &w);
-        int ti = tb_title_idx(bar, n, i);
-        if (ti >= 0) draw_text(fb, mx, 20, bar[ti].label, g_chrome_theme.text_dim, 1);
-    }
-}
-
-static void draw_topbar_menu_overlay(struct desktop_state *desktop, struct framebuffer *fb) {
-    int m = desktop->topbar_menu_open;
-    const struct winsys_menubar_item *bar;
-    struct rect r;
-    uint32_t dbg, item_text, muted;
-    int n, total, first, rows, w, mx, i;
-
-    if (m < 0) return;
-    bar = tb_bar(desktop, &n);
-    if (!bar) return;
-    total = tb_menu_count(bar, n);
-    if (m >= total) return;
-
-    mx = tb_menu_x(desktop, m, &w);
-    fb_fill_rect(fb, mx, 44, w, 2, g_chrome_theme.accent);
-
-    r = tb_dropdown_rect(desktop, m);
-    rows = tb_menu_rows(bar, n, m, &first);
-    dbg       = g_chrome_theme.menu_bg;
-    item_text = g_chrome_theme.menu_item;
-    muted     = g_chrome_theme.menu_muted;
-
-    draw_soft_shadow(fb, r.x, r.y, r.width, r.height, 10, 5, 0x00060a12u);
-    draw_rounded_panel(fb, r.x, r.y, r.width, r.height, 10, dbg, dbg, g_chrome_theme.border, dbg);
-
-    for (i = 0; i < rows; ++i) {
-        const struct winsys_menubar_item *it = &bar[first + i];
-        int ry = r.y + 6 + i * 22;
-        int hov, tx;
-        uint32_t col;
-        if (it->flags & WINSYS_MB_DIVIDER) {
-            fb_fill_rect(fb, r.x + 10, ry + 10, r.width - 20, 1,
-                         mix_color(g_chrome_theme.border, dbg, 1u, 2u));
-            continue;
-        }
-        hov = ((first + i) == desktop->topbar_menu_hover);
-        col = (it->flags & WINSYS_MB_DANGER) ? g_chrome_theme.danger
-                                             : (hov ? g_chrome_theme.text : item_text);
-        if (hov) fb_fill_rect(fb, r.x + 4, ry + 1, r.width - 8, 20,
-                              mix_color(g_chrome_theme.accent, dbg, 1u, 6u));
-        tx = r.x + 14;
-        if (it->flags & WINSYS_MB_CHECK) {
-            if (it->flags & WINSYS_MB_CHECKED) {
-                fb_fill_rect(fb, r.x + 11, ry + 11, 2, 4, g_chrome_theme.accent);
-                fb_fill_rect(fb, r.x + 13, ry + 13, 4, 2, g_chrome_theme.accent);
-                fb_fill_rect(fb, r.x + 16, ry + 6, 2, 8, g_chrome_theme.accent);
-            }
-            tx = r.x + 26;
-        }
-        draw_text(fb, tx, ry + 3, it->label, col, 1);
-        if (it->shortcut[0]) {
-            int sw = (int)strlen(it->shortcut) * text_char_advance(1);
-            draw_text(fb, r.x + r.width - 12 - sw, ry + 3, it->shortcut,
-                      hov ? g_chrome_theme.text_dim : muted, 1);
-        }
-        if (it->flags & WINSYS_MB_ARROW) draw_text(fb, r.x + r.width - 16, ry + 3, ">", muted, 1);
-    }
-}
-
-static void int_to_str(int value, char *dest, size_t cap) {
-    char digits[8];
-    size_t i = 0;
-    size_t offset = 0;
-
-    if (cap < 2) {
-        if (cap == 1) dest[0] = '\0';
-        return;
-    }
-
-    if (value < 0) {
-        value = -value;
-        if (offset + 1 < cap) dest[offset++] = '-';
-    }
-
-    if (value == 0) {
-        if (offset + 1 < cap) dest[offset++] = '0';
-    } else {
-        while (value > 0 && i < sizeof(digits)) {
-            digits[i++] = (char)('0' + (value % 10));
-            value /= 10;
-        }
-        while (i > 0 && offset < cap - 1) {
-            dest[offset++] = digits[--i];
-        }
-    }
-    dest[offset] = '\0';
-}
-
-static void format_uptime_time(char *dest, size_t cap) {
-    uint64_t seconds;
-    uint64_t hours;
-    uint64_t minutes;
-    if (cap < 9) {
-        if (cap > 0) dest[0] = '\0';
-        return;
-    }
-    seconds = timer_tick_count() / timer_frequency_hz();
-    hours = (seconds / 3600u) % 24u;
-    minutes = (seconds / 60u) % 60u;
-    seconds %= 60u;
-    dest[0] = (char)('0' + (hours / 10u));
-    dest[1] = (char)('0' + (hours % 10u));
-    dest[2] = ':';
-    dest[3] = (char)('0' + (minutes / 10u));
-    dest[4] = (char)('0' + (minutes % 10u));
-    dest[5] = ':';
-    dest[6] = (char)('0' + (seconds / 10u));
-    dest[7] = (char)('0' + (seconds % 10u));
-    dest[8] = '\0';
-}
-
-static int g_topbar_cpu_history[24];
-static int g_topbar_ui_history[24];
-static int g_topbar_cpu_history_pos;
-static uint8_t g_topbar_cpu_history_ready;
 static uint64_t g_desktop_activity_units;
 
 uint64_t desktop_activity_units(void) {
@@ -1352,7 +1117,9 @@ static void desktop_note_activity(int pixels) {
     g_desktop_activity_units += units;
 }
 
-static void get_topbar_stats(int *cpu_out, int *mem_out, int *cpu_history_out, int *ui_history_out, int history_count) {
+/* Sample current CPU / UI / MEM load percentages (0..99). Called once per
+ * top-bar status query; the app keeps its own sparkline history. */
+static void get_topbar_stats(int *cpu_out, int *ui_out, int *mem_out) {
     static uint64_t previous_runtime;
     static uint64_t previous_activity;
     static uint64_t previous_tick;
@@ -1384,12 +1151,6 @@ static void get_topbar_stats(int *cpu_out, int *mem_out, int *cpu_history_out, i
             if (last_ui_pct > 99) last_ui_pct = 99;
             if (last_ui_pct < 0) last_ui_pct = 0;
         }
-        if (now != previous_tick) {
-            g_topbar_cpu_history[g_topbar_cpu_history_pos] = last_cpu_pct;
-            g_topbar_ui_history[g_topbar_cpu_history_pos] = last_ui_pct;
-            g_topbar_cpu_history_pos = (g_topbar_cpu_history_pos + 1) % (int)(sizeof(g_topbar_cpu_history) / sizeof(g_topbar_cpu_history[0]));
-            g_topbar_cpu_history_ready = 1;
-        }
         previous_tick = now;
         previous_runtime = total_runtime;
         previous_activity = total_activity;
@@ -1406,45 +1167,37 @@ static void get_topbar_stats(int *cpu_out, int *mem_out, int *cpu_history_out, i
         *mem_out = mem_pct;
     }
 
-    if (cpu_history_out != 0 && history_count > 0) {
-        int n = (int)(sizeof(g_topbar_cpu_history) / sizeof(g_topbar_cpu_history[0]));
-        int start = g_topbar_cpu_history_ready ? g_topbar_cpu_history_pos : 0;
-        int h;
-        for (h = 0; h < history_count; ++h) {
-            int src = start + ((h * n) / history_count);
-            cpu_history_out[h] = g_topbar_cpu_history[src % n];
-            if (ui_history_out != 0) {
-                ui_history_out[h] = g_topbar_ui_history[src % n];
-            }
-        }
-    }
-
     *cpu_out = last_cpu_pct;
+    *ui_out = last_ui_pct;
 }
 
-static void draw_topbar_cpu_sparkline(struct framebuffer *fb, int x, int y, int width, int height, const int *values, int count) {
-    int i;
-    uint32_t base = mix_color(g_chrome_theme.surface_hi, g_chrome_theme.bg, 1u, 2u);
-    fb_fill_rect(fb, x, y + height - 2, width, 1, base);
-    for (i = 1; i < count; ++i) {
-        int x0 = x + ((i - 1) * (width - 1)) / (count - 1);
-        int x1 = x + (i * (width - 1)) / (count - 1);
-        int y0 = y + height - 1 - ((values[i - 1] * (height - 1)) / 100);
-        int y1 = y + height - 1 - ((values[i] * (height - 1)) / 100);
-        draw_line(fb, x0, y0, x1, y1, mix_color(g_chrome_theme.accent, g_chrome_theme.text, 1u, 4u));
+/* Fill the top-bar app's status snapshot: load, uptime, focused app label and
+ * its declared menu bar. (See SYS_DESKTOP_STATUS.) */
+void desktop_fill_status(struct desktop_state *desktop, struct winsys_desktop_status *out) {
+    int cpu = 0, ui = 0, mem = 0, n = 0, i;
+    const struct winsys_menubar_item *bar;
+    get_topbar_stats(&cpu, &ui, &mem);
+    out->cpu_pct = (uint32_t)cpu;
+    out->ui_pct = (uint32_t)ui;
+    out->mem_pct = (uint32_t)mem;
+    out->uptime_seconds = (uint32_t)(timer_tick_count() / timer_frequency_hz());
+    out->net_up = 0;
+    tb_app_label(desktop, out->app_label, (int)sizeof(out->app_label));
+    bar = tb_bar(desktop, &n);
+    if (n > WINSYS_MAX_MENUBAR_ITEMS) n = WINSYS_MAX_MENUBAR_ITEMS;
+    out->menu_count = (uint32_t)(bar ? n : 0);
+    for (i = 0; i < n && bar; ++i) out->menu[i] = bar[i];
+}
+
+/* Deliver a picked menu action to the focused window (mirrors what the old
+ * kernel-drawn top bar did on click). */
+void desktop_dispatch_menu_action(struct desktop_state *desktop, uint32_t action_id) {
+    int f = desktop->menu_target_window;
+    if (f >= 0 && f < WINDOW_COUNT && is_user_app_slot(f) && desktop->windows[f].visible) {
+        app_enqueue_event_slot(desktop, slot_index(f),
+            WINSYS_EVENT_MENU_ACTION, 0, 0, 0, action_id);
     }
 }
-
-static void draw_topbar_mem_bar(struct framebuffer *fb, int x, int y, int width, int height, int pct) {
-    int fill = (pct * width) / 100;
-    fb_fill_rect(fb, x, y, width, height, mix_color(g_chrome_theme.surface_hi, g_chrome_theme.bg, 1u, 2u));
-    if (fill > 0) {
-        fb_fill_rect(fb, x, y, fill, height, mix_color(g_chrome_theme.accent, g_chrome_theme.text, 1u, 3u));
-        fb_fill_rect(fb, x, y, fill, height / 2, mix_color(g_chrome_theme.accent, g_chrome_theme.text, 1u, 2u));
-    }
-    fb_draw_rect(fb, x, y, width, height, 1, g_chrome_theme.border);
-}
-
 
 static void render_background_surface(struct desktop_state *desktop) {
     struct framebuffer *fb = &desktop->background_fb;
@@ -1485,64 +1238,10 @@ static void render_background_surface(struct desktop_state *desktop) {
         }
     }
 
-    /* ---- Top bar: thin, dense; brand left, indicators right. ---- */
-    fb_fill_rect(fb, 0, 0, w, 54, mix_color(g_chrome_theme.surface, g_chrome_theme.bg, 1u, 3u));
-    fb_fill_rect(fb, 0, 53, w, 1, g_chrome_theme.border);
-
-    /* The V logo is rendered by the userspace topbar app (/bin/topbar) at the
-     * far left, so it can use the full SVG renderer (gradients/glow). The brand
-     * text sits just to its right. */
-    draw_text(fb, 58, 20, "VibeOS", g_chrome_theme.text, 1);
-    draw_topbar_menu_labels(desktop, fb);
-
-    sx = w - 430;
-    draw_text(fb, sx, 20, "NET", g_chrome_theme.text_dim, 1);
-    sx += 34;
-    fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
-    sx += 8;
-    {
-        int cpu_pct, mem_pct;
-        int cpu_history[24];
-        int ui_history[24];
-        char cpu_buf[8];
-        char mem_buf[8];
-        get_topbar_stats(&cpu_pct, &mem_pct, cpu_history, ui_history, 24);
-        int_to_str(cpu_pct, cpu_buf, sizeof(cpu_buf));
-        int_to_str(mem_pct, mem_buf, sizeof(mem_buf));
-        draw_text(fb, sx, 20, "CPU ", g_chrome_theme.text, 1);
-        sx += 30;
-        draw_topbar_cpu_sparkline(fb, sx, 18, 42, 14, cpu_history, 24);
-        sx += 48;
-        draw_text(fb, sx, 20, cpu_buf, g_chrome_theme.text, 1);
-        draw_text(fb, sx + (int)strlen(cpu_buf) * 8, 20, "%", g_chrome_theme.text, 1);
-        sx += 30;
-        fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
-        sx += 8;
-        draw_text(fb, sx, 20, "UI ", g_chrome_theme.text_dim, 1);
-        sx += 24;
-        draw_topbar_cpu_sparkline(fb, sx, 18, 30, 14, ui_history, 24);
-        sx += 36;
-        fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
-        sx += 8;
-        draw_text(fb, sx, 20, "MEM ", g_chrome_theme.text, 1);
-        sx += 34;
-        draw_topbar_mem_bar(fb, sx, 22, 30, 8, mem_pct);
-        sx += 36;
-        draw_text(fb, sx, 20, mem_buf, g_chrome_theme.text, 1);
-        draw_text(fb, sx + (int)strlen(mem_buf) * 8, 20, "%", g_chrome_theme.text, 1);
-        sx += 30;
-    }
-    fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
-    sx += 8;
-    {
-        char time_buf[9];
-        format_uptime_time(time_buf, sizeof(time_buf));
-        draw_text(fb, sx, 20, time_buf, g_chrome_theme.text, 1);
-    }
-    sx += 8 * 8 + 10;
-    fb_fill_rect(fb, sx, 16, 1, 22, g_chrome_theme.border);
-    sx += 8;
-    draw_power_icon(fb, sx, 15, 18, g_chrome_theme.text);
+    /* The top bar (logo, brand, app menus, CPU/UI/MEM, clock, power) is drawn
+     * by the userspace top-bar app (/bin/topbar), which queries the kernel via
+     * SYS_DESKTOP_STATUS and composites over this background. */
+    (void)sx;
 
     for (order = 0; order < desktop->launcher_count; ++order) {
         struct desktop_icon icon = launcher_icon_at(desktop, order);
@@ -1911,7 +1610,6 @@ static void compose_scene_rect(struct desktop_state *desktop, struct framebuffer
     }
 
     draw_context_menu(desktop, fb);
-    draw_topbar_menu_overlay(desktop, fb);
     draw_desktop_modal(desktop, fb);
 }
 
@@ -1986,6 +1684,7 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
         }
     }
     desktop->focused_window = WINDOW_TERMINAL;
+    desktop->menu_target_window = -1;
     desktop->dragging_window = -1;
     desktop->drag_offset_x = 0;
     desktop->drag_offset_y = 0;
@@ -2143,19 +1842,12 @@ static void apply_window_resize(struct desktop_state *desktop, int index, int mo
 void desktop_handle_input(struct desktop_state *desktop, const struct mouse_state *mouse, const struct keyboard_state *keyboard) {
     size_t i;
     int index;
-    int old_mouse_x = desktop->mouse_x;
-    int old_mouse_y = desktop->mouse_y;
 
     desktop->mouse_x = mouse->x;
     desktop->mouse_y = mouse->y;
     desktop->mouse_buttons = mouse->buttons;
     if (mouse->left_pressed) {
         journal_log_hex(JOURNAL_APP, 0, "desktop left press buttons=", mouse->buttons);
-    }
-    if (point_in_rect(mouse->x, mouse->y, 14, 8, 96, 36) ||
-        point_in_rect(old_mouse_x, old_mouse_y, 14, 8, 96, 36)) {
-        mark_background_dirty(desktop);
-        mark_dirty_rect(desktop, rect_from_bounds(0, 0, 116, 54));
     }
 
     if (desktop->modal_open) {
@@ -2212,75 +1904,9 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
         mark_dirty_rect(desktop, window_rect(window));
     }
 
-    /* ---- Global top-bar menu interaction ---- */
-    {
-        size_t ki;
-        int esc = 0;
-        for (ki = 0; ki < keyboard->count; ++ki)
-            if (keyboard->chars[ki] == 0x1b) esc = 1;
-        if (esc && desktop->topbar_menu_open >= 0) {
-            mark_dirty_rect(desktop, tb_dropdown_rect(desktop, desktop->topbar_menu_open));
-            mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
-            desktop->topbar_menu_open = -1;
-            desktop->topbar_menu_hover = -1;
-        }
-    }
-    if (desktop->topbar_menu_open >= 0 && !mouse->left_pressed) {
-        int tl = tb_label_at(desktop, mouse->x, mouse->y);
-        if (tl >= 0 && tl != desktop->topbar_menu_open) {
-            mark_dirty_rect(desktop, tb_dropdown_rect(desktop, desktop->topbar_menu_open));
-            desktop->topbar_menu_open = tl;
-            desktop->topbar_menu_hover = -1;
-            mark_dirty_rect(desktop, tb_dropdown_rect(desktop, tl));
-            mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
-        } else {
-            int it = tb_item_at(desktop, desktop->topbar_menu_open, mouse->x, mouse->y);
-            if (it != desktop->topbar_menu_hover) {
-                desktop->topbar_menu_hover = it;
-                mark_dirty_rect(desktop, tb_dropdown_rect(desktop, desktop->topbar_menu_open));
-            }
-        }
-    }
-    if (mouse->left_pressed) {
-        if (point_in_rect(mouse->x, mouse->y, 14, 8, 96, 36)) {
-            int pid = process_spawn_path("/bin/sysinfo", 0, 0);
-            if (pid == -SYSCALL_ENOMEM) {
-                desktop_show_error(desktop, "Not Enough Memory",
-                                   "There is not enough memory or no free process slot available to start System Info.");
-            } else if (pid < 0) {
-                desktop_show_error(desktop, "System Info Missing",
-                                   "The /bin/sysinfo app could not be started.");
-            }
-            return;
-        }
-
-        int tl = tb_label_at(desktop, mouse->x, mouse->y);
-        if (tl >= 0) {
-            int prev = desktop->topbar_menu_open;
-            if (prev >= 0) mark_dirty_rect(desktop, tb_dropdown_rect(desktop, prev));
-            desktop->topbar_menu_open = (prev == tl) ? -1 : tl;
-            desktop->topbar_menu_hover = -1;
-            if (desktop->topbar_menu_open >= 0)
-                mark_dirty_rect(desktop, tb_dropdown_rect(desktop, desktop->topbar_menu_open));
-            mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
-            return;
-        }
-        if (desktop->topbar_menu_open >= 0) {
-            int it = tb_item_at(desktop, desktop->topbar_menu_open, mouse->x, mouse->y);
-            int bn;
-            const struct winsys_menubar_item *bar = tb_bar(desktop, &bn);
-            mark_dirty_rect(desktop, tb_dropdown_rect(desktop, desktop->topbar_menu_open));
-            mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, 54));
-            desktop->topbar_menu_open = -1;
-            desktop->topbar_menu_hover = -1;
-            /* Report the chosen entry's action_id back to the focused app. */
-            if (it >= 0 && bar && is_user_app_slot(desktop->focused_window)) {
-                app_enqueue_event_slot(desktop, slot_index(desktop->focused_window),
-                    WINSYS_EVENT_MENU_ACTION, 0, 0, 0, bar[it].action_id);
-            }
-            return;
-        }
-    }
+    /* The global top bar (menus, indicators) is owned by the userspace top-bar
+     * app now; it handles its own clicks and dispatches menu actions via
+     * SYS_MENU_DISPATCH. The kernel no longer interprets clicks in that area. */
 
     if (mouse->left_pressed) {
         if (desktop->context_menu_open) {
@@ -2896,6 +2522,9 @@ void desktop_app_close_for_pid(struct desktop_state *desktop, uint32_t pid) {
     desktop->user_apps[slot].menu_count = 0;
     if (desktop->focused_window == win_idx) {
         desktop->focused_window = -1;
+    }
+    if (desktop->menu_target_window == win_idx) {
+        desktop->menu_target_window = -1;
     }
     mark_dirty_rect(desktop, before);
 }
