@@ -199,3 +199,81 @@ size_t kmalloc_get_physical_used(void) {
     }
     return (size_t)g_heap_base + g_used;
 }
+
+/* ===================================================================
+ *  Compositor (graphics) heap — a SECOND, physically-disjoint heap.
+ *
+ *  Window backing stores must never share physical memory with a process
+ *  image: the compositor writes into them under any process's page tables,
+ *  so an overlap would corrupt whatever process happens to be mapped there.
+ *  Process images come from the main heap above; window/compositor buffers
+ *  come from this separate region. Because the two heaps occupy disjoint
+ *  physical RAM, overlap between a window buffer and a process image is
+ *  impossible by construction — no retry/quarantine hack needed. The
+ *  allocator itself is the same simple first-fit as the main heap.
+ * =================================================================== */
+static alloc_header_t *g_gfx_start = NULL;
+static uintptr_t g_gfx_base = 0;
+static size_t g_gfx_size = 0;
+
+static uintptr_t gfx_end_addr(void) { return g_gfx_base + g_gfx_size; }
+
+static int gfx_block_in_heap(const alloc_header_t *block) {
+    uintptr_t p = (uintptr_t)block;
+    if (p < g_gfx_base || p + sizeof(alloc_header_t) > gfx_end_addr()) {
+        return 0;
+    }
+    if (block->size > gfx_end_addr() - p - sizeof(alloc_header_t)) {
+        return 0;
+    }
+    return 1;
+}
+
+void gfx_heap_init(uintptr_t base, size_t size) {
+    g_gfx_base = base;
+    g_gfx_size = size;
+    g_gfx_start = (alloc_header_t *)base;
+    g_gfx_start->size = size - sizeof(alloc_header_t);
+    g_gfx_start->next = NULL;
+    g_gfx_start->is_free = 1;
+}
+
+void *gfx_alloc(size_t size) {
+    alloc_header_t *curr = g_gfx_start;
+    if (g_gfx_start == NULL) return NULL;
+    size = (size + 7) & ~7u;
+    while (curr != NULL) {
+        if (!gfx_block_in_heap(curr)) return NULL;
+        if (curr->is_free && curr->size >= size) break;
+        curr = curr->next;
+    }
+    if (curr == NULL) return NULL;
+    if (curr->size > (size + sizeof(alloc_header_t) + 8)) {
+        alloc_header_t *nb = (alloc_header_t *)((uint8_t *)curr + sizeof(alloc_header_t) + size);
+        nb->size = curr->size - size - sizeof(alloc_header_t);
+        nb->next = curr->next;
+        nb->is_free = 1;
+        curr->size = size;
+        curr->next = nb;
+    }
+    curr->is_free = 0;
+    return (void *)((uint8_t *)curr + sizeof(alloc_header_t));
+}
+
+void gfx_free(void *ptr) {
+    alloc_header_t *block, *curr;
+    if (ptr == NULL) return;
+    block = (alloc_header_t *)((uint8_t *)ptr - sizeof(alloc_header_t));
+    if (!gfx_block_in_heap(block) || block->is_free) return;
+    block->is_free = 1;
+    curr = g_gfx_start;
+    while (curr != NULL && curr->next != NULL) {
+        if (!gfx_block_in_heap(curr) || !gfx_block_in_heap(curr->next)) return;
+        if (curr->is_free && curr->next->is_free && block_phys_next(curr) == curr->next) {
+            curr->size += sizeof(alloc_header_t) + curr->next->size;
+            curr->next = curr->next->next;
+        } else {
+            curr = curr->next;
+        }
+    }
+}

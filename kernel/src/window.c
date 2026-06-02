@@ -979,7 +979,7 @@ static int ensure_surface_buffer(struct desktop_state *desktop, int slot, int w,
     uint32_t *p;
     if (need <= 0) return 1;
     if (a->surface_storage && need <= a->surface_cap_px) return 1;
-    p = (uint32_t *)kmalloc((size_t)need * sizeof(uint32_t));
+    p = (uint32_t *)gfx_alloc((size_t)need * sizeof(uint32_t));
     if (p == 0) return 0;
     if (a->surface_storage) kfree(a->surface_storage);
     a->surface_storage = p;
@@ -996,7 +996,7 @@ static int ensure_content_buffer(struct desktop_state *desktop, int slot, int w,
     uint32_t *p;
     if (need <= 0) return 1;
     if (a->content_storage && need <= a->content_cap_px) return 1;
-    p = (uint32_t *)kmalloc((size_t)need * sizeof(uint32_t));
+    p = (uint32_t *)gfx_alloc((size_t)need * sizeof(uint32_t));
     if (p == 0) return 0;
     if (a->content_storage) kfree(a->content_storage);
     a->content_storage = p;
@@ -2568,12 +2568,12 @@ void desktop_app_close_for_pid(struct desktop_state *desktop, uint32_t pid) {
     w->visible = 0;
     /* Release the window's backing stores back to the heap. */
     if (desktop->user_apps[slot].surface_storage) {
-        kfree(desktop->user_apps[slot].surface_storage);
+        gfx_free(desktop->user_apps[slot].surface_storage);
         desktop->user_apps[slot].surface_storage = 0;
         desktop->user_apps[slot].surface_cap_px = 0;
     }
     if (desktop->user_apps[slot].content_storage) {
-        kfree(desktop->user_apps[slot].content_storage);
+        gfx_free(desktop->user_apps[slot].content_storage);
         desktop->user_apps[slot].content_storage = 0;
         desktop->user_apps[slot].content_cap_px = 0;
     }

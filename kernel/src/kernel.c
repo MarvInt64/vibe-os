@@ -58,7 +58,8 @@ static void kernel_init_heap_from_bootinfo(uintptr_t mbi_addr) {
 
   if (!multiboot2_memory_info(mbi_addr, heap_start, &mem)) {
     serial_write("VIBEOS: no multiboot memory map; using conservative heap fallback\n");
-    kmalloc_init(heap_start, 64 * 1024 * 1024);
+    kmalloc_init(heap_start, 48 * 1024 * 1024);
+    gfx_heap_init(heap_start + 48 * 1024 * 1024, 16 * 1024 * 1024);
     kmalloc_set_physical_total(heap_start + 64 * 1024 * 1024);
     return;
   }
@@ -73,6 +74,28 @@ static void kernel_init_heap_from_bootinfo(uintptr_t mbi_addr) {
   }
 
   heap_size = heap_end - heap_start;
+
+  /* Carve a separate compositor (graphics) heap off the top of RAM for window
+   * backing stores, so they never share physical memory with a process image
+   * (which the compositor would corrupt). Take ~1/4 of the heap, capped at
+   * 96 MB, and only if the main heap stays comfortably above the minimum. */
+  {
+    uint64_t gfx_size = heap_size / 4;
+    if (gfx_size > 96ull * 1024ull * 1024ull) gfx_size = 96ull * 1024ull * 1024ull;
+    gfx_size &= ~0x1fffffull;                 /* 2 MB aligned */
+    if (gfx_size >= 8ull * 1024ull * 1024ull && heap_size - gfx_size >= min_heap) {
+      uint64_t gfx_base = heap_end - gfx_size;
+      heap_size -= gfx_size;
+      heap_end = gfx_base;
+      gfx_heap_init((uintptr_t)gfx_base, (size_t)gfx_size);
+      serial_write("VIBEOS: gfx heap base=");
+      serial_write_hex_u64(gfx_base);
+      serial_write(" size=");
+      serial_write_hex_u64(gfx_size);
+      serial_write("\n");
+    }
+  }
+
   serial_write("VIBEOS: detected available RAM bytes=");
   serial_write_hex_u64(mem.available_bytes);
   serial_write(" heap_start=");

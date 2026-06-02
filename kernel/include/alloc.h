@@ -35,4 +35,14 @@ void kmalloc_set_physical_total(size_t total_bytes);
 size_t kmalloc_get_physical_total(void);
 size_t kmalloc_get_physical_used(void);
 
+/*
+ * Compositor (graphics) heap: a separate, physically-disjoint region used for
+ * window backing stores so they can never share physical memory with a process
+ * image (which the compositor would otherwise corrupt). Initialize once with a
+ * region carved out of RAM; allocate/free window buffers with gfx_alloc/gfx_free.
+ */
+void gfx_heap_init(uintptr_t base, size_t size);
+void *gfx_alloc(size_t size);
+void gfx_free(void *ptr);
+
 #endif
