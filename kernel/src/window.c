@@ -1763,8 +1763,11 @@ static void compose_scene_rect(struct desktop_state *desktop, struct framebuffer
         full_window_rect = window_rect(window);
         if (!rects_intersect(&full_window_rect, rect)) continue;
 
-        if (!(window->flags & WINSYS_WINDOW_NO_SHADOW))
-            draw_shadow_block(fb, window->x, window->y, window->width, window->height);
+        if (!(window->flags & WINSYS_WINDOW_NO_SHADOW)) {
+            int si = (int)window->shadow_inset_top;
+            draw_shadow_block(fb, window->x, window->y + si,
+                              window->width, window->height - si);
+        }
 
         if (is_user_app_slot(index) &&
             !(window->flags & WINSYS_WINDOW_TRANSLUCENT)) {
@@ -2225,6 +2228,32 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
         desktop->resize_edges = 0;
     }
 
+    /* Deliver mouse-move events to shell panels (ALWAYS_ON_TOP | NO_DOCK |
+     * FRAMELESS) that the cursor is currently over, regardless of focus.
+     * This allows hover effects (tooltips, highlights) on the dock and
+     * top bar without requiring the user to click on them first. */
+    if (mouse->moved && desktop->dragging_window < 0 && desktop->resizing_window < 0) {
+        int pi;
+        for (pi = 0; pi < WINDOW_COUNT; ++pi) {
+            struct window_state *pw = &desktop->windows[pi];
+            uint32_t panel_flags = WINSYS_WINDOW_ALWAYS_ON_TOP
+                                 | WINSYS_WINDOW_NO_DOCK
+                                 | WINSYS_WINDOW_FRAMELESS;
+            if (!pw->visible) continue;
+            if ((pw->flags & panel_flags) != panel_flags) continue;
+            if (pi == desktop->focused_window) continue; /* handled below */
+            if (!is_user_app_slot(pi)) continue;
+            if (!point_in_rect(mouse->x, mouse->y, pw->x, pw->y, pw->width, pw->height)) continue;
+            {
+                int ps = slot_index(pi);
+                int pox, poy;
+                app_content_origin_for_window(desktop, pi, &pox, &poy);
+                app_enqueue_event_slot(desktop, ps, WINSYS_EVENT_MOUSE_MOVE,
+                                       mouse->x - pox, mouse->y - poy, mouse->buttons, 0);
+            }
+        }
+    }
+
     /* Deliver input to a focused userspace app window via its event queue. */
     if (is_user_app_slot(desktop->focused_window) &&
         desktop->windows[desktop->focused_window].visible &&
@@ -2466,6 +2495,8 @@ int desktop_app_create_ex(struct desktop_state *desktop, uint32_t pid, const str
     }
     w->visible = 1;
     w->maximized = 0;
+    w->shadow_inset_top = (options->shadow_inset_top > 0 && options->shadow_inset_top < 255)
+                          ? (uint8_t)options->shadow_inset_top : 0u;
     if ((flags & WINSYS_WINDOW_POSITIONED) == 0u) {
         if (w->x < ui_left_work_area_inset(desktop) + 16) w->x = ui_left_work_area_inset(desktop) + 16;
         if (w->y < 16) w->y = 16;

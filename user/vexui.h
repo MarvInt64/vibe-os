@@ -105,6 +105,12 @@ typedef struct vui_process_info {
 vui_window *vui_window_open(const char *title, int width, int height);
 vui_window *vui_window_open_ex(const char *title, int width, int height,
                                vui_u32 flags, int x, int y);
+/* Like vui_window_open_ex, but with shadow_inset_top: the drop shadow is
+ * drawn starting shadow_inset_top pixels below the window top, so a
+ * transparent header zone (e.g. tooltip headroom) does not cast a shadow. */
+vui_window *vui_window_open_inset(const char *title, int width, int height,
+                                  vui_u32 flags, int x, int y,
+                                  int shadow_inset_top);
 
 /* ---- Create persistent widgets (retained) ---- */
 vui_widget *vui_panel(vui_window *w, int x, int y, int width, int height, const char *title);

@@ -123,6 +123,8 @@ struct vos_window_options {
     uint32_t flags;
     int32_t x;
     int32_t y;
+    /* Pixels to offset the drop shadow from the window top (0 = shadow at top). */
+    int32_t shadow_inset_top;
 };
 int vos_window_create_ex(const struct vos_window_options *options);
 int vos_window_present(int id, const uint32_t *pixels, int w, int h);

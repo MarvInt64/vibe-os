@@ -30,6 +30,11 @@ struct winsys_window_options {
     uint32_t flags;
     int32_t x;
     int32_t y;
+    /* Pixels to inset the drop shadow from the top of the window.  Use this
+     * when the window has a transparent header zone (e.g. tooltip headroom)
+     * so the shadow only appears below the visible content, not the empty
+     * upper zone.  0 = shadow starts at the window top (default). */
+    int32_t shadow_inset_top;
 };
 
 /* Event types delivered to the focused window. */

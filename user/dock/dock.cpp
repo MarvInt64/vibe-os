@@ -91,12 +91,14 @@ int main() {
 
     vos_log(VOS_LOG_APP, "dock ready");
 
-    vui_window *win = vui_window_open_ex(
+    /* shadow_inset_top = tooltip_h: the upper transparent zone (tooltip
+     * headroom) casts no shadow, but the visible pill below still does. */
+    vui_window *win = vui_window_open_inset(
         "Dock", width, height,
         VUI_WINDOW_FRAMELESS | VUI_WINDOW_NO_DOCK |
             VUI_WINDOW_POSITIONED | VUI_WINDOW_ALWAYS_ON_TOP |
-            VUI_WINDOW_TRANSLUCENT | VUI_WINDOW_NO_SHADOW,
-        x, y);
+            VUI_WINDOW_TRANSLUCENT,
+        x, y, tooltip_h);
     vui_set_clear_color(win, VUI_COLOR_TRANSPARENT);
 
     /* The pill sits in the lower dock_h pixels; the upper tooltip_h pixels are

@@ -56,6 +56,7 @@ struct winsys_window_options {
     uint32_t flags;
     int32_t x;
     int32_t y;
+    int32_t shadow_inset_top;
 };
 
 static inline ssize_t sc1(uint64_t n, uint64_t a0) {
@@ -1654,8 +1655,9 @@ static int tab_count(const char *labels) {
 }
 
 /* ---- public lifecycle ---- */
-vui_window *vui_window_open_ex(const char *title, int width, int height,
-                               vui_u32 flags, int x, int y) {
+vui_window *vui_window_open_inset(const char *title, int width, int height,
+                                  vui_u32 flags, int x, int y,
+                                  int shadow_inset_top) {
     static int theme_loaded = 0;
     int id;
     struct winsys_window_options options;
@@ -1671,6 +1673,7 @@ vui_window *vui_window_open_ex(const char *title, int width, int height,
     options.flags = flags;
     options.x = x;
     options.y = y;
+    options.shadow_inset_top = shadow_inset_top;
     id = (int)sc1(SYS_WINDOW_CREATE_EX, (uint64_t)(size_t)&options);
     if (id < 0) {
         /* No window server: it is the toolkit's job (not the app's) to report
@@ -1688,6 +1691,11 @@ vui_window *vui_window_open_ex(const char *title, int width, int height,
     g_win.menu_count=0; g_win.active_menu_idx=-1; g_win.active_input=-1;
     g_win.tooltip_widget=-1; g_win.tooltip_ticks=0;
     return &g_win;
+}
+
+vui_window *vui_window_open_ex(const char *title, int width, int height,
+                               vui_u32 flags, int x, int y) {
+    return vui_window_open_inset(title, width, height, flags, x, y, 0);
 }
 
 vui_window *vui_window_open(const char *title, int width, int height) {

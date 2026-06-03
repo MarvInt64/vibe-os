@@ -57,9 +57,10 @@ struct window_state {
     uint32_t titlebar;
     uint32_t accent;
     uint32_t flags;
-    uint8_t app_slot;
-    uint8_t visible;
-    uint8_t maximized;
+    uint8_t  app_slot;
+    uint8_t  visible;
+    uint8_t  maximized;
+    uint8_t  shadow_inset_top; /* pixels to skip shadow from window top */
     int restore_x;
     int restore_y;
     int restore_width;
