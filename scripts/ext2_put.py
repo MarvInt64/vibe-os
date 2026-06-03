@@ -35,6 +35,7 @@ class Ext2:
         bb_blocks = (self.blocks_count + 8 * BS - 1) // (8 * BS)
         self.bb_start  = 2
         self.ib_start  = 2 + bb_blocks
+        self.it_start  = self.ib_start + 1   # inode table starts here
         self.block_bitmap = bytearray()
         for i in range(bb_blocks):
             self.block_bitmap += bytearray(self.read_block(self.bb_start + i))
@@ -52,7 +53,7 @@ class Ext2:
     # ---- inode access ----
     def inode_loc(self, ino):
         idx = ino - 1
-        blk = 4 + (idx * INODE_SIZE) // BS
+        blk = self.it_start + (idx * INODE_SIZE) // BS
         off = (idx * INODE_SIZE) % BS
         return blk, off
 
