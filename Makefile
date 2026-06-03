@@ -51,7 +51,7 @@ QEMU_DISK ?= -drive file=$(DISK_IMG),format=raw,if=ide,index=0,media=disk
 # Hardware acceleration: hvf on macOS, kvm on Linux, tcg as fallback
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
-QEMU_ACCEL ?= -accel hvf -accel tcg
+QEMU_ACCEL ?= -accel tcg
 else
 QEMU_ACCEL ?= -accel kvm -accel tcg
 endif
@@ -60,13 +60,14 @@ endif
 # layer needs it for entropy (otherwise it falls back to an insecure seed).
 QEMU_CPU ?= max
 QEMU_MEM ?= 512M
+QEMU_AUDIO ?= -audiodev coreaudio,id=audio0,out.frequency=48000,out.mixing-engine=on -device AC97,audiodev=audio0
 
 CFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -mno-mmx -mno-sse -mno-sse2 -fno-vectorize -fno-slp-vectorize -fno-builtin -Wall -Wextra -Wpedantic -std=c11 -Ikernel/include -Ithird_party/bearssl/inc -MMD -MP -O2
 KCXXFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -mno-mmx -mno-sse -mno-sse2 -fno-vectorize -fno-slp-vectorize -fno-builtin -Wall -Wextra -Wpedantic -std=c++20 -fno-exceptions -fno-rtti -Ikernel/include -MMD -MP -O2
 ASFLAGS := -target x86_64-none-elf -ffreestanding -D__ASSEMBLER__
 LDFLAGS := -nostdlib -static -T linker.ld
 
-KERNEL_SOURCES := kernel/src/alloc.c kernel/src/ramdisk.c kernel/src/ramdisk_demo.c kernel/src/app_builtin.c kernel/src/app_terminal.c kernel/src/app_task_manager.c kernel/src/bga.c kernel/src/e1000.c kernel/src/elf.c kernel/src/ext2_fs.c kernel/src/fd.c kernel/src/ide.c kernel/src/interrupts.c kernel/src/kernel.c kernel/src/input.c kernel/src/multiboot2.c kernel/src/net.c kernel/src/paging.c kernel/src/process.c kernel/src/pty.c kernel/src/render.c kernel/src/serial.c kernel/src/string.c kernel/src/syscall.c kernel/src/timer.c kernel/src/tty.c kernel/src/ui.c kernel/src/vfs.c kernel/src/vga_text.c kernel/src/window.c kernel/src/net_tls.c kernel/src/journal.c kernel/src/font_atlas.c
+KERNEL_SOURCES := kernel/src/alloc.c kernel/src/ramdisk.c kernel/src/ramdisk_demo.c kernel/src/app_builtin.c kernel/src/app_terminal.c kernel/src/app_task_manager.c kernel/src/audio.c kernel/src/bga.c kernel/src/e1000.c kernel/src/elf.c kernel/src/ext2_fs.c kernel/src/fd.c kernel/src/ide.c kernel/src/interrupts.c kernel/src/kernel.c kernel/src/input.c kernel/src/multiboot2.c kernel/src/net.c kernel/src/paging.c kernel/src/process.c kernel/src/pty.c kernel/src/render.c kernel/src/serial.c kernel/src/settings.c kernel/src/string.c kernel/src/syscall.c kernel/src/timer.c kernel/src/tty.c kernel/src/ui.c kernel/src/vfs.c kernel/src/vga_text.c kernel/src/window.c kernel/src/net_tls.c kernel/src/journal.c kernel/src/font_atlas.c
 KERNEL_CXX_SOURCES := kernel/src/cxx_runtime.cpp kernel/src/cxx_smoke.cpp
 KERNEL_ASM := kernel/src/boot.S kernel/src/interrupt_stubs.S kernel/src/user_init_blob.S kernel/src/user_hello_blob.S kernel/src/user_windowmgr_blob.S kernel/src/user_sh_blob.S kernel/src/user_edit_blob.S
 KERNEL_OBJECTS := $(patsubst kernel/src/%.c,$(OUT_DIR)/kernel/%.o,$(KERNEL_SOURCES)) $(patsubst kernel/src/%.cpp,$(OUT_DIR)/kernel/%.o,$(KERNEL_CXX_SOURCES)) $(patsubst kernel/src/%.S,$(OUT_DIR)/kernel/%.o,$(KERNEL_ASM))
@@ -210,6 +211,16 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/hello.elf $(LIBC_CRT0) build/user/hello.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/hello.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/hello.elf /bin/hello
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/audiotest.c -o build/user/audiotest.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/audiotest.elf \
+		$(LIBC_CRT0) build/user/audiotest.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/audiotest.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/audiotest.elf /bin/audiotest
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/audiocfg.c -o build/user/audiocfg.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/audiocfg.elf \
+		$(LIBC_CRT0) build/user/audiocfg.o build/user/libc.a
+	$(USTRIP) --strip-all build/user/audiocfg.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/audiocfg.elf /bin/audiocfg
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -c user/threadtest.cpp -o build/user/threadtest.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/threadtest.elf $(LIBC_CRT0) build/user/threadtest.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/threadtest.elf
@@ -224,10 +235,9 @@ apps: $(DISK_IMG) $(LIBC_A)
 DOOM_SRCS := $(shell ls third_party/doomgeneric/doomgeneric/*.c 2>/dev/null \
   | grep -v 'doomgeneric_\|i_sdl\|i_allegro\|i_sound\|i_music\|midifile\|mus2mid\|gusconf\|i_cd')
 DOOM_OBJS := $(patsubst third_party/doomgeneric/doomgeneric/%.c,build/user/doom/%.o,$(DOOM_SRCS)) \
-             build/user/doom/doomgeneric_vibeos.o build/user/doom/i_sound_stub.o
+             build/user/doom/doomgeneric_vibeos.o build/user/doom/i_sound.o
 DOOM_CFLAGS := $(UCFLAGS) $(LIBC_INC) \
   -Ithird_party/doomgeneric/doomgeneric -Iuser/doom \
-  -DNOMIXER -DFEATURE_SOUND=0 \
   -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter \
   -Wno-missing-field-initializers -Wno-missing-braces \
   -Wno-gnu-zero-variadic-macro-arguments -Wno-shift-negative-value \
@@ -238,7 +248,7 @@ doom: $(DISK_IMG) $(LIBC_A)
 	$(foreach src,$(DOOM_SRCS),$(UCC) $(DOOM_CFLAGS) \
 		-c $(src) -o $(patsubst third_party/doomgeneric/doomgeneric/%.c,build/user/doom/%.o,$(src)) &&) true
 	$(UCC) $(DOOM_CFLAGS) -c user/doom/doomgeneric_vibeos.c -o build/user/doom/doomgeneric_vibeos.o
-	$(UCC) $(DOOM_CFLAGS) -c user/doom/i_sound_stub.c        -o build/user/doom/i_sound_stub.o
+	$(UCC) $(DOOM_CFLAGS) -c user/doom/i_sound.c            -o build/user/doom/i_sound.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/doom.elf \
 		$(LIBC_CRT0) $(DOOM_OBJS) $(LIBC_A)
 	$(USTRIP) --strip-all build/user/doom.elf
@@ -274,19 +284,19 @@ kernel: user $(OUT_DIR)/vibeos.elf
 iso: $(OUT_DIR)/vibeos.iso
 
 run: $(OUT_DIR)/vibeos.iso $(DISK_IMG)
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_DISK)
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) $(QEMU_DISK)
 
 run-disk: $(OUT_DIR)/vibeos.elf
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) -drive file=$(OUT_DIR)/disk.img,format=raw,index=0,media=disk
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) -drive file=$(OUT_DIR)/disk.img,format=raw,index=0,media=disk
 
 run-disk-serial: $(OUT_DIR)/vibeos.elf
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) -hda $(OUT_DIR)/disk.img -serial stdio -monitor none
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) -hda $(OUT_DIR)/disk.img -serial stdio -monitor none
 
 run-debug: $(OUT_DIR)/vibeos.iso $(DISK_IMG)
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_DISK) -no-shutdown
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) $(QEMU_DISK) -no-shutdown
 
 run-serial: $(OUT_DIR)/vibeos.iso $(DISK_IMG)
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_DISK) -serial stdio -monitor none
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) $(QEMU_DISK) -serial stdio -monitor none
 
 clean:
 	rm -rf $(OUT_DIR)

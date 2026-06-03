@@ -124,6 +124,10 @@ vui_widget *vui_tile_button(vui_window *w, int x, int y, const char *text);
 /* Bare SVG icon/logo (no chrome). Set the artwork via vui_set_icon_svg[_path]. */
 vui_widget *vui_image(vui_window *w, int x, int y, int size);
 vui_widget *vui_input(vui_window *w, int x, int y, int width, const char *placeholder);
+/* Sidebar/list row: left-aligned SVG icon + label. Hover highlights; mark the
+ * active row with vui_set_running(item, 1) for a tinted surface + accent bar.
+ * Assign the icon via vui_set_icon_svg and a click handler via vui_on_click. */
+vui_widget *vui_listitem(vui_window *w, int x, int y, int width, int height, const char *label);
 vui_widget *vui_badge(vui_window *w, int x, int y, const char *text);
 /* Low-level pixel buffer widget for custom rendering (games, browser).
  * The pixels buffer must be at least stride * height * 4 bytes. */

@@ -297,11 +297,11 @@ static void task_manager_draw(const struct app_instance *app, const struct app_d
 }
 
 static const struct app_vtable TASK_MANAGER_APP_VTABLE = {
-    0,
-    task_manager_handle_keyboard,
-    task_manager_needs_redraw,
-    task_manager_consume_damage,
-    task_manager_draw
+    .activate = 0,
+    .handle_keyboard = task_manager_handle_keyboard,
+    .needs_redraw = task_manager_needs_redraw,
+    .consume_damage = task_manager_consume_damage,
+    .draw = task_manager_draw
 };
 
 void app_init_task_manager(struct app_instance *app, struct task_manager_app_state *state, const struct desktop_state *desktop) {

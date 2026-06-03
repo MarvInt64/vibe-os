@@ -12,6 +12,17 @@
 // Static buffer for the canvas framebuffer
 static uint32_t g_canvas_pixels[BROWSER_MAX_W * BROWSER_MAX_H];
 
+// Toolbar layout constants, shared between build_widgets() (widget placement)
+// and render() (the canvas-drawn view-toggle pill + active-segment highlight).
+#define TB_NAV_X        14   // x of the first navigation icon
+#define TB_NAV_STEP     42   // spacing between navigation icons
+#define TB_NEWFOLDER_X  188  // x of the "New Folder" button
+#define TB_NEWFOLDER_W  132  // width of the "New Folder" button
+#define TB_TOGGLE_X     336  // x of the list/grid toggle pill
+#define TB_TOGGLE_SEG   44   // width of one toggle segment (two segments total)
+#define TB_ROW_Y        7    // top y of the row-height controls (button/toggle/search)
+#define TB_ROW_H        34   // height of the row-height controls
+
 FileBrowser *FileBrowser::instance_ = nullptr;
 
 // Custom readdir wrapper to retrieve kind and size in one syscall
@@ -112,19 +123,19 @@ void FileBrowser::init() {
     sidebar_items_[sidebar_count_++] = {"FAVORITES", "", "", true};
     sidebar_items_[sidebar_count_++] = {"Recent", "/", SVG_RECENT, false};
     sidebar_items_[sidebar_count_++] = {"Starred", "/", SVG_STAR, false};
-    sidebar_items_[sidebar_count_++] = {"Projects", "/home", SVG_ROOT, false};
-    
+    sidebar_items_[sidebar_count_++] = {"Projects", "/home", SVG_FOLDER_OUTLINE, false};
+
     sidebar_items_[sidebar_count_++] = {"HOME", "", "", true};
     sidebar_items_[sidebar_count_++] = {"Home", "/home", SVG_HOME, false};
-    sidebar_items_[sidebar_count_++] = {"Desktop", "/home", SVG_HOME, false};
-    sidebar_items_[sidebar_count_++] = {"Documents", "/home", SVG_FILE, false};
-    sidebar_items_[sidebar_count_++] = {"Downloads", "/home", SVG_ARROW_UP, false};
-    
+    sidebar_items_[sidebar_count_++] = {"Desktop", "/home", SVG_DESKTOP, false};
+    sidebar_items_[sidebar_count_++] = {"Documents", "/home", SVG_DOCUMENTS, false};
+    sidebar_items_[sidebar_count_++] = {"Downloads", "/home", SVG_DOWNLOAD, false};
+
     sidebar_items_[sidebar_count_++] = {"SYSTEM", "", "", true};
-    sidebar_items_[sidebar_count_++] = {"Root", "/", SVG_ROOT, false};
-    sidebar_items_[sidebar_count_++] = {"System", "/bin", SVG_SETTINGS, false};
-    sidebar_items_[sidebar_count_++] = {"Packages", "/lib", SVG_SETTINGS, false};
-    
+    sidebar_items_[sidebar_count_++] = {"Root", "/", SVG_DISK, false};
+    sidebar_items_[sidebar_count_++] = {"System", "/bin", SVG_CHIP, false};
+    sidebar_items_[sidebar_count_++] = {"Packages", "/lib", SVG_PACKAGE, false};
+
     sidebar_items_[sidebar_count_++] = {"NETWORK", "", "", true};
     sidebar_items_[sidebar_count_++] = {"Network", "/", SVG_NETWORK, false};
     sidebar_items_[sidebar_count_++] = {"Servers", "/", SVG_ROOT, false};
@@ -181,7 +192,9 @@ void FileBrowser::navigate(const char *path, bool push_history) {
     }
     
     update_preview();
+    sync_sidebar_selection();
     render();
+    if (win_) vui_request_repaint(win_);
 }
 
 void FileBrowser::refresh_files() {
@@ -528,88 +541,36 @@ void FileBrowser::get_detail_rect(int &x, int &y, int &w, int &h) {
 
 void FileBrowser::render() {
     // 1. Clear background of listing window
-    fill_rect(0, 0, win_w_, win_h_, 0x000e1622u);
+    fill_rect(0, 0, win_w_, win_h_, 0x0020384fu);
 
-    // 2. Render Left Sidebar Column
-    fill_rect(0, 80, 220, 536, 0x000c141eu);
-    
-    // Sidebar divider
-    draw_line(220, 80, 220, 616, 0x00202d3fu);
+    // 2. Sidebar column background + divider. The interactive rows are real
+    //    VexUI list-item widgets (created in run()); here we only paint the
+    //    panel backdrop and the non-interactive section headers behind them.
+    fill_rect(0, 80, 220, win_h_ - 80, 0x001b3147u);
+    draw_line(220, 80, 220, win_h_, 0x00294058u);
 
     for (int i = 0; i < sidebar_count_; ++i) {
-        int item_y = 90 + i * 32;
         if (sidebar_items_[i].is_header) {
+            int item_y = 90 + i * 32;
             draw_text(16, item_y + 10, sidebar_items_[i].label, 0x005c6a7eu, 1);
-        } else {
-            // Check if active or hovered
-            if (i == selected_sidebar_idx_) {
-                // Selektion highlight
-                fill_rect(10, item_y, 200, 28, 0x001b2636u);
-                draw_rect(10, item_y, 200, 28, 0x003b82f6u);
-                // Draw small blue selector indicator on the left edge
-                fill_rect(0, item_y + 4, 3, 20, 0x003b82f6u);
-            }
-            
-            // Draw Icon and Text
-            draw_svg(16, item_y + 5, 18, sidebar_items_[i].svg_icon, i == selected_sidebar_idx_ ? 0x00e6edf7u : 0x009aa7bau);
-            draw_text(42, item_y + 7, sidebar_items_[i].label, i == selected_sidebar_idx_ ? 0x00e6edf7u : 0x009aa7bau);
         }
     }
-    
-    // Trash bin pinned to bottom
-    int trash_y = win_h_ - 60;
-    draw_line(12, trash_y - 10, 208, trash_y - 10, 0x00202d3fu);
-    draw_svg(16, trash_y, 18, SVG_TRASH, 0x009aa7bau);
-    draw_text(42, trash_y + 2, "Trash", 0x009aa7bau);
 
-    // 3. Render Topbar Nav & Actions Row (y: 0..48)
-    fill_rect(0, 0, win_w_, 48, 0x000a1019u);
-    draw_line(0, 48, win_w_, 48, 0x00202d3fu);
+    // 3. Toolbar band background + divider. The nav buttons, "New Folder",
+    //    the view toggle and the search field are all real VexUI widgets; only
+    //    the segmented view-toggle pill (and its active-segment highlight, which
+    //    is stateful) is hand-painted here, behind the two toggle icons.
+    fill_rect(0, 0, win_w_, 48, 0x0020384fu);
+    draw_line(0, 48, win_w_, 48, 0x00294058u);
 
-    // Navigation buttons (Back, Forward, Up, Refresh)
-    draw_svg(16, 10, 28, SVG_ARROW_LEFT, history_pos_ > 0 ? 0x00e6edf7u : 0x003a4b61u);
-    draw_svg(56, 10, 28, SVG_ARROW_RIGHT, history_pos_ < history_count_ - 1 ? 0x00e6edf7u : 0x003a4b61u);
-    draw_svg(96, 10, 28, SVG_ARROW_UP, strcmp(current_path_, "/") != 0 ? 0x00e6edf7u : 0x003a4b61u);
-    draw_svg(136, 10, 28, SVG_REFRESH, 0x00e6edf7u);
-
-    // "+ New Folder" Action Button
-    draw_glass_panel(180, 8, 110, 32, 0x001b2636u, 4);
-    draw_svg(186, 10, 28, SVG_NEW_FOLDER, 0x00e6edf7u);
-    draw_text(216, 16, "New Folder", 0x00e6edf7u);
-
-    // Toggle segmented control: List vs Grid view
-    draw_glass_panel(300, 8, 64, 32, 0x001b2636u, 4);
-    draw_line(332, 8, 332, 40, 0x00202d3fu);
-    // Draw active button indicator
-    if (!grid_view_) {
-        fill_rect(302, 10, 28, 28, 0x003b82f6u);
-    } else {
-        fill_rect(334, 10, 28, 28, 0x003b82f6u);
-    }
-    draw_svg(302, 10, 28, SVG_LIST_VIEW, 0x00e6edf7u);
-    draw_svg(334, 10, 28, SVG_GRID_VIEW, 0x00e6edf7u);
-
-    // Search input (right side)
-    int search_x = 380;
-    int search_w = win_w_ - search_x - 16;
-    draw_glass_panel(search_x, 8, search_w, 32, 0x000c141eu, 4);
-    draw_rect(search_x, 8, search_w, 32, search_focused_ ? 0x003b82f6u : 0x00202d3fu);
-    draw_svg(search_x + 10, 10, 28, SVG_SEARCH, 0x009aa7bau);
-    
-    if (search_query_[0] != '\0') {
-        draw_text(search_x + 36, 16, search_query_, 0x00e6edf7u);
-        // Draw blinky text cursor if focused
-        if (search_focused_) {
-            int cursor_x = search_x + 36 + get_text_width(search_query_);
-            draw_line(cursor_x, 14, cursor_x, 26, 0x003b82f6u);
-        }
-    } else {
-        draw_text(search_x + 36, 16, "Search Assets...", 0x005c6a7eu);
-    }
+    int tg_x = TB_TOGGLE_X, tg_y = TB_ROW_Y, tg_w = TB_TOGGLE_SEG * 2, tg_h = TB_ROW_H;
+    draw_glass_panel(tg_x, tg_y, tg_w, tg_h, 0x00121c2au, 6);
+    int seg_x = grid_view_ ? tg_x + TB_TOGGLE_SEG : tg_x;
+    draw_glass_panel(seg_x + 3, tg_y + 3, TB_TOGGLE_SEG - 6, tg_h - 6, 0x00243954u, 5);
 
     // 4. Render Breadcrumbs path bar (y: 48..80)
-    fill_rect(0, 48, win_w_, 32, 0x000e1622u);
-    draw_line(0, 80, win_w_, 80, 0x00202d3fu);
+    fill_rect(0, 48, win_w_, 32, 0x0020384fu);
+    draw_line(0, 80, win_w_, 80, 0x00294058u);
 
     // Home Icon + Path segments
     draw_svg(16, 55, 18, SVG_HOME, 0x009aa7bau);
@@ -643,8 +604,8 @@ void FileBrowser::render() {
 
     if (!grid_view_) {
         // Table Header
-        fill_rect(list_x, list_y, list_w, 36, 0x000e1622u);
-        draw_line(list_x, list_y + 36, list_x + list_w, list_y + 36, 0x00202d3fu);
+        fill_rect(list_x, list_y, list_w, 36, 0x0020384fu);
+        draw_line(list_x, list_y + 36, list_x + list_w, list_y + 36, 0x00294058u);
         
         draw_text(list_x + 20, list_y + 11, "Name", 0x009aa7bau);
         draw_text(list_x + 190, list_y + 11, "Modified", 0x009aa7bau);
@@ -666,7 +627,7 @@ void FileBrowser::render() {
 
             // Highlight selected row
             if (item_idx == selected_index_) {
-                fill_rect(list_x + 4, ry + 2, list_w - 8, 32, 0x00142238u);
+                fill_rect(list_x + 4, ry + 2, list_w - 8, 32, 0x00264a6bu);
                 draw_rect(list_x + 4, ry + 2, list_w - 8, 32, 0x003b82f6u);
             }
 
@@ -680,13 +641,16 @@ void FileBrowser::render() {
             }
             draw_svg(list_x + 10, ry + 7, 22, svg, icon_col);
 
-            // Draw fields (Name, Modified, Type, Size) with truncation
-            char trunc_name[64];
-            truncate_text_to_width(fe.name, trunc_name, 150);
-            draw_text(list_x + 38, ry + 10, trunc_name, item_idx == selected_index_ ? 0x00e6edf7u : 0x00e6edf7u);
-            draw_text(list_x + 190, ry + 10, fe.formatted_date, 0x005c6a7eu);
-            draw_text(list_x + 290, ry + 10, fe.formatted_type, 0x005c6a7eu);
-            draw_text(list_x + 390, ry + 10, fe.formatted_size, 0x005c6a7eu);
+            // Draw columns (Name, Modified, Type, Size). Each value is truncated
+            // to its column width so neighbouring columns never overlap.
+            char col_buf[64];
+            truncate_text_to_width(fe.name, col_buf, 142);
+            draw_text(list_x + 38, ry + 10, col_buf, 0x00e6edf7u);
+            truncate_text_to_width(fe.formatted_date, col_buf, 92);
+            draw_text(list_x + 190, ry + 10, col_buf, 0x009aa7bau);
+            truncate_text_to_width(fe.formatted_type, col_buf, 88);
+            draw_text(list_x + 290, ry + 10, col_buf, 0x009aa7bau);
+            draw_text(list_x + 390, ry + 10, fe.formatted_size, 0x009aa7bau);
         }
     } else {
         // Grid View
@@ -707,7 +671,7 @@ void FileBrowser::render() {
 
             // Highlight selected item grid cell
             if (i == selected_index_) {
-                fill_rect(gx - 4, gy - 4, 96, 88, 0x00142238u);
+                fill_rect(gx - 4, gy - 4, 96, 88, 0x00264a6bu);
                 draw_rect(gx - 4, gy - 4, 96, 88, 0x003b82f6u);
             }
 
@@ -737,7 +701,7 @@ void FileBrowser::render() {
     int sb_w = 8;
     
     // Draw scrollbar track
-    fill_rect(sb_x, sb_y, sb_w, sb_h, 0x000c141eu);
+    fill_rect(sb_x, sb_y, sb_w, sb_h, 0x001b3147u);
     
     // Calculate thumb metrics
     int items_h = grid_view_ ? 96 : 36;
@@ -758,12 +722,12 @@ void FileBrowser::render() {
     }
 
     // Workspace column right divider
-    draw_line(680, 80, 680, 616, 0x00202d3fu);
+    draw_line(680, 80, 680, 616, 0x00294058u);
 
     // 6. Render Right Details Sidebar Pane
     int detail_x, detail_y, detail_w, detail_h;
     get_detail_rect(detail_x, detail_y, detail_w, detail_h);
-    fill_rect(detail_x, detail_y, detail_w, detail_h, 0x00141e2bu);
+    fill_rect(detail_x, detail_y, detail_w, detail_h, 0x0020384fu);
 
     if (selected_index_ >= 0 && selected_index_ < filtered_count_) {
         int actual_idx = filtered_indices_[selected_index_];
@@ -799,7 +763,7 @@ void FileBrowser::render() {
         draw_text(pane_center_x - sub_w / 2, detail_y + 118, subtitle, 0x009aa7bau);
 
         // Draw horizontal list dividers
-        draw_line(detail_x + 16, detail_y + 140, detail_x + detail_w - 16, detail_y + 140, 0x00202d3fu);
+        draw_line(detail_x + 16, detail_y + 140, detail_x + detail_w - 16, detail_y + 140, 0x00294058u);
 
         // Metadata grid (key-value text lines)
         int info_y = detail_y + 154;
@@ -875,7 +839,7 @@ void FileBrowser::render() {
         // 7. Embedded Code Preview folding panel (y: ~370..536)
         if (has_preview_) {
             int prev_y = tags_y + 32;
-            draw_line(detail_x + 16, prev_y, detail_x + detail_w - 16, prev_y, 0x00202d3fu);
+            draw_line(detail_x + 16, prev_y, detail_x + detail_w - 16, prev_y, 0x00294058u);
 
             prev_y += 12;
             draw_text(detail_x + 16, prev_y, "v Preview", 0x00e6edf7u); // Collapsed header style
@@ -887,7 +851,7 @@ void FileBrowser::render() {
             int box_y = prev_y + 24;
             int box_h = detail_y + detail_h - box_y - 12;
             fill_rect(detail_x + 16, box_y, detail_w - 32, box_h, 0x00070c12u);
-            draw_rect(detail_x + 16, box_y, detail_w - 32, box_h, 0x00202d3fu);
+            draw_rect(detail_x + 16, box_y, detail_w - 32, box_h, 0x00294058u);
 
             // Parse lines out of preview_text_ and print with numbers
             int render_line_y = box_y + 10;
@@ -923,8 +887,8 @@ void FileBrowser::render() {
     }
 
     // 8. Bottom Status Bar (y: 616..640)
-    fill_rect(0, 616, win_w_, 24, 0x000a1019u);
-    draw_line(0, 616, win_w_, 616, 0x00202d3fu);
+    fill_rect(0, 616, win_w_, 24, 0x0020384fu);
+    draw_line(0, 616, win_w_, 616, 0x00294058u);
 
     // Left status summary
     char status_left[128];
@@ -962,110 +926,19 @@ void FileBrowser::render() {
     fill_rect(bar_x, bar_y, fill_w, bar_h, 0x003b82f6u);
 }
 
-// Event Dispatch Logic
+// Canvas click dispatch. The toolbar and sidebar are handled by their own VexUI
+// widget callbacks; this only covers the hand-rendered file list + scrollbar.
 void FileBrowser::on_click(int x, int y) {
-    search_focused_ = false;
-
-    // A. Check Top Bar clicks
-    if (y >= 8 && y <= 40) {
-        // Back Button
-        if (x >= 16 && x <= 48 && history_pos_ > 0) {
-            history_pos_--;
-            navigate(history_[history_pos_], false);
-            return;
-        }
-        // Forward Button
-        if (x >= 56 && x <= 88 && history_pos_ < history_count_ - 1) {
-            history_pos_++;
-            navigate(history_[history_pos_], false);
-            return;
-        }
-        // Up Button
-        if (x >= 96 && x <= 128 && strcmp(current_path_, "/") != 0) {
-            // Find parent dir by scanning for last slash
-            char parent[256];
-            strcpy(parent, current_path_);
-            int len = strlen(parent);
-            while (len > 1 && parent[len-1] != '/') {
-                parent[len-1] = '\0';
-                len--;
-            }
-            if (len > 1 && parent[len-1] == '/') {
-                parent[len-1] = '\0';
-            }
-            navigate(parent, true);
-            return;
-        }
-        // Refresh Button
-        if (x >= 136 && x <= 168) {
-            refresh_files();
-            render();
-            return;
-        }
-        // New Folder Button
-        if (x >= 180 && x <= 290) {
-            create_new_folder();
-            return;
-        }
-        // List View Toggle
-        if (x >= 300 && x <= 331) {
-            if (grid_view_) {
-                grid_view_ = false;
-                scroll_y_ = 0;
-                refresh_files();
-                render();
-            }
-            return;
-        }
-        // Grid View Toggle
-        if (x >= 332 && x <= 364) {
-            if (!grid_view_) {
-                grid_view_ = true;
-                scroll_y_ = 0;
-                refresh_files();
-                render();
-            }
-            return;
-        }
-        // Search Bar Input
-        int search_x = 380;
-        int search_w = win_w_ - search_x - 16;
-        if (x >= search_x && x <= search_x + search_w) {
-            search_focused_ = true;
-            render();
-            return;
-        }
-    }
-
-    // B. Check Sidebar Clicks
-    int sb_x, sb_y, sb_w, sb_h;
-    get_sidebar_rect(sb_x, sb_y, sb_w, sb_h);
-    if (x >= sb_x && x <= sb_x + sb_w && y >= sb_y && y <= sb_y + sb_h) {
-        for (int i = 0; i < sidebar_count_; ++i) {
-            if (sidebar_items_[i].is_header) continue;
-            int item_y = 90 + i * 32;
-            if (y >= item_y && y <= item_y + 28) {
-                selected_sidebar_idx_ = i;
-                navigate(sidebar_items_[i].path, true);
-                return;
-            }
-        }
-        
-        // Trash bin pinned to bottom click check
-        int trash_y = win_h_ - 60;
-        if (y >= trash_y && y <= trash_y + 28) {
-            navigate("/", true);
-            return;
-        }
-    }
-
-    // C. Check Main Listing Area Clicks & Scrollbar Grab
+    // Check Main Listing Area Clicks & Scrollbar Grab
     int list_x, list_y, list_w, list_h;
     get_listing_rect(list_x, list_y, list_w, list_h);
     
     if (x >= list_x && x <= list_x + list_w && y >= list_y && y <= list_y + list_h) {
-        // Check Scrollbar Track grab first
+        // Check Scrollbar Track grab first. The track spans the full listing
+        // height, so its geometry is simply the listing rect.
         int sb_col_x = list_x + list_w - 12;
+        int sb_y = list_y;
+        int sb_h = list_h;
         if (x >= sb_col_x && x <= sb_col_x + 8) {
             int total_rows = (filtered_count_ + (grid_view_ ? 3 : 0)) / (grid_view_ ? 4 : 1);
             int item_h = grid_view_ ? 96 : 36;
@@ -1210,37 +1083,9 @@ void FileBrowser::on_mouse_release(int x, int y) {
 }
 
 void FileBrowser::on_key(uint32_t key) {
-    if (!search_focused_) return;
-
-    int len = strlen(search_query_);
-    
-    // Return key unfocuses search
-    if (key == '\n') {
-        search_focused_ = false;
-        render();
-        vui_request_repaint(win_);
-        return;
-    }
-
-    // Backspace key
-    if (key == '\b' || key == 127) {
-        if (len > 0) {
-            search_query_[len - 1] = '\0';
-            refresh_files();
-            render();
-            vui_request_repaint(win_);
-        }
-        return;
-    }
-
-    // Character keys (ASCII bounds)
-    if (key >= 32 && key < 127 && len < 60) {
-        search_query_[len] = (char)key;
-        search_query_[len + 1] = '\0';
-        refresh_files();
-        render();
-        vui_request_repaint(win_);
-    }
+    // Keyboard input for the search field is delivered to the focused VexUI
+    // input widget, not here. Kept as a hook for future shortcuts.
+    (void)key;
 }
 
 void FileBrowser::on_scroll(int delta) {
@@ -1298,11 +1143,6 @@ static void fb_on_mouse_release_cb(vui_window *w, int x, int y) {
     FileBrowser::instance()->on_mouse_release(x, y);
 }
 
-static void fb_on_key_cb(vui_window *w, unsigned int key) {
-    (void)w;
-    FileBrowser::instance()->on_key(key);
-}
-
 static void fb_on_scroll_cb(vui_window *w, int delta) {
     (void)w;
     FileBrowser::instance()->on_scroll(delta);
@@ -1319,24 +1159,172 @@ static void fb_on_tick_cb(vui_window *w) {
 }
 
 // ---------------------------------------------------------------------------
-// Application entry point: open the window, wire up the canvas and event
-// callbacks, then hand control to the VexUI event loop (which never returns).
+// Toolbar / sidebar widget callbacks. Each forwards to the singleton instance;
+// sidebar rows carry their sidebar_items_ index in the widget's user pointer.
+// ---------------------------------------------------------------------------
+static void fb_nav_back_cb(vui_widget *)    { FileBrowser::instance()->nav_back(); }
+static void fb_nav_fwd_cb(vui_widget *)     { FileBrowser::instance()->nav_forward(); }
+static void fb_nav_up_cb(vui_widget *)      { FileBrowser::instance()->nav_up(); }
+static void fb_refresh_cb(vui_widget *)     { FileBrowser::instance()->do_refresh(); }
+static void fb_newfolder_cb(vui_widget *)   { FileBrowser::instance()->create_new_folder(); }
+static void fb_view_list_cb(vui_widget *)   { FileBrowser::instance()->set_grid_view(false); }
+static void fb_view_grid_cb(vui_widget *)   { FileBrowser::instance()->set_grid_view(true); }
+static void fb_search_cb(vui_widget *self)  { FileBrowser::instance()->search_changed(vui_input_text(self)); }
+static void fb_sidebar_cb(vui_widget *self) {
+    FileBrowser::instance()->select_sidebar((int)(intptr_t)vui_get_user(self));
+}
+
+// ---------------------------------------------------------------------------
+// Toolbar + sidebar construction. These are real VexUI controls layered on top
+// of the full-window canvas (which still renders the list, preview and chrome).
+// ---------------------------------------------------------------------------
+void FileBrowser::build_widgets() {
+    // --- Toolbar: flat, chrome-free navigation icons (like the mockup) ---
+    struct ToolBtn { int x; const char *icon; vui_callback cb; };
+    const ToolBtn tools[] = {
+        { TB_NAV_X + 0 * TB_NAV_STEP, SVG_ARROW_LEFT,  fb_nav_back_cb },
+        { TB_NAV_X + 1 * TB_NAV_STEP, SVG_ARROW_RIGHT, fb_nav_fwd_cb },
+        { TB_NAV_X + 2 * TB_NAV_STEP, SVG_ARROW_UP,    fb_nav_up_cb },
+        { TB_NAV_X + 3 * TB_NAV_STEP, SVG_REFRESH,     fb_refresh_cb },
+    };
+    for (const ToolBtn &t : tools) {
+        vui_widget *b = vui_image(win_, t.x, 9, 30);
+        vui_set_color(b, 0x00cdd8e6u);
+        vui_set_icon_svg(b, t.icon);
+        vui_on_click(b, t.cb);
+    }
+
+    // "New Folder" labelled button with a leading plus icon. A neutral slate
+    // tint (instead of the default accent) keeps it flat like the mockup.
+    vui_widget *newf = vui_button(win_, TB_NEWFOLDER_X, TB_ROW_Y, "New Folder");
+    vui_set_bounds(newf, TB_NEWFOLDER_X, TB_ROW_Y, TB_NEWFOLDER_W, TB_ROW_H);
+    vui_set_color(newf, 0x009fb4ccu);
+    vui_set_icon_svg(newf, SVG_PLUS);
+    vui_on_click(newf, fb_newfolder_cb);
+
+    // List / grid segmented toggle: two flat icons over a canvas-drawn pill
+    // whose active segment is highlighted in render() (driven by grid_view_).
+    int tg_iy = TB_ROW_Y + (TB_ROW_H - 24) / 2;
+    vui_widget *vlist = vui_image(win_, TB_TOGGLE_X + (TB_TOGGLE_SEG - 24) / 2, tg_iy, 24);
+    vui_set_color(vlist, 0x00e6edf7u);
+    vui_set_icon_svg(vlist, SVG_LIST_VIEW);
+    vui_on_click(vlist, fb_view_list_cb);
+
+    vui_widget *vgrid = vui_image(win_, TB_TOGGLE_X + TB_TOGGLE_SEG + (TB_TOGGLE_SEG - 24) / 2, tg_iy, 24);
+    vui_set_color(vgrid, 0x00e6edf7u);
+    vui_set_icon_svg(vgrid, SVG_GRID_VIEW);
+    vui_on_click(vgrid, fb_view_grid_cb);
+
+    // Search field, right-aligned and stretching with the window.
+    int search_w = 280;
+    int search_x = win_w_ - search_w - 16;
+    search_input_ = vui_input(win_, search_x, TB_ROW_Y, search_w, "Search Assets...");
+    vui_set_icon_svg(search_input_, SVG_SEARCH);
+    vui_set_anchor(search_input_, VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
+    vui_on_click(search_input_, fb_search_cb);   /* fires per keystroke */
+
+    // --- Sidebar: one list-item widget per non-header entry ---
+    for (int i = 0; i < sidebar_count_; ++i) {
+        if (sidebar_items_[i].is_header) continue;
+        int item_y = 90 + i * 32;
+        vui_widget *row = vui_listitem(win_, 10, item_y, 200, 28, sidebar_items_[i].label);
+        vui_set_icon_svg(row, sidebar_items_[i].svg_icon);
+        vui_set_user(row, (void *)(intptr_t)i);
+        vui_on_click(row, fb_sidebar_cb);
+        sidebar_widgets_[i] = row;
+    }
+    sync_sidebar_selection();
+}
+
+// Reflect the active directory on the sidebar rows (highlighted selection).
+void FileBrowser::sync_sidebar_selection() {
+    for (int i = 0; i < sidebar_count_; ++i) {
+        if (sidebar_widgets_[i]) {
+            vui_set_running(sidebar_widgets_[i], i == selected_sidebar_idx_ ? 1 : 0);
+        }
+    }
+}
+
+// ---- Toolbar / sidebar actions ------------------------------------------- //
+void FileBrowser::nav_back() {
+    if (history_pos_ > 0) {
+        history_pos_--;
+        navigate(history_[history_pos_], false);
+    }
+}
+
+void FileBrowser::nav_forward() {
+    if (history_pos_ < history_count_ - 1) {
+        history_pos_++;
+        navigate(history_[history_pos_], false);
+    }
+}
+
+void FileBrowser::nav_up() {
+    if (strcmp(current_path_, "/") == 0) return;
+    char parent[256];
+    strcpy(parent, current_path_);
+    int len = strlen(parent);
+    while (len > 1 && parent[len - 1] != '/') { parent[--len] = '\0'; }
+    if (len > 1 && parent[len - 1] == '/') parent[len - 1] = '\0';
+    navigate(parent, true);
+}
+
+void FileBrowser::do_refresh() {
+    refresh_files();
+    render();
+    vui_request_repaint(win_);
+}
+
+void FileBrowser::set_grid_view(bool grid) {
+    if (grid_view_ == grid) return;
+    grid_view_ = grid;
+    scroll_y_ = 0;
+    refresh_files();
+    render();
+    vui_request_repaint(win_);
+}
+
+void FileBrowser::select_sidebar(int index) {
+    if (index < 0 || index >= sidebar_count_) return;
+    selected_sidebar_idx_ = index;
+    navigate(sidebar_items_[index].path, true);   // also syncs + repaints
+}
+
+void FileBrowser::search_changed(const char *text) {
+    strncpy(search_query_, text ? text : "", sizeof(search_query_) - 1);
+    search_query_[sizeof(search_query_) - 1] = '\0';
+    refresh_files();
+    render();
+    vui_request_repaint(win_);
+}
+
+// ---------------------------------------------------------------------------
+// Application entry point: open the window, build the canvas + widgets, wire
+// up event callbacks, then hand control to the VexUI loop (which never returns).
 // ---------------------------------------------------------------------------
 void FileBrowser::run() {
     win_ = vui_window_open("Files", win_w_, win_h_);
     if (!win_) return;
 
-    // A single full-window canvas hosts our hand-rendered, pixel-perfect UI.
+    // Adopt the real (possibly clamped) window size before laying anything out.
+    win_w_ = vui_window_width(win_);
+    win_h_ = vui_window_height(win_);
+
+    // A full-window canvas hosts the hand-rendered file list, breadcrumbs,
+    // preview and status bar. Created first so the toolbar/sidebar widgets,
+    // added afterwards, paint on top of it.
     vui_widget *canvas = vui_canvas_ex(win_, 0, 0, win_w_, win_h_,
                                        canvas_pixels_, BROWSER_MAX_W);
     vui_set_anchor(canvas, VUI_ANCHOR_LEFT | VUI_ANCHOR_RIGHT |
                            VUI_ANCHOR_TOP | VUI_ANCHOR_BOTTOM);
 
-    // Route framework events to the application instance.
+    build_widgets();
+
+    // Canvas-region input (file rows, scrollbar, wheel) routes to the instance.
     vui_on_mouse_click(win_, fb_on_click_cb);
     vui_on_mouse_move(win_, fb_on_mouse_move_cb);
     vui_on_mouse_release(win_, fb_on_mouse_release_cb);
-    vui_on_key(win_, fb_on_key_cb);
     vui_on_scroll(win_, fb_on_scroll_cb);
     vui_on_resize(win_, fb_on_resize_cb);
     vui_on_tick(win_, fb_on_tick_cb);

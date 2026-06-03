@@ -4,24 +4,36 @@
 // Compact, crisp SVGs matching the VibeOS style (typically 28x28 viewBox).
 // We use fill="currentColor" or stroke="currentColor" to allow dynamic theme coloring.
 
-static const char* SVG_ARROW_LEFT = 
+// Navigation arrows: thin line glyphs with a shaft + arrowhead (matches the
+// flat toolbar look of the mockup, not bare chevrons).
+static const char* SVG_ARROW_LEFT =
     "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
-    "<path d=\"M18 6 L10 14 L18 22\" stroke=\"currentColor\" stroke-width=\"2.5\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+    "<path d=\"M21 14 H8 M14 8 L8 14 L14 20\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
     "</svg>";
 
-static const char* SVG_ARROW_RIGHT = 
+static const char* SVG_ARROW_RIGHT =
     "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
-    "<path d=\"M10 6 L18 14 L10 22\" stroke=\"currentColor\" stroke-width=\"2.5\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+    "<path d=\"M7 14 H20 M14 8 L20 14 L14 20\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
     "</svg>";
 
-static const char* SVG_ARROW_UP = 
+static const char* SVG_ARROW_UP =
     "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
-    "<path d=\"M6 18 L14 10 L22 18\" stroke=\"currentColor\" stroke-width=\"2.5\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+    "<path d=\"M14 21 V8 M8 14 L14 8 L20 14\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
     "</svg>";
 
-static const char* SVG_REFRESH = 
+// NOTE: VibeOS' libsvg does NOT render elliptical-arc ('A') path commands — it
+// collapses them to a straight line. Every "round" icon below is therefore
+// built from cubic curves ('C', supported) or polylines, never arcs.
+static const char* SVG_REFRESH =
     "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
-    "<path d=\"M20 8.5 A8 8 0 1 1 8 8.5 M20 4.5 v4 h-4\" stroke=\"currentColor\" stroke-width=\"2.5\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+    "<path d=\"M12 21.7 L7.1 18 L6.3 11.9 L10 7.1 L16 6.3 L20.9 10\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+    "<path d=\"M21 5 V10 H16\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+    "</svg>";
+
+// Standalone plus glyph for the "New Folder" button.
+static const char* SVG_PLUS =
+    "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
+    "<path d=\"M14 8 V20 M8 14 H20\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\"/>"
     "</svg>";
 
 static const char* SVG_NEW_FOLDER = 
@@ -114,15 +126,59 @@ static const char* SVG_ROOT =
     "<circle cx=\"6\" cy=\"22\" r=\"1\" fill=\"currentColor\"/>"
     "</svg>";
 
-static const char* SVG_NETWORK = 
+static const char* SVG_NETWORK =
     "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
     "<circle cx=\"14\" cy=\"14\" r=\"10\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\"/>"
-    "<path d=\"M4 14 h20 M14 4 A16 16 0 0 1 14 24 M14 4 A16 16 0 0 0 14 24\" stroke=\"currentColor\" stroke-width=\"1.5\" fill=\"none\"/>"
+    "<path d=\"M4 14 H24 M14 4 C8 9 8 19 14 24 M14 4 C20 9 20 19 14 24\" stroke=\"currentColor\" stroke-width=\"1.5\" fill=\"none\"/>"
     "</svg>";
 
-static const char* SVG_TRASH = 
+static const char* SVG_TRASH =
     "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
-    "<path d=\"M5 7 h18 M9 7 v-3 h10 v3 M7 7 v16 a2 2 0 0 0 2 2 h10 a2 2 0 0 0 2 -2 v-16 M11 11 v10 M17 11 v10\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+    "<path d=\"M5 7 H23 M10 7 V4 H18 V7 M7.5 7 L8.5 24 H19.5 L20.5 7 M12 11 V20 M16 11 V20\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+    "</svg>";
+
+// --- Distinct sidebar icons (outline line-art, 28x28 viewBox) -------------- //
+static const char* SVG_FOLDER_OUTLINE =
+    "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
+    "<path d=\"M4 8 h6 l2 3 h12 v12 H4 Z\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linejoin=\"round\"/>"
+    "</svg>";
+
+static const char* SVG_DESKTOP =
+    "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
+    "<rect x=\"4\" y=\"5\" width=\"20\" height=\"13\" rx=\"1.5\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\"/>"
+    "<path d=\"M10 23 h8 M12 18 v5 M16 18 v5\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+    "</svg>";
+
+static const char* SVG_DOCUMENTS =
+    "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
+    "<path d=\"M7 4 h9 l5 5 v15 H7 Z\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linejoin=\"round\"/>"
+    "<path d=\"M16 4 v5 h5\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linejoin=\"round\"/>"
+    "<path d=\"M10 14 h8 M10 18 h8\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\"/>"
+    "</svg>";
+
+static const char* SVG_DOWNLOAD =
+    "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
+    "<path d=\"M14 4 v12 M9 11 l5 5 l5 -5\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+    "<path d=\"M5 21 h18\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/>"
+    "</svg>";
+
+static const char* SVG_DISK =
+    "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
+    "<path d=\"M4 7 C4 4.5 24 4.5 24 7 C24 9.5 4 9.5 4 7 Z\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\"/>"
+    "<path d=\"M4 7 V21 C4 23.5 24 23.5 24 21 V7\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\"/>"
+    "</svg>";
+
+static const char* SVG_CHIP =
+    "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
+    "<rect x=\"7\" y=\"7\" width=\"14\" height=\"14\" rx=\"1.5\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\"/>"
+    "<rect x=\"11\" y=\"11\" width=\"6\" height=\"6\" stroke=\"currentColor\" stroke-width=\"1.5\" fill=\"none\"/>"
+    "<path d=\"M11 3 v4 M17 3 v4 M11 25 v-4 M17 25 v-4 M3 11 h4 M3 17 h4 M25 11 h-4 M25 17 h-4\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\"/>"
+    "</svg>";
+
+static const char* SVG_PACKAGE =
+    "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
+    "<path d=\"M14 3 L24 8 V20 L14 25 L4 20 V8 Z\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linejoin=\"round\"/>"
+    "<path d=\"M4 8 L14 13 L24 8 M14 13 V25\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linejoin=\"round\"/>"
     "</svg>";
 
 #endif // FILEBROWSER_ICONS_H

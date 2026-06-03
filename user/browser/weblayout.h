@@ -29,6 +29,8 @@ struct wl_run {
     int px;              /* font pixel size for this run */
     int bold;            /* faux-bold (double draw) */
     int underline;
+    int italic;          /* oblique x-shear rendering */
+    int strikethrough;   /* horizontal line through middle */
     wl_u32 color;
     wl_u32 bg;           /* run background (0 = transparent), e.g. inline code */
     int off, len;        /* text slice into doc->pool (WL_TEXT); WL_IMAGE: src href idx */

@@ -1076,6 +1076,17 @@ static void execute_command(void) {
 		cmd_curl(g_argc > 1 ? g_args[1] : "");
 	} else if (strcmp(cmd, "display") == 0 || strcmp(cmd, "resolution") == 0) {
 		cmd_display(g_argc);
+	} else if (strcmp(cmd, "audiocfg") == 0) {
+		char full[256];
+		full[0] = 0;
+		for (int i = 1; i < g_argc && i < 8; ++i) {
+			strcat(full, g_args[i]);
+			strcat(full, " ");
+		}
+		int pid = spawn_with_arg("/bin/audiocfg", full);
+		if (pid <= 0) {
+			write_str("audiocfg: "); write_line(strerror(pid));
+		}
 	} else if (strcmp(cmd, "uidemo") == 0) {
 		/* Launch the standalone GUI app installed on disk at /bin/uidemo.
 		 * Must be run from the desktop terminal (the window server is only

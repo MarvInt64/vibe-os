@@ -261,8 +261,8 @@ void Browser::draw_text_proportional(int rx, int sy, const char *s, int max_w, u
         int adv = g ? g->advance : px / 2;
         if (pen - rx + adv > max_w) break;
         if (g) {
-            blit_glyph_aa(g, pen + g->xoff, base + g->yoff, color);
-            if (bold) blit_glyph_aa(g, pen + g->xoff + 1, base + g->yoff, color);
+            blit_glyph_aa(g, pen + g->xoff, base + g->yoff, color, 0);
+            if (bold) blit_glyph_aa(g, pen + g->xoff + 1, base + g->yoff, color, 0);
         }
         pen += adv;
         ++s;
@@ -308,10 +308,12 @@ int Browser::draw_text_n(int x, int y, const char *s, int n, uint32_t c) {
     return i;
 }
 
-void Browser::blit_glyph_aa(const af_glyph *g, int ox, int oy, uint32_t color) {
+void Browser::blit_glyph_aa(const af_glyph *g, int ox, int oy, uint32_t color, int italic_shift) {
     if (!g || !g->cov) return;
     int sr = (color >> 16) & 255, sg = (color >> 8) & 255, sb = color & 255;
     for (int yy = 0; yy < g->h; ++yy) {
+        /* italic: shift top rows right, bottom rows stay put — forward slant */
+        int xs = italic_shift ? (italic_shift * (g->h - 1 - yy) / (g->h > 1 ? g->h - 1 : 1)) : 0;
         int py = oy + yy;
         if (py < 0 || py >= win_h_) continue;
         uint32_t *row = &canvas_[py * BROW_MAX_W];
@@ -319,7 +321,7 @@ void Browser::blit_glyph_aa(const af_glyph *g, int ox, int oy, uint32_t color) {
         for (int xx = 0; xx < g->w; ++xx) {
             int a = cov[xx];
             if (!a) continue;
-            int px = ox + xx;
+            int px = ox + xs + xx;
             if (px < 0 || px >= win_w_) continue;
             uint32_t &d  = row[px];
             int dr = (d >> 16) & 255, dg = (d >> 8) & 255, db = d & 255;
@@ -334,12 +336,13 @@ void Browser::blit_glyph_aa(const af_glyph *g, int ox, int oy, uint32_t color) {
 void Browser::draw_run_text(int rx, int sy, const wl_run *r) {
     int pen = rx;
     int base = sy + appfont_ascent(r->px);
+    int italic_shift = r->italic ? (r->px / 4) : 0;
     for (int k = 0; k < r->len; ++k) {
         unsigned char cp = (unsigned char)layout_.pool[r->off + k];
         const af_glyph *g = appfont_get(cp, r->px);
         if (g) {
-            blit_glyph_aa(g, pen + g->xoff, base + g->yoff, r->color);
-            if (r->bold) blit_glyph_aa(g, pen + g->xoff + 1, base + g->yoff, r->color);
+            blit_glyph_aa(g, pen + g->xoff, base + g->yoff, r->color, italic_shift);
+            if (r->bold) blit_glyph_aa(g, pen + g->xoff + 1, base + g->yoff, r->color, italic_shift);
             pen += g->advance;
         } else { pen += r->px / 2; }
     }
@@ -619,7 +622,11 @@ void Browser::load_url(const char *start_url, uint32_t gen, bool push_to_history
 }
 
 void Browser::images_clear() {
-    for (int i = 0; i < n_imgs_; ++i) if (images_[i].px) { image_free(images_[i].px); images_[i].px=nullptr; }
+    for (int i = 0; i < n_imgs_; ++i) {
+        if (images_[i].px)  { image_free(images_[i].px);  images_[i].px  = nullptr; }
+        if (images_[i].spx) { __builtin_free(images_[i].spx); images_[i].spx = nullptr; }
+        images_[i].sw = images_[i].sh = 0;
+    }
     n_imgs_ = 0;
 }
 
@@ -662,7 +669,7 @@ int Browser::image_load(const char *rawsrc) {
         int blen = n - bodyoff; if (is_chunked(raw,n)) blen = dechunk(raw+bodyoff,blen);
         int w=0,h=0; uint32_t *px = image_decode(reinterpret_cast<const unsigned char *>(raw+bodyoff), blen, &w, &h);
         if (!px || w<=0 || h<=0) return -1;
-        { std::lock_guard<std::mutex> lk(layout_mutex_); ImgEntry &e = images_[n_imgs_]; __builtin_strncpy(e.src, rawsrc, sizeof e.src); e.w=w; e.h=h; e.px=px; return n_imgs_++; }
+        { std::lock_guard<std::mutex> lk(layout_mutex_); ImgEntry &e = images_[n_imgs_]; __builtin_strncpy(e.src, rawsrc, sizeof e.src); e.w=w; e.h=h; e.px=px; e.spx=nullptr; e.sw=0; e.sh=0; return n_imgs_++; }
     }
     return -1;
 }
@@ -744,18 +751,51 @@ void Browser::render() {
     for (int i = 0; i < layout_.run_count; ++i) {
         const wl_run &r = layout_.runs[i];
         int sy = r.y - scroll_; int rx = content_x + r.x;
+        /* Early exit: non-background runs are laid out top-to-bottom,
+         * so once r.y is past the viewport bottom nothing below is visible. */
+        if (r.kind != WL_RECT && sy >= win_h_) break;
         if (sy + r.h < 0 || sy >= win_h_) continue;
         if (r.kind == WL_RECT) { int top = sy, h = r.h; if (top < 0) { h -= -top; top = 0; } if (h > 0) fill(rx, top, r.w, h, r.color); continue; }
         if (r.kind == WL_IMAGE) {
             ImgEntry *im = img_find(r.off>=0&&r.off<layout_.href_count ? layout_.hrefs[r.off] : "");
-            if (im && im->px) {
-                for (int yy=0; yy<r.h; ++yy) {
-                    int py = sy + yy; if (py < 0 || py >= win_h_) continue;
-                    int syi = (int)((long)yy * im->h / r.h);
-                    for (int xx=0; xx<r.w; ++xx) {
-                        int pxx = rx + xx; if (pxx<0||pxx>=win_w_) continue;
-                        int sxi = (int)((long)xx * im->w / r.w);
-                        canvas_[py * BROW_MAX_W + pxx] = im->px[syi * im->w + sxi];
+            if (im && im->px && r.w > 0 && r.h > 0) {
+                /* Build or reuse bilinear-scaled cache */
+                if (!im->spx || im->sw != r.w || im->sh != r.h) {
+                    if (im->spx) { __builtin_free(im->spx); im->spx = nullptr; }
+                    im->spx = (uint32_t *)__builtin_malloc((unsigned)(r.w * r.h) * 4u);
+                    if (im->spx) {
+                        im->sw = r.w; im->sh = r.h;
+                        int iw = im->w, ih = im->h;
+                        int fsw = r.w > 1 ? r.w - 1 : 1, fsh = r.h > 1 ? r.h - 1 : 1;
+                        for (int yy = 0; yy < r.h; ++yy) {
+                            int fy = (int)((long)yy * (ih-1) * 256 / fsh);
+                            int y0 = fy>>8, y1 = y0<ih-1?y0+1:y0, ty = fy&255;
+                            for (int xx = 0; xx < r.w; ++xx) {
+                                int fx = (int)((long)xx * (iw-1) * 256 / fsw);
+                                int x0 = fx>>8, x1 = x0<iw-1?x0+1:x0, tx = fx&255;
+                                uint32_t c00=im->px[y0*iw+x0],c10=im->px[y0*iw+x1];
+                                uint32_t c01=im->px[y1*iw+x0],c11=im->px[y1*iw+x1];
+                                int r0=((c00>>16)&255)*(256-tx)+((c10>>16)&255)*tx;
+                                int r1=((c01>>16)&255)*(256-tx)+((c11>>16)&255)*tx;
+                                int g0=((c00>>8)&255)*(256-tx)+((c10>>8)&255)*tx;
+                                int g1=((c01>>8)&255)*(256-tx)+((c11>>8)&255)*tx;
+                                int b0=(c00&255)*(256-tx)+(c10&255)*tx;
+                                int b1=(c01&255)*(256-tx)+(c11&255)*tx;
+                                im->spx[yy*r.w+xx] = (((uint32_t)((r0*(256-ty)+r1*ty)>>16))<<16)
+                                                    | (((uint32_t)((g0*(256-ty)+g1*ty)>>16))<<8)
+                                                    |  ((uint32_t)((b0*(256-ty)+b1*ty)>>16));
+                            }
+                        }
+                    }
+                }
+                /* Blit cached scaled image — fast path */
+                if (im->spx) {
+                    for (int yy = 0; yy < r.h; ++yy) {
+                        int py = sy + yy; if (py < 0 || py >= win_h_) continue;
+                        const uint32_t *src = &im->spx[yy * r.w];
+                        uint32_t *dst = &canvas_[py * BROW_MAX_W + rx];
+                        int x0 = rx < 0 ? -rx : 0, x1 = rx+r.w > win_w_ ? win_w_-rx : r.w;
+                        if (x1 > x0) __builtin_memcpy(dst+x0, src+x0, (unsigned)(x1-x0)*4u);
                     }
                 }
             } else if (sy >= 0) fill(rx, sy, r.w, r.h, 0x00e0e4ecu);
@@ -793,6 +833,7 @@ void Browser::render() {
         else if (r.bg && sy >= 0) fill(rx-1, sy, r.w+2, r.h, r.bg);
         draw_run_text(rx, sy, &r);
         if (r.underline && sy + r.h - 2 >= 0) fill(rx, sy + r.h - 2, r.w, 1, r.color);
+        if (r.strikethrough) { int mid = sy + r.h * 2 / 5; if (mid >= 0 && mid < win_h_) fill(rx, mid, r.w, 1, r.color); }
     }
     if (layout_.height > content_h()) {
         int track_h = content_h();

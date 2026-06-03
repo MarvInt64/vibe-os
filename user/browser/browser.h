@@ -138,7 +138,13 @@ private:
 
     /* ---- image cache --------------------------------------------------- */
     static constexpr int MAX_IMGS = 14;
-    struct ImgEntry { char src[256]; uint32_t *px; int w, h; };
+    struct ImgEntry {
+        char     src[256];
+        uint32_t *px;          /* raw decoded pixels */
+        int      w, h;
+        uint32_t *spx;         /* cached scaled pixels (null = not cached) */
+        int      sw, sh;       /* dimensions of spx */
+    };
     ImgEntry images_[MAX_IMGS] = {};
     int      n_imgs_   = 0;
 
@@ -156,7 +162,7 @@ private:
     void draw_text(int x, int y, const char *s, uint32_t c);
     int  draw_text_n(int x, int y, const char *s, int n, uint32_t c);
     void blit_glyph_aa(const struct af_glyph *g, int ox, int oy,
-                       uint32_t color);
+                       uint32_t color, int italic_shift = 0);
     void draw_run_text(int rx, int sy, const wl_run *r);
     void draw_text_proportional(int rx, int sy, const char *s, int max_w, uint32_t color, int px, bool bold);
     int  text_width_proportional(const char *s, int px);

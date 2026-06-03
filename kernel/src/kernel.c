@@ -1,4 +1,5 @@
 #include "alloc.h"
+#include "audio.h"
 #include "bga.h"
 #include "ext2_fs.h"
 #include "framebuffer.h"
@@ -13,6 +14,7 @@
 #include "ramdisk.h"
 #include "ramdisk_demo.h"
 #include "serial.h"
+#include "settings.h"
 #include "string.h"
 #include "timer.h"
 #include "tty.h"
@@ -411,6 +413,7 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
 
   vga_text_clear(0x1fu);
   interrupts_init();
+  settings_init();
   journal_init();
   journal_log(JOURNAL_INFO, 0, "VibeOS kernel boot");
   journal_log(JOURNAL_APP, 0, "kernel inputdiag wheel-restored v4");
@@ -442,6 +445,8 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
     presented_cursor_y = 0;
     serial_write("VIBEOS: cli ready\n");
 
+    audio_init();
+
     for (;;) {
         struct mouse_state mouse;
         struct keyboard_state keyboard;
@@ -451,6 +456,9 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
         int cursor_moved;
         int had_dirty = 0;
         int run_result;
+
+        /* Process audio at the highest priority to ensure stable sample feed. */
+        audio_tick();
 
         input_poll(&mouse, &keyboard);
         net_poll();

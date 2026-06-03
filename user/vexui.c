@@ -105,7 +105,8 @@ enum { W_PANEL, W_LABEL, W_BUTTON, W_BAR, W_VBOX, W_HBOX,
        W_PILL,
        W_PILLBTN,
        W_METRIC,
-       W_ICON      /* bare SVG icon/logo, no chrome (transparent bg)     */
+       W_ICON,     /* bare SVG icon/logo, no chrome (transparent bg)     */
+       W_LISTITEM  /* sidebar row: left icon + label, hover + selected   */
 };
 
 static const vui_theme g_default_theme = {
@@ -689,6 +690,14 @@ vui_widget *vui_image(vui_window *w, int x, int y, int size) {
     wd->x=x; wd->y=y; wd->w=size; wd->h=size; wd->color=VUI_ACCENT;
     init_margins(wd); w->dirty=1; return wd;
 }
+vui_widget *vui_listitem(vui_window *w, int x, int y, int width, int height, const char *label) {
+    vui_widget *wd = new_widget(w, W_LISTITEM);
+    if (!wd) return 0;
+    wd->x=x; wd->y=y; wd->w=width; wd->h=height;
+    scopy(wd->text, label?label:"", sizeof(wd->text));
+    wd->color = g_theme.accent;        /* selection/indicator accent */
+    init_margins(wd); w->dirty=1; return wd;
+}
 vui_widget *vui_input(vui_window *w, int x, int y, int width, const char *placeholder) {
     vui_widget *wd = new_widget(w, W_INPUT);
     if (!wd) return 0;
@@ -824,7 +833,7 @@ void vui_set_value(vui_widget *wd, int v){ if(!wd||wd->value==v)return; wd->valu
 void vui_set_color(vui_widget *wd, vui_u32 c){ if(!wd||wd->color==c)return; wd->color=c; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
 /* Shared SVG icon storage. Widgets reference a slot by index instead of each
  * carrying a large inline buffer (logos can be a couple of KB). */
-#define VUI_ICON_SLOTS   8
+#define VUI_ICON_SLOTS   32   /* enough for icon-rich apps (file browser sidebar) */
 static char g_icon_store[VUI_ICON_SLOTS][VUI_ICON_SLOT_SZ];
 static unsigned char g_icon_used[VUI_ICON_SLOTS];
 
@@ -1440,11 +1449,20 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
                                                  : mix(g_theme.border, accent, 1u, 3u);
         uint32_t tcol = (wd->hover || wd->pressed) ? g_theme.text
                                                    : mix(g_theme.text_dim, accent, 1u, 2u);
-        int tx = wd->x + (wd->w - text_px(wd->text, 1)) / 2;
-        int ty = wd->y + (wd->h - 16) / 2;
         fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, 4, fill, bd);
-        // rect(w, wd->x + 2, wd->y + 1, wd->w - 4, 1, glass(0x00ffffffu, 32u));
-        text(w, tx, ty, wd->text, tcol);
+        /* Optional leading icon (e.g. a "+" on "New Folder"): icon + label are
+         * centred together as one group, with the icon to the left of the text. */
+        const char *bisvg = widget_icon(wd);
+        int tw = text_px(wd->text, 1);
+        int ty = wd->y + (wd->h - 16) / 2;
+        if (bisvg) {
+            int isz = 16, gap = 5;
+            int gx = wd->x + (wd->w - (isz + gap + tw)) / 2;
+            draw_svg_icon(w, gx, wd->y + (wd->h - isz) / 2, isz, bisvg, tcol);
+            text(w, gx + isz + gap, ty, wd->text, tcol);
+        } else {
+            text(w, wd->x + (wd->w - tw) / 2, ty, wd->text, tcol);
+        }
         break; }
     case W_PILLBTN: {
         /* Fully-rounded pill button (tags: Docs/Releases/Status …). Faint glass
@@ -1496,13 +1514,44 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         break; }
     case W_ICON: {
         /* Bare SVG icon/logo: no background, no border — just the artwork,
-         * sized to the widget and centered. Used e.g. for the topbar logo. */
+         * sized to the widget and centered (e.g. the topbar logo). When the
+         * icon is interactive (has a click handler), it doubles as a flat icon
+         * button: a subtle rounded wash appears on hover/press, but the icon
+         * itself stays chrome-free to match toolbars in the mockup. */
         uint32_t accent = wd->color ? wd->color : g_theme.accent;
         int size = wd->w < wd->h ? wd->w : wd->h;
+        if (wd->on_click && (wd->hover || wd->pressed)) {
+            uint32_t wash = glass(mix(g_theme.surface, accent, 1u, 6u),
+                                  wd->pressed ? 220u : 170u);
+            fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, 6, wash, wash);
+        }
         const char *isvg = widget_icon(wd);
         if (isvg)
             draw_svg_icon(w, wd->x + (wd->w - size) / 2, wd->y + (wd->h - size) / 2,
                           size, isvg, accent);
+        break; }
+    case W_LISTITEM: {
+        /* Flat sidebar row: left-aligned SVG icon + label. Three visual states:
+         * selected (wd->running) draws a tinted surface, a thin border and an
+         * accent bar on the left edge; hover draws a faint wash; rest is bare. */
+        uint32_t accent = wd->color ? wd->color : g_theme.accent;
+        int selected = wd->running;
+        int active = wd->hover || wd->pressed;
+        if (selected) {
+            fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, 5,
+                            glass(mix(g_theme.surface, accent, 1u, 6u), 235u),
+                            mix(g_theme.border, accent, 1u, 2u));
+            rect(w, wd->x, wd->y + (wd->h - 18) / 2, 3, 18, accent);   /* selector */
+        } else if (active) {
+            uint32_t wash = glass(mix(g_theme.surface, accent, 1u, 12u), 190u);
+            fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, 5, wash, wash);
+        }
+        uint32_t fg = (selected || active) ? g_theme.text : g_theme.text_dim;
+        const char *isvg = widget_icon(wd);
+        int icon_size = 18;
+        int iy = wd->y + (wd->h - icon_size) / 2;
+        if (isvg) draw_svg_icon(w, wd->x + 12, iy, icon_size, isvg, fg);
+        text(w, wd->x + 38, wd->y + (wd->h - 16) / 2, wd->text, fg);
         break; }
     case W_INPUT: {
         /* Rounded dark input field (all text/search fields). Subtle border that
@@ -1933,7 +1982,7 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
         int input_clicked = 0;
         for (i = 0; i < w->widget_count; ++i) {
             struct vui_widget *wd = &w->widgets[i];
-            if (wd->type != W_BUTTON && wd->type != W_PILLBTN && wd->type != W_TILE && wd->type != W_TABS && wd->type != W_INPUT) continue;
+            if (wd->type != W_BUTTON && wd->type != W_PILLBTN && wd->type != W_TILE && wd->type != W_TABS && wd->type != W_INPUT && wd->type != W_LISTITEM && wd->type != W_ICON) continue;
             uint8_t hov = (uint8_t)(w->active_menu_idx < 0 &&
                                     inside(wd, w->mouse_x, w->mouse_y));
             uint8_t prs = (uint8_t)(hov && w->mouse_down);

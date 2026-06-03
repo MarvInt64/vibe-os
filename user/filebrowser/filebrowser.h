@@ -37,7 +37,7 @@ public:
     void refresh_files();
     void render();
 
-    // Event handlers
+    // Event handlers (canvas region: file list, scrollbar, breadcrumbs).
     void on_click(int x, int y);
     void on_mouse_move(int x, int y);
     void on_mouse_release(int x, int y);
@@ -46,19 +46,35 @@ public:
     void on_resize(int w, int h);
     void on_tick();
 
+    // Toolbar / sidebar actions, invoked from VexUI widget callbacks.
+    void nav_back();
+    void nav_forward();
+    void nav_up();
+    void do_refresh();
+    void set_grid_view(bool grid);
+    void select_sidebar(int index);
+    void search_changed(const char *text);
+    void create_new_folder();
+
 private:
     static FileBrowser *instance_;
 
-    // UI Window and Framebuffer
+    // UI Window and Framebuffer.
+    // VexUI clamps windows to VUI_MAX_W/H (900x640); win_w_/win_h_ are set from
+    // the real window size after open, never assumed.
     vui_window *win_ = nullptr;
     uint32_t *canvas_pixels_ = nullptr;
-    int win_w_ = 960;
+    int win_w_ = 900;
     int win_h_ = 640;
+
+    // Retained VexUI controls (toolbar + sidebar live as real widgets; the file
+    // list, breadcrumbs, preview and status bar are hand-rendered on the canvas).
+    vui_widget *search_input_ = nullptr;
+    vui_widget *sidebar_widgets_[24] = {};
 
     // Navigation and state
     char current_path_[256];
     char search_query_[64];
-    bool search_focused_ = false;
     bool grid_view_ = false;
     int selected_index_ = -1;
 
@@ -110,7 +126,8 @@ private:
     void get_detail_rect(int &x, int &y, int &w, int &h);
 
     void update_preview();
-    void create_new_folder();
+    void build_widgets();              // create toolbar + sidebar VexUI controls
+    void sync_sidebar_selection();     // reflect selected_sidebar_idx_ on widgets
 };
 
 #endif // FILEBROWSER_H

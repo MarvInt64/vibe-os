@@ -244,15 +244,15 @@ static void terminal_app_draw(const struct app_instance *app, const struct app_d
 }
 
 static const struct app_vtable TERMINAL_APP_VTABLE = {
-	terminal_app_activate,
-	terminal_app_handle_keyboard,
-	terminal_app_needs_redraw,
-	terminal_app_consume_damage,
-	terminal_app_draw,
-	terminal_app_window_owner_pid,
-	terminal_app_window_closed,
-	terminal_app_menu_items,
-	terminal_app_menu_action
+	.activate = terminal_app_activate,
+	.handle_keyboard = terminal_app_handle_keyboard,
+	.needs_redraw = terminal_app_needs_redraw,
+	.consume_damage = terminal_app_consume_damage,
+	.draw = terminal_app_draw,
+	.window_owner_pid = terminal_app_window_owner_pid,
+	.window_closed = terminal_app_window_closed,
+	.menu_items = terminal_app_menu_items,
+	.menu_action = terminal_app_menu_action
 };
 
 void app_init_terminal(struct app_instance *app, struct terminal_app_state *state) {

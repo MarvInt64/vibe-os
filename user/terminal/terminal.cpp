@@ -15,6 +15,7 @@
  */
 #include "vexui.h"
 #include "text_grid.h"
+#include <string.h>
 
 #include <vibeos.h>
 #include <unistd.h>
@@ -44,6 +45,11 @@ private:
     void echo(char c);
     void pump_output();
     void repaint();
+
+    static constexpr int MAX_HISTORY = 32;
+    char history_[MAX_HISTORY][256];
+    int history_count_ = 0;
+    int history_idx_ = -1;
 
     TextGrid grid_;
     uint32_t canvas_[CANVAS_STRIDE * CANVAS_MAX_H];
@@ -79,8 +85,21 @@ void Terminal::echo(char c) {
 void Terminal::send_line() {
     /* Terminate the line and hand it to the shell; echo the newline locally. */
     if (line_len_ < (int)sizeof(line_) - 1) {
-        line_[line_len_++] = '\n';
+        line_[line_len_++] = '\0';
     }
+    
+    /* Save to history */
+    if (line_len_ > 1) { // Only if not empty
+        if (history_count_ < MAX_HISTORY) {
+            strncpy(history_[history_count_++], line_, 256);
+        } else {
+            // Shift history
+            for (int i = 0; i < MAX_HISTORY - 1; i++) strncpy(history_[i], history_[i+1], 256);
+            strncpy(history_[MAX_HISTORY - 1], line_, 256);
+        }
+    }
+    history_idx_ = -1;
+
     echo('\n');
     if (master_fd_ >= 0) {
         write(master_fd_, line_, (size_t)line_len_);
@@ -89,16 +108,55 @@ void Terminal::send_line() {
 }
 
 void Terminal::on_key(unsigned int key) {
-    if (key == 0x03) {                 /* Ctrl+C: interrupt the foreground job */
+    static int escape_state = 0; // 0=none, 1=ESC, 2=ESC+[
+
+    if (key == 0x03) {                 /* Ctrl+C */
         if (master_fd_ >= 0) vos_pty_interrupt(master_fd_);
         line_len_ = 0;
         echo('\n');
         if (dirty_) repaint();
         return;
     }
+    
+    // Simple state machine for ANSI escape codes (ESC + [ + code)
+    if (escape_state == 0 && key == 0x1b) {
+        escape_state = 1;
+        return;
+    } else if (escape_state == 1 && key == '[') {
+        escape_state = 2;
+        return;
+    } else if (escape_state == 2) {
+        escape_state = 0;
+        if (key == 'A') { // Up
+            if (history_idx_ < history_count_ - 1) {
+                history_idx_++;
+                while(line_len_ > 0) { echo('\b'); line_len_--; }
+                strncpy(line_, history_[history_count_ - 1 - history_idx_], 256);
+                line_len_ = strlen(line_);
+                for(int i = 0; i < line_len_; i++) echo(line_[i]);
+            }
+            return;
+        } else if (key == 'B') { // Down
+            if (history_idx_ > 0) {
+                history_idx_--;
+                while(line_len_ > 0) { echo('\b'); line_len_--; }
+                strncpy(line_, history_[history_count_ - 1 - history_idx_], 256);
+                line_len_ = strlen(line_);
+                for(int i = 0; i < line_len_; i++) echo(line_[i]);
+            } else if (history_idx_ == 0) {
+                history_idx_ = -1;
+                while(line_len_ > 0) { echo('\b'); line_len_--; }
+                line_len_ = 0;
+            }
+            return;
+        }
+        return; // Other escape sequences ignored for now
+    }
+    escape_state = 0;
+    
     if (key == '\n' || key == '\r') {
         send_line();
-    } else if (key == 0x08 || key == 0x7f) {   /* backspace / delete */
+    } else if (key == 0x08 || key == 0x7f) {   /* backspace */
         if (line_len_ > 0) {
             --line_len_;
             echo('\b');

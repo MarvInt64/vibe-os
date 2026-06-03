@@ -29,6 +29,7 @@ static const unsigned COL_RULE    = 0xc8cedau;
 static const unsigned COL_CODEBG  = 0xe7eaf2u;
 static const unsigned COL_ACCENT  = 0x4a90d9u;
 static const int      BODY_PX     = 17;
+static const unsigned COL_PREBG   = 0xe2e5f0u;
 
 /* ---- small helpers ----------------------------------------------------- */
 
@@ -120,9 +121,18 @@ static bool parse_color(const char *s, unsigned &out) {
                 while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); ++p; }
                 return v;
             };
-            int r = next_num();
-            int g = next_num();
-            int b = next_num();
+            int r = next_num(), g = next_num(), b = next_num();
+            /* parse optional alpha: "0", "0.0", "0.5", "1", "1.0" */
+            while (*p == ' ' || *p == ',') ++p;
+            bool has_alpha = (*p >= '0' && *p <= '9') || *p == '.';
+            if (has_alpha) {
+                int whole = 0;
+                while (*p >= '0' && *p <= '9') { whole = whole * 10 + (*p - '0'); ++p; }
+                int frac100 = 0;
+                if (*p == '.') { ++p; int div=10; while (*p>='0'&&*p<='9'&&div<=100){frac100+=(*p-'0')*100/div;div*=10;++p;} }
+                int alpha100 = whole * 100 + frac100;
+                if (alpha100 == 0) return false; /* fully transparent — don't apply color */
+            }
             if (r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
                 out = ((unsigned)r << 16) | ((unsigned)g << 8) | (unsigned)b;
                 return true;
@@ -143,11 +153,42 @@ static bool parse_color(const char *s, unsigned &out) {
         return false;
     }
     struct { const char *n; unsigned c; } tbl[] = {
-        {"black",0},{"white",0xffffff},{"red",0xcc0000},{"green",0x008000},
+        {"black",0x000000},{"white",0xffffff},{"red",0xcc0000},{"green",0x008000},
         {"blue",0x1a56db},{"navy",0x001f5f},{"gray",0x808080},{"grey",0x808080},
-        {"silver",0xc0c0c0},{"orange",0xd56a00},{"purple",0x800080},
-        {"teal",0x008080},{"maroon",0x800000},{"olive",0x808000},
-        {"yellow",0xb59f00},{nullptr,0}};
+        {"silver",0xc0c0c0},{"orange",0xff6600},{"purple",0x800080},
+        {"teal",0x008080},{"maroon",0x800000},{"olive",0x808000},{"yellow",0xd4b000},
+        /* extended names */
+        {"darkblue",0x00008b},{"darkgreen",0x006400},{"darkred",0x8b0000},
+        {"darkgray",0xa9a9a9},{"darkgrey",0xa9a9a9},{"lightgray",0xd3d3d3},
+        {"lightgrey",0xd3d3d3},{"lightblue",0xadd8e6},{"lightgreen",0x90ee90},
+        {"lightyellow",0xffffe0},{"lightcoral",0xf08080},{"lightsalmon",0xffa07a},
+        {"lightpink",0xffb6c1},{"lightskyblue",0x87cefa},{"lightsteelblue",0xb0c4de},
+        {"pink",0xffb6c1},{"coral",0xff7f50},{"tomato",0xff6347},{"salmon",0xfa8072},
+        {"crimson",0xdc143c},{"firebrick",0xb22222},{"indianred",0xcd5c5c},
+        {"gold",0xffd700},{"goldenrod",0xdaa520},{"khaki",0xf0e68c},
+        {"cyan",0x00ced1},{"aqua",0x00ced1},{"turquoise",0x40e0d0},
+        {"magenta",0xff00ff},{"fuchsia",0xff00ff},{"violet",0xee82ee},
+        {"orchid",0xda70d6},{"plum",0xdda0dd},{"indigo",0x4b0082},
+        {"steelblue",0x4682b4},{"cornflowerblue",0x6495ed},{"royalblue",0x4169e1},
+        {"dodgerblue",0x1e90ff},{"deepskyblue",0x00bfff},{"skyblue",0x87ceeb},
+        {"cadetblue",0x5f9ea0},{"mediumblue",0x0000cd},{"slateblue",0x6a5acd},
+        {"chocolate",0xd2691e},{"saddlebrown",0x8b4513},{"sienna",0xa0522d},
+        {"peru",0xcd853f},{"tan",0xd2b48c},{"brown",0xa52a2a},{"wheat",0xf5deb3},
+        {"beige",0xf5f5dc},{"ivory",0xfffff0},{"linen",0xfaf0e6},
+        {"lavender",0xe6e6fa},{"lavenderblush",0xfff0f5},{"mistyrose",0xffe4e1},
+        {"seashell",0xfff5ee},{"ghostwhite",0xf8f8ff},{"whitesmoke",0xf5f5f5},
+        {"aliceblue",0xf0f8ff},{"azure",0xf0ffff},{"honeydew",0xf0fff0},
+        {"mintcream",0xf5fffa},{"snow",0xfffafa},{"floralwhite",0xfffaf0},
+        {"oldlace",0xfdf5e6},{"antiquewhite",0xfaebd7},{"bisque",0xffe4c4},
+        {"moccasin",0xffe4b5},{"navajowhite",0xffdead},{"peachpuff",0xffdab9},
+        {"papayawhip",0xffefd5},{"blanchedalmond",0xffebcd},{"lemonchiffon",0xfffacd},
+        {"chartreuse",0x7fff00},{"greenyellow",0xadff2f},{"lawngreen",0x7cfc00},
+        {"lime",0x00ff00},{"limegreen",0x32cd32},{"springgreen",0x00ff7f},
+        {"mediumseagreen",0x3cb371},{"seagreen",0x2e8b57},{"forestgreen",0x228b22},
+        {"darkseagreen",0x8fbc8f},{"mediumaquamarine",0x66cdaa},{"aquamarine",0x7fffd4},
+        {"dimgray",0x696969},{"dimgrey",0x696969},{"slategray",0x708090},
+        {"slategrey",0x708090},{"darkslategray",0x2f4f4f},
+        {nullptr,0}};
     for (int i = 0; tbl[i].n; ++i) if (ieq(s, tbl[i].n)) { out = tbl[i].c; return true; }
     return false;
 }
@@ -157,12 +198,26 @@ struct StyleDecls {
     int      px;
     bool     bold;
     bool     underline;
+    bool     italic;
+    bool     strikethrough;
     unsigned color;
     unsigned bg;
     bool     hidden;
-    int      width;   /* explicit CSS width in px (0 = unset; not inherited) */
-    int      margin_top;    /* explicit CSS margin-top in px (-1 = unset) */
-    int      margin_bottom; /* explicit CSS margin-bottom in px (-1 = unset) */
+    int      width;
+    int      margin_top;
+    int      margin_bottom;
+    int      padding_top;
+    int      padding_bottom;
+    int      padding_left;
+    int      padding_right;
+    int      text_align;      /* 0=left, 1=center, 2=right (−1=unset) */
+    int      line_height_pct; /* e.g. 160 = 1.6× (0=unset) */
+    int      max_width;
+    unsigned border_color;
+    int      border_width;
+    bool     text_transform;
+    bool     list_style_none;  /* suppress list bullet */
+    bool     pos_fixed;        /* position: fixed → skip subtree */
 };
 
 static void apply_decls(const char *css, StyleDecls &st) {
@@ -185,7 +240,13 @@ static void apply_decls(const char *css, StyleDecls &st) {
                                          { unsigned c; if(parse_color(val,c)) st.bg=c; }
         else if (ieq(prop,"font-weight")){ const char *w=val; while(*w==' ')++w;
                                            st.bold=ieq(w,"bold")||ieq(w,"bolder")||ieq(w,"700")||ieq(w,"800")||ieq(w,"900"); }
-        else if (ieq(prop,"text-decoration")){ for(int j=0;val[j];++j) if(ieq(val+j,"underline")){st.underline=true;break;} }
+        else if (ieq(prop,"font-style")) { const char *w=val; while(*w==' ')++w; st.italic=ieq(w,"italic")||ieq(w,"oblique"); }
+        else if (ieq(prop,"text-decoration")){
+            for(int j=0;val[j];++j){
+                if(ieq(val+j,"underline")){st.underline=true;}
+                if(ieq(val+j,"line-through")){st.strikethrough=true;}
+            }
+        }
         else if (ieq(prop,"font-size"))  { const char *w=val; int px=0; while(*w==' ')++w;
                                            while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} if(px>=10&&px<=96) st.px=px; }
         else if (ieq(prop,"visibility")) { const char *w=val; while(*w==' ')++w; if(ieq(w,"hidden")) st.hidden=true; }
@@ -197,6 +258,60 @@ static void apply_decls(const char *css, StyleDecls &st) {
                                            while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} st.margin_bottom=px; }
         else if (ieq(prop,"margin"))     { const char *w=val; int px=0; while(*w==' ')++w;
                                            while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} st.margin_top=px; st.margin_bottom=px; }
+        else if (ieq(prop,"padding-top"))    { const char *w=val; int px=0; while(*w==' ')++w;
+                                           while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} st.padding_top=px; }
+        else if (ieq(prop,"padding-bottom")) { const char *w=val; int px=0; while(*w==' ')++w;
+                                           while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} st.padding_bottom=px; }
+        else if (ieq(prop,"padding-left"))   { const char *w=val; int px=0; while(*w==' ')++w;
+                                           while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} st.padding_left=px; }
+        else if (ieq(prop,"padding-right"))  { const char *w=val; int px=0; while(*w==' ')++w;
+                                           while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} st.padding_right=px; }
+        else if (ieq(prop,"padding"))    {
+            const char *w=val; int px=0; while(*w==' ')++w;
+            while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;}
+            if(px>0&&px<=200){ st.padding_top=px; st.padding_bottom=px; st.padding_left=px; st.padding_right=px; }
+        }
+        else if (ieq(prop,"max-width"))  { const char *w=val; int px=0; while(*w==' ')++w;
+                                           while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} if(px>0&&px<=4000) st.max_width=px; }
+        else if (ieq(prop,"border")||ieq(prop,"border-top")||ieq(prop,"border-bottom")||
+                 ieq(prop,"border-left")||ieq(prop,"border-right")||ieq(prop,"outline")) {
+            /* parse "1px solid #ccc" or "none" */
+            const char *w=val; while(*w==' ')++w;
+            if(ieq(w,"none")||ieq(w,"0")){ st.border_width=0; st.border_color=0; }
+            else {
+                int bw=0; while(*w>='0'&&*w<='9'){bw=bw*10+(*w-'0');++w;}
+                while(*w&&*w!=' ')++w; while(*w==' ')++w; /* skip 'px solid ...' */
+                while(*w&&*w!=' ')++w; while(*w==' ')++w;
+                unsigned bc=0xc8cedau; parse_color(w,bc);
+                if(bw>0&&bw<=8){ st.border_width=bw; st.border_color=bc; }
+            }
+        }
+        else if (ieq(prop,"border-color")) { unsigned c=0; if(parse_color(val,c)) st.border_color=c; }
+        else if (ieq(prop,"border-width")) { const char *w=val; int px=0; while(*w==' ')++w;
+                                           while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} if(px>0&&px<=8) st.border_width=px; }
+        else if (ieq(prop,"text-transform")){ const char *w=val; while(*w==' ')++w; st.text_transform=ieq(w,"uppercase")||ieq(w,"capitalize"); }
+        else if (ieq(prop,"list-style")||ieq(prop,"list-style-type")) {
+            const char *w=val; while(*w==' ')++w; st.list_style_none=ieq(w,"none"); }
+        else if (ieq(prop,"position")) {
+            const char *w=val; while(*w==' ')++w;
+            st.pos_fixed=(ieq(w,"fixed")||ieq(w,"sticky")); }
+        else if (ieq(prop,"text-align")) {
+            const char *w=val; while(*w==' ')++w;
+            if(ieq(w,"center")) st.text_align=1;
+            else if(ieq(w,"right")) st.text_align=2;
+            else if(ieq(w,"left")) st.text_align=0;
+        }
+        else if (ieq(prop,"line-height")) {
+            const char *w=val; while(*w==' ')++w;
+            /* Parse: "1.5" → 150, "160%" → 160, "24px" → skip (complex) */
+            int whole=0, frac=0, frac_div=1;
+            while(*w>='0'&&*w<='9'){whole=whole*10+(*w-'0');++w;}
+            if(*w=='.'){++w; while(*w>='0'&&*w<='9'&&frac_div<100){frac=frac*10+(*w-'0');frac_div*=10;++w;}}
+            int pct = whole*100 + frac*100/frac_div;
+            if(*w=='%') pct = whole*100 + frac*100/frac_div; /* same */
+            else if(*w!='p'/* px */) pct = pct; /* unitless: treat as percent×100 */
+            if(pct>=80&&pct<=300) st.line_height_pct=pct;
+        }
     }
 }
 
@@ -206,15 +321,29 @@ struct Style {
     int      px        = BODY_PX;
     bool     bold      = false;
     bool     underline = false;
+    bool     italic    = false;
+    bool     strikethrough = false;
     unsigned color     = COL_TEXT;
     unsigned bg        = 0;
     int      link      = -1;
     int      left      = 0;
     bool     hidden    = false;
-    bool     pre       = false;   /* preserve whitespace */
-    int      width     = 0;       /* CSS width px for this element (not inherited) */
+    bool     pre       = false;
+    int      width     = 0;
     int      margin_top    = -1;
     int      margin_bottom = -1;
+    int      padding_top    = -1;
+    int      padding_bottom = -1;
+    int      padding_left   = -1;
+    int      padding_right  = -1;
+    int      text_align      = 0;
+    int      line_height_pct = 0;
+    int      max_width       = 0;
+    unsigned border_color    = 0;
+    int      border_width    = 0;
+    bool     text_transform  = false;
+    bool     list_style_none = false;
+    bool     pos_fixed       = false;
 };
 
 /* ---- layout state ------------------------------------------------------ */
@@ -227,7 +356,8 @@ struct State {
     int       line_h         = 0;
     bool      at_sol         = true;
     bool      pend_space     = false;
-    int       pending_margin = 0;   /* collapsed block margin accumulator */
+    int       pending_margin = 0;
+    int       line_start_run = 0;  /* run index at start of current line (for text-align) */
     Style     stk[40];
     int       sp             = 0;
     css_sheet *sheet         = nullptr;
@@ -252,33 +382,62 @@ static void st_pop (State &S) { if(S.sp>0) --S.sp; }
  * so it applies per-element (it must not inherit to children). */
 static void apply_css(State &S, dom_node *node) {
     StyleDecls d{S.stk[S.sp].px, S.stk[S.sp].bold, S.stk[S.sp].underline,
-                 S.stk[S.sp].color, S.stk[S.sp].bg, S.stk[S.sp].hidden, 0, -1, -1};
+                 S.stk[S.sp].italic, S.stk[S.sp].strikethrough,
+                 S.stk[S.sp].color, S.stk[S.sp].bg, S.stk[S.sp].hidden,
+                 0, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, false, false, false};
     if (S.sheet) { char buf[640]; css_match(S.sheet, node, buf, sizeof buf); apply_decls(buf, d); }
     const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
-    S.stk[S.sp].px        = d.px;
-    S.stk[S.sp].bold      = d.bold;
-    S.stk[S.sp].underline = d.underline;
-    S.stk[S.sp].color     = d.color;
-    S.stk[S.sp].bg        = d.bg;
-    S.stk[S.sp].hidden    = d.hidden;
-    S.stk[S.sp].width     = d.width;
+    S.stk[S.sp].px            = d.px;
+    S.stk[S.sp].bold          = d.bold;
+    S.stk[S.sp].underline     = d.underline;
+    S.stk[S.sp].italic        = d.italic;
+    S.stk[S.sp].strikethrough = d.strikethrough;
+    S.stk[S.sp].color         = d.color;
+    S.stk[S.sp].bg            = d.bg;
+    S.stk[S.sp].hidden        = d.hidden;
+    S.stk[S.sp].width         = d.width;
     S.stk[S.sp].margin_top    = d.margin_top;
     S.stk[S.sp].margin_bottom = d.margin_bottom;
+    S.stk[S.sp].padding_top    = d.padding_top;
+    S.stk[S.sp].padding_bottom = d.padding_bottom;
+    S.stk[S.sp].padding_left   = d.padding_left;
+    S.stk[S.sp].padding_right  = d.padding_right;
+    if (d.text_align >= 0)      S.stk[S.sp].text_align = d.text_align;
+    if (d.line_height_pct > 0)  S.stk[S.sp].line_height_pct = d.line_height_pct;
+    S.stk[S.sp].max_width      = d.max_width;
+    if (d.border_width > 0)   { S.stk[S.sp].border_color = d.border_color; S.stk[S.sp].border_width = d.border_width; }
+    if (d.text_transform)       S.stk[S.sp].text_transform = true;
+    if (d.list_style_none)      S.stk[S.sp].list_style_none = true;
+    if (d.pos_fixed)            S.stk[S.sp].pos_fixed = true;
 }
 
 static bool check_hidden(State &S, dom_node *node) {
-    StyleDecls d{BODY_PX,false,false,COL_TEXT,0,false,0, -1, -1};
+    StyleDecls d{BODY_PX,false,false,false,false,COL_TEXT,0,false,0,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,false,false,false};
     if (S.sheet) { char buf[640]; css_match(S.sheet, node, buf, sizeof buf); apply_decls(buf, d); }
     const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
-    return d.hidden;
+    return d.hidden || d.pos_fixed;
 }
 
 /* ---- layout primitives ------------------------------------------------- */
 
+/* Shift runs on the current line for text-align center/right. */
+static void apply_line_align(State &S) {
+    int align = S.stk[S.sp].text_align;
+    if (align == 0 || S.at_sol) return;
+    int line_w = S.cx - S.stk[S.sp].left;
+    int avail  = S.vw - S.stk[S.sp].left;
+    int shift  = (align == 1) ? (avail - line_w) / 2 : (avail - line_w);
+    if (shift <= 0) return;
+    for (int i = S.line_start_run; i < S.doc->run_count; ++i)
+        S.doc->runs[i].x += shift;
+}
+
 static void newline(State &S) {
+    apply_line_align(S);
     S.cy += S.line_h > 0 ? S.line_h : S.lh(BODY_PX);
     S.cx = S.stk[S.sp].left;
     S.line_h = 0; S.at_sol = true; S.pend_space = false;
+    S.line_start_run = S.doc->run_count;
 }
 
 /* Block break with margin collapsing: advance cy only by the delta above
@@ -299,7 +458,20 @@ static int word_w(State &S, const char *s, int n, int px) {
 
 static void place_word(State &S, const char *s, int n) {
     const Style &st = S.stk[S.sp];
-    int px = st.px, h = S.lh(px), w = word_w(S, s, n, px);
+    /* text-transform: uppercase — copy to local buf and upper-case */
+    char upper_buf[512];
+    if (st.text_transform && n < 511) {
+        for (int k = 0; k < n; ++k) {
+            char c = s[k];
+            upper_buf[k] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+        }
+        upper_buf[n] = '\0';
+        s = upper_buf;
+    }
+    int px = st.px;
+    int h  = st.line_height_pct > 0 ? (S.lh(px) * st.line_height_pct / 100) : S.lh(px);
+    if (h < S.lh(px)) h = S.lh(px); /* never shorter than natural height */
+    int w = word_w(S, s, n, px);
     int gap = (S.pend_space && !S.at_sol) ? S.adv(' ', px) : 0;
 
     /* Word wrap */
@@ -313,6 +485,7 @@ static void place_word(State &S, const char *s, int n) {
     if (!r) return;
     r->kind=WL_TEXT; r->x=S.cx; r->y=S.cy; r->w=w; r->h=h;
     r->px=px; r->bold=st.bold?1:0; r->underline=st.underline?1:0;
+    r->italic=st.italic?1:0; r->strikethrough=st.strikethrough?1:0;
     r->color=st.color; r->bg=st.bg; r->off=off; r->len=n; r->link=st.link;
     S.cx += w; S.at_sol = false;
     S.pending_margin = 0;  /* visible run resets the margin accumulator */
@@ -476,7 +649,7 @@ static void walk(State &S, dom_node *node) {
     if (ieq(t,"b")||ieq(t,"strong"))
         { st_push(S); S.stk[S.sp].bold=true;      apply_css(S,node); walk_children(S,node); st_pop(S); return; }
     if (ieq(t,"i")||ieq(t,"em"))
-        { st_push(S); S.stk[S.sp].color=COL_QUOTE; apply_css(S,node); walk_children(S,node); st_pop(S); return; }
+        { st_push(S); S.stk[S.sp].italic=true; apply_css(S,node); walk_children(S,node); st_pop(S); return; }
     if (ieq(t,"u"))
         { st_push(S); S.stk[S.sp].underline=true; apply_css(S,node); walk_children(S,node); st_pop(S); return; }
     if (ieq(t,"small")||ieq(t,"sub")||ieq(t,"sup"))
@@ -508,10 +681,11 @@ static void walk(State &S, dom_node *node) {
         int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 10;
         int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 10;
         block_break(S,mt);
-        int bg_idx=begin_bg(S,COL_CODEBG);
-        S.cx=S.stk[S.sp].left+8;
+        int bg_idx=begin_bg(S,COL_PREBG);
+        S.cy += 8; S.cx=S.stk[S.sp].left+12;
         walk_children(S,node);
         if (!S.at_sol) newline(S);
+        S.cy += 6;
         end_bg(S,bg_idx);
         block_break(S,mb);
         st_pop(S); return;
@@ -537,13 +711,17 @@ static void walk(State &S, dom_node *node) {
         { block_break(S,8); st_push(S); S.stk[S.sp].left+=20; apply_css(S,node); walk_children(S,node); st_pop(S); block_break(S,8); return; }
     if (ieq(t,"li")) {
         block_break(S,3);
-        wl_run *r=add_run(S.doc);
-        if (r) { int px=S.stk[S.sp].px,h=S.lh(px);
-                 r->kind=WL_BULLET; r->x=S.stk[S.sp].left; r->y=S.cy;
-                 r->w=px; r->h=h; r->px=px; r->bold=0; r->underline=0;
-                 r->color=S.stk[S.sp].color; r->bg=0; r->off=0; r->len=0; r->link=-1;
-                 S.cx=S.stk[S.sp].left+px+4; S.at_sol=false; S.line_h=h; }
-        st_push(S); apply_css(S,node); walk_children(S,node); st_pop(S);
+        st_push(S); apply_css(S,node);
+        if (!S.stk[S.sp].list_style_none) {
+            wl_run *r=add_run(S.doc);
+            if (r) { int px=S.stk[S.sp].px,h=S.lh(px);
+                     r->kind=WL_BULLET; r->x=S.stk[S.sp].left; r->y=S.cy;
+                     r->w=px; r->h=h; r->px=px; r->bold=0; r->underline=0;
+                     r->italic=0; r->strikethrough=0;
+                     r->color=S.stk[S.sp].color; r->bg=0; r->off=0; r->len=0; r->link=-1;
+                     S.cx=S.stk[S.sp].left+px+4; S.at_sol=false; S.line_h=h; }
+        }
+        walk_children(S,node); st_pop(S);
         block_break(S,3); return;
     }
     if (ieq(t,"dt")) { block_break(S,4); st_push(S); S.stk[S.sp].bold=true; apply_css(S,node); walk_children(S,node); st_pop(S); block_break(S,2); return; }
@@ -685,8 +863,53 @@ static void walk(State &S, dom_node *node) {
         if (!S.stk[S.sp].hidden) {
             int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 0;
             int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 0;
+            int pt = S.stk[S.sp].padding_top >= 0 ? S.stk[S.sp].padding_top : 0;
+            int pb = S.stk[S.sp].padding_bottom >= 0 ? S.stk[S.sp].padding_bottom : 0;
+            int pl = S.stk[S.sp].padding_left >= 0 ? S.stk[S.sp].padding_left : 0;
+            if (pl > 80) pl = 80;
+            /* max-width: shrink effective viewport and optionally center */
+            int mw = S.stk[S.sp].max_width;
+            int saved_vw = S.vw;
+            int orig_left = S.stk[S.sp].left;
+            if (mw > 0) {
+                int avail = S.vw - orig_left;
+                if (mw < avail) {
+                    /* center the constrained block if margin appears auto-like */
+                    int indent = (avail - mw) / 2;
+                    if (indent > 0) { S.stk[S.sp].left += indent; }
+                    S.vw = S.stk[S.sp].left + mw;
+                }
+            }
+            int bg_idx = -1;
             block_break(S, mt);
+            if (S.stk[S.sp].bg) {
+                bg_idx = begin_bg(S, S.stk[S.sp].bg);
+                S.stk[S.sp].bg = 0;
+            }
+            if (pt > 0) S.cy += pt;
+            if (pl > 0) { S.stk[S.sp].left += pl; if (S.at_sol) S.cx = S.stk[S.sp].left; }
             walk_children(S, node);
+            if (!S.at_sol) newline(S);
+            if (pb > 0) S.cy += pb;
+            if (bg_idx >= 0) {
+                end_bg(S, bg_idx);
+                /* draw border around the background block */
+                int bw = S.stk[S.sp].border_width;
+                if (bw > 0 && bw <= 4) {
+                    const wl_run &bg = S.doc->runs[bg_idx];
+                    unsigned bc = S.stk[S.sp].border_color ? S.stk[S.sp].border_color : COL_RULE;
+                    auto bline = [&](int x,int y,int w,int h){
+                        wl_run *r=add_run(S.doc); if(!r)return;
+                        r->kind=WL_RECT;r->x=x;r->y=y;r->w=w;r->h=h;r->color=bc;
+                        r->px=r->bold=r->underline=r->italic=r->strikethrough=r->off=r->len=0;r->bg=0;r->link=-1;
+                    };
+                    bline(bg.x, bg.y, bg.w, bw);                    /* top */
+                    bline(bg.x, bg.y+bg.h-bw, bg.w, bw);            /* bottom */
+                    bline(bg.x, bg.y, bw, bg.h);                    /* left */
+                    bline(bg.x+bg.w-bw, bg.y, bw, bg.h);            /* right */
+                }
+            }
+            S.vw = saved_vw;
             block_break(S, mb);
         }
         st_pop(S); return;

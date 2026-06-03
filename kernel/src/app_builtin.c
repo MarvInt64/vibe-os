@@ -32,11 +32,11 @@ static void text_app_draw(const struct app_instance *app, const struct app_draw_
 }
 
 static const struct app_vtable TEXT_APP_VTABLE = {
-    0,
-    text_app_handle_keyboard,
-    text_app_needs_redraw,
-    text_app_consume_damage,
-    text_app_draw
+    .activate = 0,
+    .handle_keyboard = text_app_handle_keyboard,
+    .needs_redraw = text_app_needs_redraw,
+    .consume_damage = text_app_consume_damage,
+    .draw = text_app_draw
 };
 
 void app_init_text(struct app_instance *app, struct text_app_state *state, const char *const *lines, size_t line_count) {

@@ -104,7 +104,11 @@ static int get_attr(const char *in,int tagbody,int end,const char *attr,char *ou
 }
 
 /* ---- inline style state ---- */
-struct wl_style { int px; int bold; int underline; wl_u32 color; wl_u32 bg; int link; int left; int hidden; };
+struct wl_style { int px; int bold; int underline; int italic; int strikethrough; wl_u32 color; wl_u32 bg; int link; int left; int hidden;
+                  int padding_left; int padding_top; int padding_bottom;
+                  int text_align; int line_height_pct;
+                  int max_width; wl_u32 border_color; int border_width;
+                  int text_transform; int list_style_none; int pos_fixed; };
 
 /* ---- CSS-ish color + inline-style parsing ---- */
 static int hexd(char c){ if(c>='0'&&c<='9')return c-'0'; c=lc(c); if(c>='a'&&c<='f')return c-'a'+10; return -1; }
@@ -112,15 +116,56 @@ static int parse_color(const char *s,wl_u32 *out){
     int i; static const struct { const char *n; wl_u32 c; } tbl[]={
         {"black",0x000000},{"white",0xffffff},{"red",0xcc0000},{"green",0x008000},
         {"blue",0x1a56db},{"navy",0x001f5f},{"gray",0x808080},{"grey",0x808080},
-        {"silver",0xc0c0c0},{"orange",0xd56a00},{"purple",0x800080},{"teal",0x008080},
-        {"maroon",0x800000},{"olive",0x808000},{"yellow",0xb59f00},{0,0} };
+        {"silver",0xc0c0c0},{"orange",0xff6600},{"purple",0x800080},{"teal",0x008080},
+        {"maroon",0x800000},{"olive",0x808000},{"yellow",0xd4b000},
+        {"darkblue",0x00008b},{"darkgreen",0x006400},{"darkred",0x8b0000},
+        {"darkgray",0xa9a9a9},{"darkgrey",0xa9a9a9},{"lightgray",0xd3d3d3},
+        {"lightgrey",0xd3d3d3},{"lightblue",0xadd8e6},{"lightgreen",0x90ee90},
+        {"lightyellow",0xffffe0},{"lightcoral",0xf08080},{"lightpink",0xffb6c1},
+        {"lightskyblue",0x87cefa},{"lightsteelblue",0xb0c4de},
+        {"pink",0xffb6c1},{"coral",0xff7f50},{"tomato",0xff6347},{"salmon",0xfa8072},
+        {"crimson",0xdc143c},{"firebrick",0xb22222},{"indianred",0xcd5c5c},
+        {"gold",0xffd700},{"goldenrod",0xdaa520},{"khaki",0xf0e68c},
+        {"cyan",0x00ced1},{"aqua",0x00ced1},{"turquoise",0x40e0d0},
+        {"magenta",0xff00ff},{"fuchsia",0xff00ff},{"violet",0xee82ee},
+        {"orchid",0xda70d6},{"indigo",0x4b0082},
+        {"steelblue",0x4682b4},{"cornflowerblue",0x6495ed},{"royalblue",0x4169e1},
+        {"dodgerblue",0x1e90ff},{"deepskyblue",0x00bfff},{"skyblue",0x87ceeb},
+        {"cadetblue",0x5f9ea0},{"mediumblue",0x0000cd},{"slateblue",0x6a5acd},
+        {"chocolate",0xd2691e},{"saddlebrown",0x8b4513},{"sienna",0xa0522d},
+        {"tan",0xd2b48c},{"brown",0xa52a2a},{"wheat",0xf5deb3},
+        {"beige",0xf5f5dc},{"lavender",0xe6e6fa},{"mistyrose",0xffe4e1},
+        {"ghostwhite",0xf8f8ff},{"whitesmoke",0xf5f5f5},{"aliceblue",0xf0f8ff},
+        {"snow",0xfffafa},{"antiquewhite",0xfaebd7},{"bisque",0xffe4c4},
+        {"chartreuse",0x7fff00},{"lime",0x00ff00},{"limegreen",0x32cd32},
+        {"dimgray",0x696969},{"dimgrey",0x696969},{"slategray",0x708090},
+        {0,0} };
     while(*s==' '||*s=='\t') s++;
+    if(ieq(s,"transparent")) return 0;
     if(*s=='#'){
         int d[6],k=0; s++;
         while(k<6 && hexd(s[k])>=0){ d[k]=hexd(s[k]); k++; }
         if(k>=6){ *out=((wl_u32)(d[0]*16+d[1])<<16)|((wl_u32)(d[2]*16+d[3])<<8)|(wl_u32)(d[4]*16+d[5]); return 1; }
         if(k>=3){ *out=((wl_u32)(d[0]*17)<<16)|((wl_u32)(d[1]*17)<<8)|(wl_u32)(d[2]*17); return 1; }
         return 0;
+    }
+    /* rgb() / rgba() */
+    if((s[0]=='r'||s[0]=='R')&&(s[1]=='g'||s[1]=='G')&&(s[2]=='b'||s[2]=='B')){
+        const char *p=s; while(*p&&*p!='(') p++; if(*p=='('){
+            p++;
+            int rv=0,gv=0,bv=0;
+            while(*p==' '||*p==',') p++; while(*p>='0'&&*p<='9'){rv=rv*10+(*p-'0');p++;}
+            while(*p==' '||*p==',') p++; while(*p>='0'&&*p<='9'){gv=gv*10+(*p-'0');p++;}
+            while(*p==' '||*p==',') p++; while(*p>='0'&&*p<='9'){bv=bv*10+(*p-'0');p++;}
+            /* alpha */
+            while(*p==' '||*p==',') p++;
+            if((*p>='0'&&*p<='9')||*p=='.'){
+                int aw=0,af=0; while(*p>='0'&&*p<='9'){aw=aw*10+(*p-'0');p++;}
+                if(*p=='.'){ p++; int d=10; while(*p>='0'&&*p<='9'&&d<=100){af+=(*p-'0')*100/d;d*=10;p++;} }
+                if(aw*100+af==0) return 0; /* fully transparent */
+            }
+            *out=((wl_u32)rv<<16)|((wl_u32)gv<<8)|(wl_u32)bv; return 1;
+        }
     }
     for(i=0;tbl[i].n;++i) if(ieq(s,tbl[i].n)){ *out=tbl[i].c; return 1; }
     return 0;
@@ -140,11 +185,45 @@ static void apply_decls(const char *css,struct wl_style *st){
         if(css[i]==';') i++;
         if(ieq(prop,"color")){ wl_u32 c; if(parse_color(val,&c)) st->color=c; }
         else if(ieq(prop,"font-weight")){ const char*w=val; while(*w==' ')w++; if(ieq(w,"bold")||ieq(w,"bolder")||ieq(w,"700")||ieq(w,"800")||ieq(w,"900")) st->bold=1; }
-        else if(ieq(prop,"text-decoration")){ int k; for(k=0;val[k];++k) if(ieq(val+k,"underline")){ st->underline=1; break; } }
+        else if(ieq(prop,"font-style")){ const char*w=val; while(*w==' ')w++; if(ieq(w,"italic")||ieq(w,"oblique")) st->italic=1; }
+        else if(ieq(prop,"text-decoration")){ int k; for(k=0;val[k];++k){
+            if(ieq(val+k,"underline")) st->underline=1;
+            if(ieq(val+k,"line-through")) st->strikethrough=1;
+        }}
         else if(ieq(prop,"font-size")){ const char*w=val; int px=0; while(*w==' ')w++; while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');w++;} if(px>=10&&px<=96) st->px=px; }
         else if(ieq(prop,"display")){ const char*w=val; while(*w==' ')w++; st->hidden = ieq(w,"none"); }
         else if(ieq(prop,"background-color")||ieq(prop,"background")){ wl_u32 c; if(parse_color(val,&c)) st->bg=c; }
-        else if(ieq(prop,"font-style")){ /* italic: no italic font, ignore */ }
+        else if(ieq(prop,"padding-left")){ const char*w=val; int px=0; while(*w==' ')w++; while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');w++;} if(px>0&&px<=80) st->padding_left=px; }
+        else if(ieq(prop,"padding-top")){ const char*w=val; int px=0; while(*w==' ')w++; while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');w++;} if(px>0&&px<=80) st->padding_top=px; }
+        else if(ieq(prop,"padding-bottom")){ const char*w=val; int px=0; while(*w==' ')w++; while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');w++;} if(px>0&&px<=80) st->padding_bottom=px; }
+        else if(ieq(prop,"padding")){ const char*w=val; int px=0; while(*w==' ')w++; while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');w++;} if(px>0&&px<=80){ st->padding_left=px; st->padding_top=px; st->padding_bottom=px; } }
+        else if(ieq(prop,"text-align")){ const char*w=val; while(*w==' ')w++;
+            if(ieq(w,"center")) st->text_align=1;
+            else if(ieq(w,"right")) st->text_align=2;
+            else if(ieq(w,"left")) st->text_align=0; }
+        else if(ieq(prop,"line-height")){ const char*w=val; while(*w==' ')w++;
+            int whole=0,frac=0,frac_div=1;
+            while(*w>='0'&&*w<='9'){whole=whole*10+(*w-'0');w++;}
+            if(*w=='.'){w++; while(*w>='0'&&*w<='9'&&frac_div<100){frac=frac*10+(*w-'0');frac_div*=10;w++;}}
+            int pct=whole*100+frac*100/frac_div;
+            if(pct>=80&&pct<=300) st->line_height_pct=pct; }
+        else if(ieq(prop,"max-width")){ const char*w=val; int px=0; while(*w==' ')w++;
+            while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');w++;} if(px>0&&px<=4000) st->max_width=px; }
+        else if(ieq(prop,"border")||ieq(prop,"outline")){ const char*w=val; while(*w==' ')w++;
+            if(ieq(w,"none")||ieq(w,"0")){ st->border_width=0; }
+            else { int bw=0; while(*w>='0'&&*w<='9'){bw=bw*10+(*w-'0');w++;}
+                while(*w&&*w!=' ')w++; while(*w==' ')w++; while(*w&&*w!=' ')w++; while(*w==' ')w++;
+                wl_u32 bc=0xc8cedau; parse_color(w,&bc);
+                if(bw>0&&bw<=8){ st->border_width=bw; st->border_color=bc; } } }
+        else if(ieq(prop,"border-color")){ wl_u32 c=0; if(parse_color(val,&c)) st->border_color=c; }
+        else if(ieq(prop,"border-width")){ const char*w=val; int px=0; while(*w==' ')w++;
+            while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');w++;} if(px>0&&px<=8) st->border_width=px; }
+        else if(ieq(prop,"text-transform")){ const char*w=val; while(*w==' ')w++;
+            st->text_transform=(ieq(w,"uppercase")||ieq(w,"capitalize"))?1:0; }
+        else if(ieq(prop,"list-style")||ieq(prop,"list-style-type")){ const char*w=val; while(*w==' ')w++;
+            st->list_style_none=ieq(w,"none")?1:0; }
+        else if(ieq(prop,"position")){ const char*w=val; while(*w==' ')w++;
+            st->pos_fixed=(ieq(w,"fixed")||ieq(w,"sticky"))?1:0; }
     }
 }
 
@@ -187,23 +266,37 @@ static int add_href(struct wl_doc *d,const char *href){
 /* ---- layout state ---- */
 struct wl_st {
     struct wl_doc *d;
-    int vw;            /* viewport width */
-    int cx, cy;        /* pen */
-    int line_h;        /* tallest run on the current line */
-    int left;          /* left margin (list indent) */
+    int vw;
+    int cx, cy;
+    int line_h;
+    int left;
     int at_line_start;
     int pending_space;
+    int line_start_run;  /* run index at start of current line */
     struct wl_style stk[32];
     int sp;
-    struct css_sheet *sheet;   /* active stylesheet for the cascade, or 0 */
+    struct css_sheet *sheet;
 };
 
+static void wl_apply_line_align(struct wl_st *S){
+    int align = S->stk[S->sp].text_align;
+    if(!align || S->at_line_start) return;
+    int line_w = S->cx - S->stk[S->sp].left;
+    int avail  = S->vw - S->stk[S->sp].left;
+    int shift  = (align==1) ? (avail-line_w)/2 : (avail-line_w);
+    int i;
+    if(shift<=0) return;
+    for(i=S->line_start_run; i<S->d->run_count; ++i) S->d->runs[i].x += shift;
+}
+
 static void wl_newline(struct wl_st *S){
+    wl_apply_line_align(S);
     S->cy += (S->line_h>0 ? S->line_h : m_lh(WL_BODY_PX));
     S->cx = S->stk[S->sp].left;
     S->line_h = 0;
     S->at_line_start = 1;
     S->pending_space = 0;
+    S->line_start_run = S->d->run_count;
 }
 static void wl_block(struct wl_st *S,int extra){
     if(!S->at_line_start) wl_newline(S);
@@ -213,7 +306,14 @@ static void wl_block(struct wl_st *S,int extra){
 }
 static void wl_place(struct wl_st *S,const char *buf,int len){
     struct wl_style *cs=&S->stk[S->sp];
-    int px=cs->px, hh=m_lh(px);
+    char upper_buf[512];
+    if(cs->text_transform && len<511){
+        int k; for(k=0;k<len;k++){ char c=buf[k]; upper_buf[k]=(c>='a'&&c<='z')?(char)(c-32):c; }
+        upper_buf[len]=0; buf=upper_buf;
+    }
+    int px=cs->px;
+    int hh = cs->line_height_pct>0 ? m_lh(px)*cs->line_height_pct/100 : m_lh(px);
+    if(hh<m_lh(px)) hh=m_lh(px);
     int wpx=word_w(buf,len,px), gap, off;
     struct wl_run *r;
     if(len<=0) return;
@@ -226,7 +326,9 @@ static void wl_place(struct wl_st *S,const char *buf,int len){
     r=add_run(S->d);
     if(!r) return;
     r->kind=WL_TEXT; r->x=S->cx; r->y=S->cy; r->w=wpx; r->h=hh;
-    r->px=px; r->bold=cs->bold; r->underline=cs->underline; r->color=cs->color; r->bg=cs->bg;
+    r->px=px; r->bold=cs->bold; r->underline=cs->underline;
+    r->italic=cs->italic; r->strikethrough=cs->strikethrough;
+    r->color=cs->color; r->bg=cs->bg;
     r->off=off; r->len=len; r->link=cs->link;
     S->cx += wpx;
     S->at_line_start=0;
@@ -292,7 +394,13 @@ int wl_layout(struct wl_doc *d,const char *in,int n,int vw){
     S.d=d; S.vw=vw>64?vw:64; S.cx=0; S.cy=0; S.line_h=0; S.left=0;
     S.at_line_start=1; S.pending_space=0; S.sp=0;
     S.stk[0].px=WL_BODY_PX; S.stk[0].bold=0; S.stk[0].underline=0;
+    S.stk[0].italic=0; S.stk[0].strikethrough=0;
     S.stk[0].color=COL_TEXT; S.stk[0].bg=0; S.stk[0].link=-1; S.stk[0].left=0;
+    S.stk[0].padding_left=0; S.stk[0].padding_top=0; S.stk[0].padding_bottom=0;
+    S.stk[0].text_align=0; S.stk[0].line_height_pct=0;
+    S.stk[0].max_width=0; S.stk[0].border_color=0; S.stk[0].border_width=0;
+    S.stk[0].text_transform=0; S.stk[0].list_style_none=0; S.stk[0].pos_fixed=0;
+    S.line_start_run=0;
 
     while(i<n){
         char c=in[i];
@@ -435,10 +543,10 @@ static void dom_apply_style(struct dom_node *node, struct wl_st *S){
  * the live style stack), so layout_node can skip the whole subtree. */
 static int dom_is_hidden(struct dom_node *node, struct wl_st *S){
     struct wl_style probe = S->stk[S->sp];
-    probe.hidden = 0;
+    probe.hidden = 0; probe.pos_fixed = 0;
     if(S->sheet){ char buf[640]; css_match(S->sheet, node, buf, sizeof buf); apply_decls(buf, &probe); }
     { const char *css = dom_attr(node, "style"); if(css) apply_decls(css, &probe); }
-    return probe.hidden;
+    return probe.hidden || probe.pos_fixed;
 }
 
 /* Place already-decoded (collapsed) text word by word. */
@@ -526,7 +634,8 @@ static void layout_node(struct wl_st *S, struct dom_node *node){
     if(ieq(t,"h4")||ieq(t,"h5")||ieq(t,"h6")){ wl_block(S,6); wl_push(S); S->stk[S->sp].bold=1; S->stk[S->sp].color=COL_HEAD; dom_apply_style(node,S);
         layout_children(S,node); wl_pop(S); wl_block(S,6); return; }
     if(ieq(t,"b")||ieq(t,"strong")){ wl_push(S); S->stk[S->sp].bold=1; dom_apply_style(node,S); layout_children(S,node); wl_pop(S); return; }
-    if(ieq(t,"i")||ieq(t,"em")||ieq(t,"span")){ wl_push(S); dom_apply_style(node,S); layout_children(S,node); wl_pop(S); return; }
+    if(ieq(t,"i")||ieq(t,"em")){ wl_push(S); S->stk[S->sp].italic=1; dom_apply_style(node,S); layout_children(S,node); wl_pop(S); return; }
+    if(ieq(t,"span")){ wl_push(S); dom_apply_style(node,S); layout_children(S,node); wl_pop(S); return; }
     if(ieq(t,"font")){ const char *cv; wl_push(S); cv=dom_attr(node,"color"); if(cv){ wl_u32 col; if(parse_color(cv,&col)) S->stk[S->sp].color=col; } dom_apply_style(node,S);
         layout_children(S,node); wl_pop(S); return; }
     if(ieq(t,"code")||ieq(t,"tt")||ieq(t,"kbd")||ieq(t,"samp")){ wl_push(S); S->stk[S->sp].bg=COL_CODEBG; dom_apply_style(node,S); layout_children(S,node); wl_pop(S); return; }
@@ -536,17 +645,28 @@ static void layout_node(struct wl_st *S, struct dom_node *node){
         dom_apply_style(node,S); layout_children(S,node); wl_pop(S); return; }
     if(ieq(t,"ul")||ieq(t,"ol")){ wl_block(S,4); wl_push(S); S->stk[S->sp].left += 18; dom_apply_style(node,S); layout_children(S,node); wl_pop(S); wl_block(S,4); return; }
     if(ieq(t,"blockquote")){ wl_block(S,4); wl_push(S); S->stk[S->sp].left += 16; S->stk[S->sp].color=COL_QUOTE; dom_apply_style(node,S); layout_children(S,node); wl_pop(S); wl_block(S,4); return; }
-    if(ieq(t,"li")){ wl_bullet(S); wl_push(S); dom_apply_style(node,S); layout_children(S,node); wl_pop(S); return; }
+    if(ieq(t,"li")){
+        wl_push(S); dom_apply_style(node,S);
+        if(!S->stk[S->sp].list_style_none) wl_bullet(S);
+        layout_children(S,node); wl_pop(S); return; }
 
     /* generic block-level containers */
     if(ieq(t,"p")||ieq(t,"div")||ieq(t,"table")||ieq(t,"tr")||ieq(t,"section")||
        ieq(t,"article")||ieq(t,"header")||ieq(t,"footer")||ieq(t,"nav")||ieq(t,"dl")||
        ieq(t,"dd")||ieq(t,"dt")||ieq(t,"figure")||ieq(t,"figcaption")||ieq(t,"main")||
        ieq(t,"aside")||ieq(t,"body")){
-        int bg;
+        int bg, pt, pb, pl;
         wl_block(S,8); wl_push(S); dom_apply_style(node,S);
+        pt = S->stk[S->sp].padding_top > 0 ? S->stk[S->sp].padding_top : 0;
+        pb = S->stk[S->sp].padding_bottom > 0 ? S->stk[S->sp].padding_bottom : 0;
+        pl = S->stk[S->sp].padding_left > 0 ? S->stk[S->sp].padding_left : 0;
+        if(pl > 80) pl = 80;
         bg=block_bg_begin(S);
+        if(pt > 0) S->cy += pt;
+        if(pl > 0){ S->stk[S->sp].left += pl; if(S->at_line_start) S->cx = S->stk[S->sp].left; }
         layout_children(S,node);
+        if(!S->at_line_start) wl_newline(S);
+        if(pb > 0) S->cy += pb;
         block_bg_end(S,bg);
         wl_pop(S); wl_block(S,8); return;
     }
@@ -579,7 +699,13 @@ int wl_layout_dom(struct wl_doc *d, struct dom_node *root, int vw){
     S.d=d; S.vw=vw>64?vw:64; S.cx=0; S.cy=0; S.line_h=0; S.left=0;
     S.at_line_start=1; S.pending_space=0; S.sp=0;
     S.stk[0].px=WL_BODY_PX; S.stk[0].bold=0; S.stk[0].underline=0;
+    S.stk[0].italic=0; S.stk[0].strikethrough=0;
     S.stk[0].color=COL_TEXT; S.stk[0].bg=0; S.stk[0].link=-1; S.stk[0].left=0; S.stk[0].hidden=0;
+    S.stk[0].padding_left=0; S.stk[0].padding_top=0; S.stk[0].padding_bottom=0;
+    S.stk[0].text_align=0; S.stk[0].line_height_pct=0;
+    S.stk[0].max_width=0; S.stk[0].border_color=0; S.stk[0].border_width=0;
+    S.stk[0].text_transform=0; S.stk[0].list_style_none=0; S.stk[0].pos_fixed=0;
+    S.line_start_run=0;
     S.sheet=0;
 
     /* Stage 2: gather <style> sheets and build the cascade. */
