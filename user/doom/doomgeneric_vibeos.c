@@ -207,18 +207,41 @@ void DG_DrawFrame(void) {
     win_present(s_win_id, s_canvas, cw, ch);
 }
 
+/* ---- Timer state ------------------------------------------------------- */
+/* Cache system_info so we don't issue a full syscall on every DOOM tic.
+ * We refresh every 16 ticks (~160 ms) which is more than accurate enough
+ * for DOOM's 35 Hz game logic. */
+static unsigned int s_hz      = 100;
+static unsigned long s_base_tick = 0;   /* uptime_ticks at first call */
+static unsigned long s_last_tick  = 0;  /* last sampled uptime_ticks */
+static unsigned int  s_refresh   = 0;
+
+static void refresh_ticks(void) {
+    struct vos_system_info info;
+    if (vos_system_info(&info) != 0) return;
+    s_hz = info.timer_hz ? info.timer_hz : 100;
+    if (s_base_tick == 0) s_base_tick = info.uptime_ticks;
+    s_last_tick = info.uptime_ticks;
+}
+
 void DG_SleepMs(unsigned int ms) {
-    /* Each tick is ~10 ms (100 Hz timer); yield in a loop. */
-    unsigned int ticks = (ms + 9) / 10;
-    if (ticks == 0) ticks = 1;
-    vos_sleep_ticks((unsigned long)ticks);
+    /* For tiny sleeps (< one timer tick ≈ 10 ms) just yield: sleeping a full
+     * tick would cap DOOM at ~33 fps instead of 35 fps and make controls feel
+     * sluggish. For larger sleeps use actual ticks. */
+    if (ms < (1000u / (s_hz ? s_hz : 100u) + 1u)) {
+        vos_yield();
+    } else {
+        unsigned long ticks = ((unsigned long)ms * s_hz + 999) / 1000;
+        vos_sleep_ticks(ticks ? ticks : 1);
+    }
 }
 
 unsigned int DG_GetTicksMs(void) {
-    struct vos_system_info info;
-    if (vos_system_info(&info) != 0) return 0;
-    unsigned int hz = info.timer_hz ? info.timer_hz : 100;
-    return (unsigned int)((info.uptime_ticks * 1000UL) / hz);
+    /* Refresh the tick counter every 16 calls; reuse the cached value
+     * otherwise to avoid a syscall on every single DOOM tic. */
+    if ((s_refresh++ & 15u) == 0) refresh_ticks();
+    if (s_hz == 0) s_hz = 100;
+    return (unsigned int)(((s_last_tick - s_base_tick) * 1000UL) / s_hz);
 }
 
 int DG_GetKey(int *pressed, unsigned char *doom_key) {
