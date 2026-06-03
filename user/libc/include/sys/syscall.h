@@ -55,7 +55,8 @@ enum {
     SYS_SBRK = 42,
     SYS_PTY_OPEN = 45,
     SYS_SPAWN_PTY = 46,
-    SYS_PTY_INTERRUPT = 47
+    SYS_PTY_INTERRUPT = 47,
+    SYS_SEEK = 48
 };
 
 /* Unused argument registers are explicitly zeroed: the kernel inspects rdi/rsi/

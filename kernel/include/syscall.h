@@ -86,7 +86,10 @@ enum syscall_number {
 	 * slave end of the pty whose master fd is in rsi. Returns child pid. */
 	SYS_SPAWN_PTY = 46,
 	/* Ctrl+C: interrupt the foreground job of the pty whose master fd is rdi. */
-	SYS_PTY_INTERRUPT = 47
+	SYS_PTY_INTERRUPT = 47,
+	/* Seek a VFS fd. rdi=fd, rsi=offset, rdx=whence (0=SET,1=CUR,2=END).
+	 * Returns new absolute offset or <0 on error. */
+	SYS_SEEK = 48
 };
 
 struct system_info_snapshot {

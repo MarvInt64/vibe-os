@@ -49,3 +49,18 @@ Makefile.disk
 test_wm.sh
 test_wm2.sh
 test_term.sh
+
+# ---- Screenshots / design reference images (local only) -----------------
+vision_desktop*.png
+vision_desktop*.jpg
+*.screenshot.*
+
+# ---- Serial / run logs (runtime, not source) ----------------------------
+serial.log
+*.log
+
+# ---- Conductor / session artefacts --------------------------------------
+conductor/
+
+# ---- Third-party source trees that are NOT submodules -------------------
+third_party/quickjs/

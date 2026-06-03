@@ -140,16 +140,194 @@ int printf(const char *fmt, ...) {
     return r;
 }
 
-int fprintf(int fd, const char *fmt, ...) {
+int dprintf(int fd, const char *fmt, ...) {
     va_list ap; int r;
     va_start(ap, fmt); r = vdprintf(fd, fmt, ap); va_end(ap);
     return r;
 }
 
-int fputs(const char *str, int fd) {
+int puts(const char *str) {
     size_t n = 0; while (str[n]) ++n;
-    write(fd, str, n);
+    write(STDOUT_FILENO, str, n); write(STDOUT_FILENO, "\n", 1); return 0;
+}
+int putchar(int c) { char ch = (char)c; write(STDOUT_FILENO, &ch, 1); return c; }
+
+/* ---- FILE shim --------------------------------------------------------- */
+#include <stdlib.h>
+
+static FILE s_stdin  = { .fd = STDIN_FILENO };
+static FILE s_stdout = { .fd = STDOUT_FILENO };
+static FILE s_stderr = { .fd = STDERR_FILENO };
+FILE *stdin  = &s_stdin;
+FILE *stdout = &s_stdout;
+FILE *stderr = &s_stderr;
+
+FILE *fopen(const char *path, const char *mode) {
+    int fd = -1;
+    /* Open: 'r'/'rb' → read-only, 'w'/'wb'/'a' → write (create/trunc). */
+    if (mode && (mode[0] == 'r')) {
+        /* SYS_OPEN always opens for read */
+        extern int vos_open_path(const char *path);
+        fd = vos_open_path(path);
+    } else {
+        /* write/append: use SYS_CREAT */
+        extern int vos_creat_path(const char *path);
+        fd = vos_creat_path(path);
+    }
+    if (fd < 0) return (FILE *)0;
+    FILE *fp = (FILE *)malloc(sizeof(FILE));
+    if (!fp) { extern int close(int); close(fd); return (FILE *)0; }
+    fp->fd = fd; fp->mem = (void *)0; fp->mem_len = 0; fp->mem_pos = 0;
+    fp->eof = 0; fp->error = 0;
+    if (mode && mode[0] == 'a') { lseek(fd, 0, SEEK_END); }
+    return fp;
+}
+
+FILE *fmemopen(void *buf, size_t size, const char *mode) {
+    (void)mode;
+    FILE *fp = (FILE *)malloc(sizeof(FILE));
+    if (!fp) return (FILE *)0;
+    fp->fd = -1; fp->mem = (const unsigned char *)buf; fp->mem_len = size;
+    fp->mem_pos = 0; fp->eof = 0; fp->error = 0;
+    return fp;
+}
+
+int fclose(FILE *fp) {
+    if (!fp) return EOF;
+    if (fp->fd >= 0 && fp->fd > STDERR_FILENO) close(fp->fd);
+    free(fp);
     return 0;
 }
-int puts(const char *str) { fputs(str, STDOUT_FILENO); write(STDOUT_FILENO, "\n", 1); return 0; }
-int putchar(int c) { char ch = (char)c; write(STDOUT_FILENO, &ch, 1); return c; }
+
+size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
+    if (!fp || fp->error || fp->eof) return 0;
+    size_t want = size * nmemb;
+    if (want == 0) return 0;
+    ssize_t got;
+    if (fp->fd >= 0) {
+        got = read(fp->fd, ptr, want);
+    } else {
+        size_t left = fp->mem_len - fp->mem_pos;
+        got = (ssize_t)(want < left ? want : left);
+        __builtin_memcpy(ptr, fp->mem + fp->mem_pos, (size_t)got);
+        fp->mem_pos += (size_t)got;
+    }
+    if (got <= 0) { if (got == 0) fp->eof = 1; else fp->error = 1; return 0; }
+    return (size_t)got / size;
+}
+
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
+    if (!fp || fp->fd < 0) return 0;
+    size_t want = size * nmemb;
+    ssize_t r = write(fp->fd, ptr, want);
+    return r > 0 ? (size_t)r / size : 0;
+}
+
+int fseek(FILE *fp, long offset, int whence) {
+    if (!fp) return -1;
+    if (fp->fd >= 0) {
+        off_t r = lseek(fp->fd, (off_t)offset, whence);
+        if (r < 0) { fp->error = 1; return -1; }
+        fp->eof = 0;
+        return 0;
+    }
+    /* in-memory */
+    long new_pos;
+    if (whence == SEEK_SET) new_pos = offset;
+    else if (whence == SEEK_CUR) new_pos = (long)fp->mem_pos + offset;
+    else new_pos = (long)fp->mem_len + offset;
+    if (new_pos < 0) new_pos = 0;
+    if (new_pos > (long)fp->mem_len) new_pos = (long)fp->mem_len;
+    fp->mem_pos = (size_t)new_pos; fp->eof = 0;
+    return 0;
+}
+
+long ftell(FILE *fp) {
+    if (!fp) return -1;
+    if (fp->fd >= 0) return (long)lseek(fp->fd, 0, SEEK_CUR);
+    return (long)fp->mem_pos;
+}
+
+void rewind(FILE *fp) { fseek(fp, 0, SEEK_SET); if (fp) fp->error = 0; }
+int  feof(FILE *fp)    { return fp && fp->eof; }
+int  ferror(FILE *fp)  { return fp && fp->error; }
+void clearerr(FILE *fp){ if (fp) { fp->eof = 0; fp->error = 0; } }
+int  fflush(FILE *fp)  { (void)fp; return 0; }
+
+char *fgets(char *buf, int n, FILE *fp) {
+    if (!fp || n <= 1) return (char *)0;
+    int i = 0;
+    while (i < n - 1) {
+        int c = fgetc(fp);
+        if (c == EOF) { if (i == 0) return (char *)0; break; }
+        buf[i++] = (char)c;
+        if (c == '\n') break;
+    }
+    buf[i] = '\0';
+    return buf;
+}
+
+int fgetc(FILE *fp) {
+    unsigned char c;
+    if (fread(&c, 1, 1, fp) != 1) return EOF;
+    return (int)c;
+}
+
+int fputc(int c, FILE *fp) {
+    if (!fp) return EOF;
+    unsigned char ch = (unsigned char)c;
+    return (fwrite(&ch, 1, 1, fp) == 1) ? c : EOF;
+}
+
+int fputs(const char *s, FILE *fp) {
+    if (!s || !fp) return EOF;
+    size_t n = 0; while (s[n]) ++n;
+    return (fwrite(s, 1, n, fp) == n) ? 0 : EOF;
+}
+
+int vfprintf(FILE *fp, const char *fmt, va_list ap) {
+    if (!fp) return -1;
+    if (fp->fd >= 0) return vdprintf(fp->fd, fmt, ap);
+    return -1;
+}
+
+int fprintf(FILE *fp, const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    int r = vfprintf(fp, fmt, ap);
+    va_end(ap); return r;
+}
+
+/* Minimal sscanf: supports %d %u %f %s (no width limits). */
+int sscanf(const char *str, const char *fmt, ...) {
+    __builtin_va_list ap; __builtin_va_start(ap, fmt);
+    int count = 0;
+    const char *s = str;
+    while (*fmt && *s) {
+        if (*fmt == ' ') { while (*s == ' ' || *s == '\t') ++s; ++fmt; continue; }
+        if (*fmt != '%') { if (*s == *fmt) { ++s; ++fmt; } else break; continue; }
+        ++fmt;
+        if (*fmt == 'd' || *fmt == 'i') {
+            int neg = 0, val = 0;
+            while (*s == ' ') ++s;
+            if (*s == '-') { neg=1; ++s; } else if (*s=='+') ++s;
+            while (*s>='0'&&*s<='9') { val=val*10+(*s-'0'); ++s; }
+            *__builtin_va_arg(ap,int*) = neg?-val:val; ++count;
+        } else if (*fmt == 'u') {
+            unsigned val=0; while(*s==' ')++s;
+            while(*s>='0'&&*s<='9'){val=val*10+(*s-'0');++s;}
+            *__builtin_va_arg(ap,unsigned*)=val; ++count;
+        } else if (*fmt == 'f') {
+            double r=0,f=1; int neg=0; while(*s==' ')++s;
+            if(*s=='-'){neg=1;++s;} while(*s>='0'&&*s<='9'){r=r*10+(*s-'0');++s;}
+            if(*s=='.'){++s;while(*s>='0'&&*s<='9'){f/=10;r+=(*s-'0')*f;++s;}}
+            *__builtin_va_arg(ap,float*)=(float)(neg?-r:r); ++count;
+        } else if (*fmt == 's') {
+            char *out=__builtin_va_arg(ap,char*); while(*s==' ')++s;
+            while(*s&&*s!=' '&&*s!='\t'&&*s!='\n') *out++=*s++;
+            *out='\0'; ++count;
+        }
+        ++fmt;
+    }
+    __builtin_va_end(ap);
+    return count;
+}

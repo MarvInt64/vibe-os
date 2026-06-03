@@ -26,6 +26,22 @@ char  *strstr(const char *hay, const char *needle);
 /* Bounded copy (size of dst buffer); always NUL-terminates. Returns strlen(src). */
 size_t strlcpy(char *dst, const char *src, size_t size);
 
+/* POSIX extensions (inside the guard) */
+static inline char *strdup(const char *s) {
+    extern void *malloc(unsigned long);
+    unsigned long n = 0; while (s[n]) ++n;
+    char *p = (char *)malloc(n + 1);
+    if (p) { unsigned long i; for(i=0;i<=n;++i) p[i]=s[i]; }
+    return p;
+}
+static inline char *strndup(const char *s, unsigned long n) {
+    extern void *malloc(unsigned long);
+    unsigned long len = 0; while (len < n && s[len]) ++len;
+    char *p = (char *)malloc(len + 1);
+    if (p) { unsigned long i; for(i=0;i<len;++i) p[i]=s[i]; p[len]='\0'; }
+    return p;
+}
+
 #ifdef __cplusplus
 }
 #endif

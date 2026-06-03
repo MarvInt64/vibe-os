@@ -1774,6 +1774,47 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         return 0;
     }
 
+    if (number == SYS_SEEK) {
+        /* rdi = fd, rsi = offset (signed), rdx = whence (0=SET,1=CUR,2=END). */
+        int seek_fd = (int)frame->rdi;
+        int64_t seek_off = (int64_t)frame->rsi;
+        int whence = (int)frame->rdx;
+        struct fd_entry *seek_entry;
+        struct process_vfs_handle *seek_handle;
+        int64_t new_off;
+
+        if (seek_fd < 0 || seek_fd >= FD_TABLE_CAPACITY) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL); return 0;
+        }
+        seek_entry = &process->fd_table.entries[seek_fd];
+        if (!seek_entry->used || seek_entry->ops != &PROCESS_VFS_FD_OPS) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL); return 0;
+        }
+        seek_handle = (struct process_vfs_handle *)seek_entry->object;
+        if (seek_handle == 0 || !seek_handle->used) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL); return 0;
+        }
+        if (whence == 0) {
+            new_off = seek_off;
+        } else if (whence == 1) {
+            new_off = (int64_t)seek_handle->offset + seek_off;
+        } else if (whence == 2) {
+            uint64_t kind = 0, sz = 0;
+            if (seek_handle->kind == 1) {
+                process_stat_path(seek_handle->path, &kind, &sz);
+            } else if (seek_handle->file != 0) {
+                sz = vfs_file_size((const struct vfs_file *)seek_handle->file);
+            }
+            new_off = (int64_t)sz + seek_off;
+        } else {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL); return 0;
+        }
+        if (new_off < 0) new_off = 0;
+        seek_handle->offset = (size_t)new_off;
+        frame->rax = (uint64_t)(int64_t)new_off;
+        return 0;
+    }
+
     if (number == SYS_THREAD_CREATE) {
         /* rdi = entry fn (user ptr), rsi = stack top (user ptr), rdx = arg. */
         int tid = process_create_thread(process, (uintptr_t)frame->rdi,

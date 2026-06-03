@@ -13,7 +13,6 @@
  *
  * Skipped elements
  * ----------------
- * <nav>: nearly always a navigation link-list that pollutes a text view.
  * <script>, <style>, <head>, <title>, <meta>, <link>, <noscript>: metadata.
  * CSS display:none is honoured.  Everything else renders. */
 
@@ -236,7 +235,7 @@ static void apply_css(State &S, dom_node *node) {
 }
 
 static bool check_hidden(State &S, dom_node *node) {
-    StyleDecls d{BODY_PX,false,false,COL_TEXT,0,false};
+    StyleDecls d{BODY_PX,false,false,COL_TEXT,0,false,0};
     if (S.sheet) { char buf[640]; css_match(S.sheet, node, buf, sizeof buf); apply_decls(buf, d); }
     const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
     return d.hidden;
@@ -370,7 +369,7 @@ static void walk(State &S, dom_node *node) {
 
     /* ---- Fully-skipped subtrees --------------------------------------- */
     if (ieq(t,"script") || ieq(t,"style")   || ieq(t,"head")     ||
-        ieq(t,"nav")    || ieq(t,"noscript") || ieq(t,"template") ||
+        ieq(t,"noscript") || ieq(t,"template") ||
         ieq(t,"title")  || ieq(t,"meta")     || ieq(t,"link"))    return;
 
     if (check_hidden(S, node)) return;
@@ -627,13 +626,14 @@ static void walk(State &S, dom_node *node) {
     if (ieq(t,"div")    ||ieq(t,"section")||ieq(t,"article")||ieq(t,"header")||
         ieq(t,"main")   ||ieq(t,"aside")  ||ieq(t,"figure") ||ieq(t,"figcaption")||
         ieq(t,"fieldset")||ieq(t,"details")||ieq(t,"summary")||
+        ieq(t,"nav")    ||ieq(t,"address") ||ieq(t,"center") ||
         ieq(t,"body")   ||ieq(t,"html")) {
         st_push(S); apply_css(S,node);
-        if (!S.stk[S.sp].hidden) { block_break(S,6); walk_children(S,node); }
+        if (!S.stk[S.sp].hidden) { block_break(S,0); walk_children(S,node); if(!S.at_sol)newline(S); }
         st_pop(S); return;
     }
 
-    /* ---- Fallback: inline recurse ------------------------------------- */
+    /* ---- Fallback: unknown tags just pass through their children ------- */
     st_push(S); apply_css(S,node); walk_children(S,node); st_pop(S);
 }
 

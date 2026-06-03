@@ -9,7 +9,7 @@ int main(void) {
     char *msg = malloc(64);
     int sum = 0, i;
 
-    if (!msg) { fputs("hello: malloc failed\n", 2); return 1; }
+    if (!msg) { fputs("hello: malloc failed\n", stderr); return 1; }
     strcpy(msg, "VibeOS");
 
     for (i = 1; i <= 10; ++i) sum += i;

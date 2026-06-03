@@ -152,6 +152,7 @@ static char g_args[MAX_ARGS][MAX_ARG_LEN];
 static int g_argc;
 static char g_full_path[MAX_PATH];
 static char g_io_buf[1024];
+static char g_ping_arg_buf[256];
 static char g_cd_path[MAX_PATH];
 static char g_cd_buf[MAX_PATH];
 
@@ -676,17 +677,67 @@ static void cmd_ifconfig(void) {
     write_line("  status:UP");
 }
 
-static void cmd_ping(const char *target) {
+static void cmd_ping(const char *args) {
     uint32_t ip;
     int rtt = -1;
     int replies;
+    int sent;
+    int count = 4;
+    int continuous = 0;
+    int timeout_ms = 1000;
+    char target[128];
 
-    if (!target || !target[0]) {
-        write_line("Usage: ping <host|a.b.c.d>");
+    if (!args || !args[0]) {
+        write_line("Usage: ping [-c count] <host|a.b.c.d>");
+        write_line("       ping -t <host|a.b.c.d>   (continuous)");
         return;
     }
+
+    /* Parse optional flags before the target. */
+    const char *target_str = args;
+    if (args[0] == '-') {
+        /* '-c N' or '-t' */
+        if (args[1] == 'c' && args[2] == ' ') {
+            count = 0;
+            const char *p = args + 3;
+            while (*p >= '0' && *p <= '9') {
+                count = count * 10 + (*p - '0');
+                ++p;
+            }
+            if (count <= 0) {
+                write_line("ping: invalid count");
+                return;
+            }
+            target_str = p;
+            while (*target_str == ' ') ++target_str;
+        } else if (args[1] == 't' && args[2] == ' ') {
+            continuous = 1;
+            target_str = args + 3;
+            while (*target_str == ' ') ++target_str;
+        } else {
+            write_str("ping: unknown flag '");
+            write_char(args[1]);
+            write_line("'");
+            return;
+        }
+    }
+
+    if (!target_str[0]) {
+        write_line("Usage: ping [-c count] <host|a.b.c.d>");
+        return;
+    }
+
+    /* Copy target to avoid modifying original string */
+    {
+        int i = 0;
+        while (target_str[i] && i + 1 < (int)sizeof(target)) {
+            target[i] = target_str[i];
+            ++i;
+        }
+        target[i] = '\0';
+    }
+
     if (!parse_ipv4(target, &ip)) {
-        /* Not a dotted IP -> resolve via DNS. */
         int r = (int)syscall2(SYS_NET_RESOLVE, (uint64_t)(size_t)target, (uint64_t)(size_t)&ip);
         if (r < 0) {
             write_str("ping: cannot resolve ");
@@ -695,18 +746,65 @@ static void cmd_ping(const char *target) {
         }
         write_str("Resolved "); write_str(target); write_str(" -> "); write_ip(ip); write_line("");
     }
-    write_str("PING "); write_ip(ip); write_line(" : 4 packets");
-    replies = (int)syscall4(SYS_NET_PING, (uint64_t)ip, 4, 1000, (uint64_t)(size_t)&rtt);
-    if (replies < 0) {
-        write_line("ping: network down or host unreachable");
-        return;
+
+    write_str("PING "); write_ip(ip);
+    if (continuous) write_line(" (continuous, Ctrl+C to stop)");
+    else { write_str(" : "); write_dec((uint64_t)count); write_line(" packets"); }
+
+    replies = 0;
+    sent = 0;
+
+    while (continuous || sent < count) {
+        rtt = -1;
+        int seq = sent + 1;
+        int res = (int)syscall4(SYS_NET_PING, (uint64_t)ip, (uint64_t)1,
+                                (uint64_t)timeout_ms, (uint64_t)(size_t)&rtt);
+        ++sent;
+
+        if (res >= 0) {
+            ++replies;
+            write_str("seq=");
+            write_dec((uint64_t)seq);
+            write_str(" : reply from "); write_ip(ip);
+            write_str(" rtt="); write_dec((uint64_t)rtt); write_line(" ms");
+        } else {
+            write_str("seq=");
+            write_dec((uint64_t)seq);
+            write_line(" : timeout");
+        }
+
+        if (continuous) {
+            /* Sleep 1 second between pings. Check for Ctrl+C between sends. */
+            syscall1(SYS_TIMER_SLEEP, 1000);
+
+            /* Check if a key was pressed (non-blocking read of 1 byte). */
+            char c = 0;
+            /* Use a non-blocking read with minimal timeout: yield then check. */
+            syscall1(SYS_YIELD, 0);
+            ssize_t nr = syscall3(SYS_READ, (uint64_t)0, (uint64_t)(size_t)&c, (uint64_t)1);
+            if (nr > 0 && c == 0x03) {
+                write_line("^C");
+                break;
+            }
+        } else if (!continuous) {
+            /* Fixed count: small delay between packets */
+            syscall1(SYS_TIMER_SLEEP, 200);
+        }
     }
+
+    write_str("\n--- "); write_ip(ip);
+    write_str(" ping statistics: ");
+    write_dec((uint64_t)sent);
+    write_str(" packets transmitted, ");
     write_dec((uint64_t)replies);
-    write_str("/4 replies received");
-    if (replies > 0 && rtt >= 0) {
-        write_str(", last rtt="); write_dec((uint64_t)rtt); write_str(" ms");
+    write_str(" received");
+    if (sent > 0 && replies > 0) {
+        int loss = 100 - (replies * 100 / sent);
+        write_str(", "); write_dec((uint64_t)loss); write_str("% loss");
     }
     write_line("");
+    (void)rtt;
+    (void)replies;
 }
 
 struct http_req {
@@ -932,7 +1030,23 @@ static void execute_command(void) {
 	} else if (strcmp(cmd, "ifconfig") == 0 || strcmp(cmd, "ip") == 0) {
 		cmd_ifconfig();
 	} else if (strcmp(cmd, "ping") == 0) {
-		cmd_ping(g_argc > 1 ? g_args[1] : "");
+		/* Build full arg string from g_args[1..g_argc-1] so flags like -t and -c work. */
+		g_ping_arg_buf[0] = '\0';
+		for (int i = 1; i < g_argc && i < 16; ++i) {
+			if (i > 1) {
+				/* Append space separator */
+				int len = 0; while (g_ping_arg_buf[len]) ++len;
+				if (len + 1 < (int)sizeof(g_ping_arg_buf)) g_ping_arg_buf[len] = ' ';
+			}
+			/* Append g_args[i] */
+			int bi = 0; while (g_ping_arg_buf[bi]) ++bi;
+			int ai = 0;
+			while (g_args[i][ai] && bi + 1 < (int)sizeof(g_ping_arg_buf)) {
+				g_ping_arg_buf[bi++] = g_args[i][ai++];
+			}
+			g_ping_arg_buf[bi] = '\0';
+		}
+		cmd_ping(g_ping_arg_buf);
 	} else if (strcmp(cmd, "curl") == 0 || strcmp(cmd, "fetch") == 0 || strcmp(cmd, "wget") == 0) {
 		cmd_curl(g_argc > 1 ? g_args[1] : "");
 	} else if (strcmp(cmd, "display") == 0 || strcmp(cmd, "resolution") == 0) {

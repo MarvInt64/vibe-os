@@ -12,6 +12,7 @@ struct DockEntry {
 
 static const DockEntry kEntries[] = {
     {"Terminal", 4, 0x0064f2ccu, "/bin/terminal", "/icons/dock/terminal.svg"},
+    {"DOOM",    3, 0x00e03030u, "/bin/doom",     0},
     {"Browser", 1, 0x006eb6ffu, "/bin/browser", "/icons/dock/browser.svg"},
     {"Tasks", 2, 0x0076e0b5u, "/bin/taskmgr", "/icons/dock/taskmgr.svg"},
     {"Demo", 3, 0x00f4c36bu, "/bin/uidemo", 0},
