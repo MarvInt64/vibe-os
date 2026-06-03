@@ -21,14 +21,23 @@
 #include <string.h>
 
 /* ---- Window geometry --------------------------------------------------- */
-#define DOOM_W   320
-#define DOOM_H   200
-#define SCALE    2               /* initial pixel-doubling factor */
-#define WIN_W    (DOOM_W * SCALE)
-#define WIN_H    (DOOM_H * SCALE)
+/* doomgeneric renders directly into DG_ScreenBuffer at DOOMGENERIC_RESX x RESY
+ * (640x400 by default) — no pixel-doubling needed from our side.
+ * We open a framed window slightly larger so the content area matches 640x400
+ * after subtracting chrome.  On EV_RESIZE we get the actual content dimensions
+ * and blit the buffer scaled to fill them. */
+#define DOOM_BUF_W  DOOMGENERIC_RESX   /* 640 */
+#define DOOM_BUF_H  DOOMGENERIC_RESY   /* 400 */
 
-/* Canvas buffer dimensions. Must match VUI_MAX_W/H. The stride equals the
- * canvas width, which we update on resize so present stride always matches. */
+/* Open the window larger than the framebuffer so that after the kernel
+ * subtracts the chrome (32px horizontal, 66px vertical) the content area
+ * matches the buffer — numbers are for the non-large-UI path. */
+#define CHROME_X    32
+#define CHROME_Y    66
+#define WIN_W       (DOOM_BUF_W + CHROME_X)
+#define WIN_H       (DOOM_BUF_H + CHROME_Y)
+
+/* Canvas: stride = live content width, updated on EV_RESIZE. */
 #define BUF_MAX_W  900
 #define BUF_MAX_H  640
 
@@ -149,23 +158,19 @@ static void parse_key_byte(unsigned char b) {
 /* ---- DG_ callbacks ----------------------------------------------------- */
 
 void DG_Init(void) {
-    /* Frameless window: content area == window area (no chrome offset), so the
-     * canvas size and stride are always exact — no distortion. */
-    struct vos_window_options opts;
-    opts.title  = "DOOM";
-    opts.width  = WIN_W;
-    opts.height = WIN_H;
-    opts.flags  = VOS_WINDOW_FRAMELESS;
-    opts.x      = 0;
-    opts.y      = 0;
-    s_win_id = (int)__sc1(SYS_WINDOW_CREATE_EX, (unsigned long)(size_t)&opts);
-    s_content_w = WIN_W;
-    s_content_h = WIN_H;
+    s_win_id = (int)__sc3(SYS_WINDOW_CREATE,
+                           (unsigned long)(size_t)"DOOM",
+                           (unsigned long)WIN_W,
+                           (unsigned long)WIN_H);
+    /* Initial guess: assume standard chrome so we get pixel-perfect output
+     * before the first EV_RESIZE arrives. */
+    s_content_w = DOOM_BUF_W;
+    s_content_h = DOOM_BUF_H;
     memset(s_canvas, 0, sizeof(s_canvas));
 }
 
-/* Scale DOOM's 320×200 XRGB buffer into s_canvas to fill the current content
- * area, then present.  The stride equals s_content_w so it matches exactly. */
+/* Blit DG_ScreenBuffer (DOOM_BUF_W x DOOM_BUF_H) into s_canvas scaled to the
+ * current content area.  Stride == s_content_w so present is always correct. */
 void DG_DrawFrame(void) {
     const unsigned int *src = DG_ScreenBuffer;
     int cw = s_content_w, ch = s_content_h;
@@ -173,13 +178,19 @@ void DG_DrawFrame(void) {
     if (ch > BUF_MAX_H) ch = BUF_MAX_H;
     int y;
 
-    for (y = 0; y < ch; ++y) {
-        unsigned int *dst = &s_canvas[y * cw];
-        int sy = y * DOOM_H / ch;
-        int x;
-        for (x = 0; x < cw; ++x) {
-            int sx = x * DOOM_W / cw;
-            dst[x] = src[sy * DOOM_W + sx];
+    if (cw == DOOM_BUF_W && ch == DOOM_BUF_H) {
+        /* Fast path: content area matches buffer exactly — memcpy each row. */
+        for (y = 0; y < ch; ++y)
+            __builtin_memcpy(&s_canvas[y * cw], &src[y * DOOM_BUF_W],
+                             (unsigned long)cw * sizeof(unsigned int));
+    } else {
+        /* Slow path: nearest-neighbour scale to fill the content area. */
+        for (y = 0; y < ch; ++y) {
+            unsigned int *dst = &s_canvas[y * cw];
+            int sy = y * DOOM_BUF_H / ch;
+            int x;
+            for (x = 0; x < cw; ++x)
+                dst[x] = src[sy * DOOM_BUF_W + x * DOOM_BUF_W / cw];
         }
     }
     win_present(s_win_id, s_canvas, cw, ch);
