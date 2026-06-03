@@ -33,12 +33,12 @@
  * the chrome we get at least DOOM_BUF_W x DOOM_BUF_H content pixels.
  * DG_Init drains the immediate EV_RESIZE to learn the exact content size, so
  * no chrome constant is hard-coded here. */
-#define WIN_W       (DOOM_BUF_W + 64)   /* generous headroom for any chrome size */
-#define WIN_H       (DOOM_BUF_H + 100)
+#define WIN_W       (DOOM_BUF_W)   /* generous headroom for any chrome size */
+#define WIN_H       (DOOM_BUF_H)
 
 /* Canvas: stride = live content width, updated on EV_RESIZE. */
-#define BUF_MAX_W  900
-#define BUF_MAX_H  640
+#define BUF_MAX_W  1920
+#define BUF_MAX_H  1200
 
 /* ---- vexui event constants (mirrored from vexui.c) -------------------- */
 #define EV_MOUSE_MOVE  1
@@ -157,10 +157,13 @@ static void parse_key_byte(unsigned char b) {
 /* ---- DG_ callbacks ----------------------------------------------------- */
 
 void DG_Init(void) {
-    s_win_id = (int)__sc3(SYS_WINDOW_CREATE,
-                           (unsigned long)(size_t)"DOOM",
-                           (unsigned long)WIN_W,
-                           (unsigned long)WIN_H);
+    struct vos_window_options options;
+    memset(&options, 0, sizeof(options));
+    options.title = "DOOM";
+    options.width = WIN_W;
+    options.height = WIN_H;
+    options.flags = VOS_WINDOW_ASPECT_RATIO;
+    s_win_id = vos_window_create_ex(&options);
     /* The kernel immediately enqueues an EV_RESIZE with the actual content
      * dimensions.  Drain it now so s_content_w/h are exact before the first
      * DG_DrawFrame — no chrome constant needed. */

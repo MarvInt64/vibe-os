@@ -2286,41 +2286,150 @@ static void apply_window_resize(struct desktop_state *desktop, int index, int mo
         window_max_surface(index, &max_w, &max_h);
     }
 
-    if (desktop->resize_edges & RESIZE_RIGHT) w += dx;
-    if (desktop->resize_edges & RESIZE_BOTTOM) h += dy;
-    if (desktop->resize_edges & RESIZE_LEFT) { x += dx; w -= dx; }
-    if (desktop->resize_edges & RESIZE_TOP) { y += dy; h -= dy; }
+    if (window->flags & WINSYS_WINDOW_ASPECT_RATIO) {
+        int W_0 = desktop->resize_start_width;
+        int H_0 = desktop->resize_start_height;
+        int X_0 = desktop->resize_start_x;
+        int Y_0 = desktop->resize_start_y;
 
-    if (w < min_w) {
-        if (desktop->resize_edges & RESIZE_LEFT) x -= min_w - w;
-        w = min_w;
+        if (W_0 > 0 && H_0 > 0) {
+            /* 1. Compute effective min/max sizes that satisfy both width/height boundaries and maintain ratio. */
+            int eff_min_w = min_w;
+            int eff_min_h = min_h;
+            int min_w_from_h = (min_h * W_0 + H_0 - 1) / H_0;
+            if (min_w_from_h > eff_min_w) eff_min_w = min_w_from_h;
+            int min_h_from_w = (min_w * H_0 + W_0 - 1) / W_0;
+            if (min_h_from_w > eff_min_h) eff_min_h = min_h_from_w;
+
+            int eff_max_w = max_w;
+            int eff_max_h = max_h;
+            int max_w_from_h = max_h * W_0 / H_0;
+            if (max_w_from_h < eff_max_w) eff_max_w = max_w_from_h;
+            int max_h_from_w = max_w * H_0 / W_0;
+            if (max_h_from_w < eff_max_h) eff_max_h = max_h_from_w;
+
+            /* 2. Adjust max sizes based on screen boundaries. */
+            int limit_max_w = eff_max_w;
+            int limit_max_h = eff_max_h;
+            if (desktop->resize_edges & RESIZE_LEFT) {
+                int max_w_space = (X_0 + W_0) - (ui_left_work_area_inset(desktop) + 6);
+                if (max_w_space < limit_max_w) limit_max_w = max_w_space;
+            }
+            if (desktop->resize_edges & RESIZE_RIGHT) {
+                int max_w_space = ((int)desktop->screen_width - 8) - X_0;
+                if (max_w_space < limit_max_w) limit_max_w = max_w_space;
+            }
+            if (desktop->resize_edges & RESIZE_TOP) {
+                int max_h_space = (Y_0 + H_0) - 8;
+                if (max_h_space < limit_max_h) limit_max_h = max_h_space;
+            }
+            if (desktop->resize_edges & RESIZE_BOTTOM) {
+                int max_h_space = (taskbar_y - 4) - Y_0;
+                if (max_h_space < limit_max_h) limit_max_h = max_h_space;
+            }
+
+            /* Propagate screen boundary limits to both dimensions to maintain aspect ratio */
+            int max_w_from_h_limit = limit_max_h * W_0 / H_0;
+            if (max_w_from_h_limit < limit_max_w) limit_max_w = max_w_from_h_limit;
+            int max_h_from_w_limit = limit_max_w * H_0 / W_0;
+            if (max_h_from_w_limit < limit_max_h) limit_max_h = max_h_from_w_limit;
+
+            /* Ensure limits are not below minimums */
+            if (limit_max_w < eff_min_w) limit_max_w = eff_min_w;
+            if (limit_max_h < eff_min_h) limit_max_h = eff_min_h;
+
+            /* 3. Compute prospective dimensions based on mouse movement */
+            int w_proposal = W_0;
+            if (desktop->resize_edges & RESIZE_LEFT) {
+                w_proposal = W_0 - dx;
+            } else if (desktop->resize_edges & RESIZE_RIGHT) {
+                w_proposal = W_0 + dx;
+            }
+
+            int h_proposal = H_0;
+            if (desktop->resize_edges & RESIZE_TOP) {
+                h_proposal = H_0 - dy;
+            } else if (desktop->resize_edges & RESIZE_BOTTOM) {
+                h_proposal = H_0 + dy;
+            }
+
+            /* 4. Decide which dimension is the master for resizing */
+            int has_h = (desktop->resize_edges & (RESIZE_LEFT | RESIZE_RIGHT)) != 0;
+            int has_v = (desktop->resize_edges & (RESIZE_TOP | RESIZE_BOTTOM)) != 0;
+            int use_w_as_master = 0;
+            if (has_h && has_v) {
+                int dx_abs = dx < 0 ? -dx : dx;
+                int dy_abs = dy < 0 ? -dy : dy;
+                if (dx_abs * H_0 > dy_abs * W_0) {
+                    use_w_as_master = 1;
+                } else {
+                    use_w_as_master = 0;
+                }
+            } else if (has_h) {
+                use_w_as_master = 1;
+            } else {
+                use_w_as_master = 0;
+            }
+
+            /* 5. Calculate new width/height and apply position changes */
+            if (use_w_as_master) {
+                w = w_proposal;
+                if (w < eff_min_w) w = eff_min_w;
+                if (w > limit_max_w) w = limit_max_w;
+                h = (w * H_0 + W_0 / 2) / W_0;
+            } else {
+                h = h_proposal;
+                if (h < eff_min_h) h = eff_min_h;
+                if (h > limit_max_h) h = limit_max_h;
+                w = (h * W_0 + H_0 / 2) / H_0;
+            }
+
+            x = X_0;
+            y = Y_0;
+            if (desktop->resize_edges & RESIZE_LEFT) {
+                x = (X_0 + W_0) - w;
+            }
+            if (desktop->resize_edges & RESIZE_TOP) {
+                y = (Y_0 + H_0) - h;
+            }
+        }
+    } else {
+        if (desktop->resize_edges & RESIZE_RIGHT) w += dx;
+        if (desktop->resize_edges & RESIZE_BOTTOM) h += dy;
+        if (desktop->resize_edges & RESIZE_LEFT) { x += dx; w -= dx; }
+        if (desktop->resize_edges & RESIZE_TOP) { y += dy; h -= dy; }
+
+        if (w < min_w) {
+            if (desktop->resize_edges & RESIZE_LEFT) x -= min_w - w;
+            w = min_w;
+        }
+        if (h < min_h) {
+            if (desktop->resize_edges & RESIZE_TOP) y -= min_h - h;
+            h = min_h;
+        }
+        if (w > max_w) {
+            if (desktop->resize_edges & RESIZE_LEFT) x -= max_w - w;
+            w = max_w;
+        }
+        if (h > max_h) {
+            if (desktop->resize_edges & RESIZE_TOP) y -= max_h - h;
+            h = max_h;
+        }
+        if (x < ui_left_work_area_inset(desktop) + 6) {
+            int delta = ui_left_work_area_inset(desktop) + 6 - x;
+            x += delta;
+            if (desktop->resize_edges & RESIZE_LEFT) w -= delta;
+        }
+        if (y < 8) {
+            int delta = 8 - y;
+            y += delta;
+            if (desktop->resize_edges & RESIZE_TOP) h -= delta;
+        }
+        if (x + w > (int)desktop->screen_width - 8) w = (int)desktop->screen_width - 8 - x;
+        if (y + h > taskbar_y - 4) h = taskbar_y - 4 - y;
+        if (w < min_w) w = min_w;
+        if (h < min_h) h = min_h;
     }
-    if (h < min_h) {
-        if (desktop->resize_edges & RESIZE_TOP) y -= min_h - h;
-        h = min_h;
-    }
-    if (w > max_w) {
-        if (desktop->resize_edges & RESIZE_LEFT) x -= max_w - w;
-        w = max_w;
-    }
-    if (h > max_h) {
-        if (desktop->resize_edges & RESIZE_TOP) y -= max_h - h;
-        h = max_h;
-    }
-    if (x < ui_left_work_area_inset(desktop) + 6) {
-        int delta = ui_left_work_area_inset(desktop) + 6 - x;
-        x += delta;
-        if (desktop->resize_edges & RESIZE_LEFT) w -= delta;
-    }
-    if (y < 8) {
-        int delta = 8 - y;
-        y += delta;
-        if (desktop->resize_edges & RESIZE_TOP) h -= delta;
-    }
-    if (x + w > (int)desktop->screen_width - 8) w = (int)desktop->screen_width - 8 - x;
-    if (y + h > taskbar_y - 4) h = taskbar_y - 4 - y;
-    if (w < min_w) w = min_w;
-    if (h < min_h) h = min_h;
 
     if (window->x == x && window->y == y && window->width == w && window->height == h) {
         return;

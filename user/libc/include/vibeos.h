@@ -116,6 +116,7 @@ int vos_window_create(const char *title, int w, int h);   /* >=0 id, <0 = no ser
 #define VOS_WINDOW_NO_DOCK   0x00000002u
 #define VOS_WINDOW_POSITIONED 0x00000004u
 #define VOS_WINDOW_ALWAYS_ON_TOP 0x00000008u
+#define VOS_WINDOW_ASPECT_RATIO  0x00000040u
 struct vos_window_options {
     const char *title;
     int32_t width;
