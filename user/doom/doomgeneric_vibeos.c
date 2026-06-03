@@ -29,13 +29,12 @@
 #define DOOM_BUF_W  DOOMGENERIC_RESX   /* 640 */
 #define DOOM_BUF_H  DOOMGENERIC_RESY   /* 400 */
 
-/* Open the window larger than the framebuffer so that after the kernel
- * subtracts the chrome (32px horizontal, 66px vertical) the content area
- * matches the buffer — numbers are for the non-large-UI path. */
-#define CHROME_X    32
-#define CHROME_Y    66
-#define WIN_W       (DOOM_BUF_W + CHROME_X)
-#define WIN_H       (DOOM_BUF_H + CHROME_Y)
+/* Request a window slightly larger than the buffer; after the kernel subtracts
+ * the chrome we get at least DOOM_BUF_W x DOOM_BUF_H content pixels.
+ * DG_Init drains the immediate EV_RESIZE to learn the exact content size, so
+ * no chrome constant is hard-coded here. */
+#define WIN_W       (DOOM_BUF_W + 64)   /* generous headroom for any chrome size */
+#define WIN_H       (DOOM_BUF_H + 100)
 
 /* Canvas: stride = live content width, updated on EV_RESIZE. */
 #define BUF_MAX_W  900
@@ -162,10 +161,22 @@ void DG_Init(void) {
                            (unsigned long)(size_t)"DOOM",
                            (unsigned long)WIN_W,
                            (unsigned long)WIN_H);
-    /* Initial guess: assume standard chrome so we get pixel-perfect output
-     * before the first EV_RESIZE arrives. */
+    /* The kernel immediately enqueues an EV_RESIZE with the actual content
+     * dimensions.  Drain it now so s_content_w/h are exact before the first
+     * DG_DrawFrame — no chrome constant needed. */
     s_content_w = DOOM_BUF_W;
     s_content_h = DOOM_BUF_H;
+    {
+        struct winsys_event ev;
+        int tries = 0;
+        while (tries++ < 16 && event_poll(s_win_id, &ev) > 0) {
+            if (ev.type == EV_RESIZE && ev.x > 0 && ev.y > 0) {
+                s_content_w = ev.x < BUF_MAX_W ? ev.x : BUF_MAX_W;
+                s_content_h = ev.y < BUF_MAX_H ? ev.y : BUF_MAX_H;
+                break;
+            }
+        }
+    }
     memset(s_canvas, 0, sizeof(s_canvas));
 }
 
