@@ -187,6 +187,8 @@ struct vui_window {
     vui_context_callback on_context_menu;
     vui_key_callback on_key;
     vui_scroll_callback on_scroll;
+    vui_mouse_callback on_mouse_move;
+    vui_mouse_callback on_mouse_click;
     /* Tooltip: index of the hovered widget (-1=none) and a tick counter.
      * The bubble appears after TOOLTIP_DELAY ticks of continuous hover. */
     int  tooltip_widget;
@@ -933,6 +935,8 @@ void vui_set_tooltip(vui_widget *wd, const char *tip){
     scopy(wd->tooltip, tip, sizeof(wd->tooltip));
 }
 void vui_on_scroll(vui_window *w, vui_scroll_callback cb){ if(w) w->on_scroll=cb; }
+void vui_on_mouse_move(vui_window *w, vui_mouse_callback cb){ if(w) w->on_mouse_move=cb; }
+void vui_on_mouse_click(vui_window *w, vui_mouse_callback cb){ if(w) w->on_mouse_click=cb; }
 void vui_request_repaint(vui_window *w){ if(w) w->dirty=1; }
 
 /* =========================================================================
@@ -1743,7 +1747,7 @@ vui_window *vui_window_open_inset(const char *title, int width, int height,
     g_win.id=id; g_win.width=width; g_win.height=height; g_win.open=1;
     g_win.mouse_x=-1; g_win.mouse_y=-1; g_win.mouse_down=0;
     g_win.clear_color=g_theme.bg;
-    g_win.widget_count=0; g_win.dirty=1; g_win.on_tick=0; g_win.on_resize=0; g_win.on_context_menu=0; g_win.on_key=0; g_win.on_scroll=0;
+    g_win.widget_count=0; g_win.dirty=1; g_win.on_tick=0; g_win.on_resize=0; g_win.on_context_menu=0; g_win.on_key=0; g_win.on_scroll=0; g_win.on_mouse_move=0; g_win.on_mouse_click=0;
     g_win.menu_count=0; g_win.active_menu_idx=-1; g_win.active_input=-1;
     g_win.tooltip_widget=-1; g_win.tooltip_ticks=0;
     return &g_win;
@@ -1776,12 +1780,30 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
         }
 
         while ((int)sc2(SYS_EVENT_POLL, (uint64_t)w->id, (uint64_t)(size_t)&ev) == 1) {
-            if (ev.type == EV_MOUSE_MOVE) { w->mouse_x=ev.x; w->mouse_y=ev.y; }
-            else if (ev.type == EV_MOUSE_DOWN) { w->mouse_x=ev.x; w->mouse_y=ev.y; w->mouse_down=1; click_x=ev.x; click_y=ev.y; }
+            if (ev.type == EV_MOUSE_MOVE) {
+                w->mouse_x=ev.x; w->mouse_y=ev.y;
+                if (w->on_mouse_move) w->on_mouse_move(w, ev.x, ev.y);
+            }
+            else if (ev.type == EV_MOUSE_DOWN) {
+                w->mouse_x=ev.x; w->mouse_y=ev.y; w->mouse_down=1; click_x=ev.x; click_y=ev.y;
+                if (w->on_mouse_click) w->on_mouse_click(w, ev.x, ev.y);
+            }
             else if (ev.type == EV_MOUSE_UP) { w->mouse_down=0; }
             else if (ev.type == EV_CLOSE) { w->open=0; }
             else if (ev.type == EV_CONTEXT_MENU) { w->mouse_x=ev.x; w->mouse_y=ev.y; if(w->on_context_menu) w->on_context_menu(w, ev.x, ev.y); }
-            else if (ev.type == EV_MENU_ACTION) { if (ev.key < (uint32_t)w->menu_count && w->menu_cbs[ev.key]) w->menu_cbs[ev.key](w); }
+            else if (ev.type == EV_MENU_ACTION) {
+                if (ev.key >= 1000) {
+                    int w_idx = (int)(ev.key - 1000);
+                    if (w_idx < w->widget_count) {
+                        struct vui_widget *wd = &w->widgets[w_idx];
+                        if (wd->type == W_MENUITEM && wd->on_click) {
+                            wd->on_click(wd);
+                        }
+                    }
+                } else if (ev.key < (uint32_t)w->menu_count && w->menu_cbs[ev.key]) {
+                    w->menu_cbs[ev.key](w);
+                }
+            }
             else if (ev.type == EV_SCROLL) {
                 /* Wheel notch delta arrives in ev.y (positive = away/up). */
                 if (w->on_scroll) w->on_scroll(w, ev.y);
