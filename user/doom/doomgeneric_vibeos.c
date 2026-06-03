@@ -23,15 +23,14 @@
 /* ---- Window geometry --------------------------------------------------- */
 #define DOOM_W   320
 #define DOOM_H   200
-#define SCALE    2               /* pixel-doubling factor */
+#define SCALE    2               /* initial pixel-doubling factor */
 #define WIN_W    (DOOM_W * SCALE)
 #define WIN_H    (DOOM_H * SCALE)
 
-/* VexUI/window-server limits (must match VUI_MAX_W/H). */
-/* Canvas stride == WIN_W: DOOM's window is fixed-size so logical width and
- * row stride are identical — the kernel reads both as WIN_W, no shear. */
-#define BUF_STRIDE  WIN_W
-#define BUF_H_MAX   WIN_H
+/* Canvas buffer dimensions. Must match VUI_MAX_W/H. The stride equals the
+ * canvas width, which we update on resize so present stride always matches. */
+#define BUF_MAX_W  900
+#define BUF_MAX_H  640
 
 /* ---- vexui event constants (mirrored from vexui.c) -------------------- */
 #define EV_MOUSE_MOVE  1
@@ -66,7 +65,9 @@ static inline int event_poll(int id, struct winsys_event *ev) {
 
 /* ---- State ------------------------------------------------------------- */
 static int      s_win_id = -1;
-static unsigned int s_canvas[BUF_STRIDE * BUF_H_MAX];
+static int      s_content_w = WIN_W;   /* actual content area (updated on resize) */
+static int      s_content_h = WIN_H;
+static unsigned int s_canvas[BUF_MAX_W * BUF_MAX_H];
 
 /* Key event queue (small ring — DOOM drains it every tic). */
 #define KEYQ_CAP 32
@@ -148,32 +149,40 @@ static void parse_key_byte(unsigned char b) {
 /* ---- DG_ callbacks ----------------------------------------------------- */
 
 void DG_Init(void) {
-    s_win_id = (int)__sc3(SYS_WINDOW_CREATE,
-                           (unsigned long)(size_t)"DOOM",
-                           (unsigned long)WIN_W,
-                           (unsigned long)WIN_H);
+    /* Frameless window: content area == window area (no chrome offset), so the
+     * canvas size and stride are always exact — no distortion. */
+    struct vos_window_options opts;
+    opts.title  = "DOOM";
+    opts.width  = WIN_W;
+    opts.height = WIN_H;
+    opts.flags  = VOS_WINDOW_FRAMELESS;
+    opts.x      = 0;
+    opts.y      = 0;
+    s_win_id = (int)__sc1(SYS_WINDOW_CREATE_EX, (unsigned long)(size_t)&opts);
+    s_content_w = WIN_W;
+    s_content_h = WIN_H;
     memset(s_canvas, 0, sizeof(s_canvas));
 }
 
-/* Pixel-double DOOM's 320×200 XRGB buffer into s_canvas at stride BUF_STRIDE,
- * then present. DOOM packs rows at DOOM_W (no padding). */
+/* Scale DOOM's 320×200 XRGB buffer into s_canvas to fill the current content
+ * area, then present.  The stride equals s_content_w so it matches exactly. */
 void DG_DrawFrame(void) {
     const unsigned int *src = DG_ScreenBuffer;
+    int cw = s_content_w, ch = s_content_h;
+    if (cw > BUF_MAX_W) cw = BUF_MAX_W;
+    if (ch > BUF_MAX_H) ch = BUF_MAX_H;
     int y;
 
-    for (y = 0; y < DOOM_H; ++y) {
-        unsigned int *dst0 = &s_canvas[(y * 2)     * BUF_STRIDE];
-        unsigned int *dst1 = &s_canvas[(y * 2 + 1) * BUF_STRIDE];
+    for (y = 0; y < ch; ++y) {
+        unsigned int *dst = &s_canvas[y * cw];
+        int sy = y * DOOM_H / ch;
         int x;
-        for (x = 0; x < DOOM_W; ++x) {
-            unsigned int px = src[y * DOOM_W + x];
-            dst0[x * 2]     = px;
-            dst0[x * 2 + 1] = px;
-            dst1[x * 2]     = px;
-            dst1[x * 2 + 1] = px;
+        for (x = 0; x < cw; ++x) {
+            int sx = x * DOOM_W / cw;
+            dst[x] = src[sy * DOOM_W + sx];
         }
     }
-    win_present(s_win_id, s_canvas, WIN_W, WIN_H);
+    win_present(s_win_id, s_canvas, cw, ch);
 }
 
 void DG_SleepMs(unsigned int ms) {
@@ -208,6 +217,10 @@ int DG_GetKey(int *pressed, unsigned char *doom_key) {
              * separate EV_KEY; parse them into DOOM key codes. */
             unsigned int k = ev.key;
             if (k < 256) parse_key_byte((unsigned char)k);
+        } else if (ev.type == EV_RESIZE && ev.x > 0 && ev.y > 0) {
+            /* Track the live content area so DG_DrawFrame scales correctly. */
+            s_content_w = ev.x < BUF_MAX_W ? ev.x : BUF_MAX_W;
+            s_content_h = ev.y < BUF_MAX_H ? ev.y : BUF_MAX_H;
         }
     }
 
