@@ -381,6 +381,7 @@ struct State {
     /* Current <form> context (raw action; browser resolves + submits). */
     char      form_action[256] = {};
     int       form_method_post = 0;
+    int       form_depth       = 0;  /* > 0 while inside a <form> element */
 
     /* font callbacks */
     int  (*adv_fn)(int cp, int px)  = nullptr;
@@ -794,6 +795,7 @@ static void walk(State &S, dom_node *node) {
         const char *mth = dom_attr(node,"method");
         str_copy(S.form_action, sizeof S.form_action, act ? act : "");
         S.form_method_post = (mth && (mth[0]=='p'||mth[0]=='P'));
+        ++S.form_depth;
         st_push(S); apply_css(S,node);
         int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 8;
         int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 8;
@@ -801,6 +803,7 @@ static void walk(State &S, dom_node *node) {
         if (!S.stk[S.sp].hidden) walk_children(S,node);
         block_break(S,mb);
         st_pop(S);
+        --S.form_depth;
         for (int i=0;i<256;++i) S.form_action[i]=saved_action[i];
         S.form_method_post = saved_post;
         return;

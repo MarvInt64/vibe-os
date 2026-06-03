@@ -2,6 +2,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <vibeos.h>
+#include <time.h>
 #include <sys/syscall.h>
 
 int errno = 0;
@@ -176,4 +177,16 @@ char *getcwd(char *buf, size_t size) {
 
 int chdir(const char *path) {
     return (int)ck(__sc1(SYS_CHDIR, (uint64_t)(size_t)path));
+}
+
+time_t time(time_t *tloc) {
+    struct vos_system_info info;
+    time_t sec = 0;
+    if (vos_system_info(&info) == 0) {
+        if (info.timer_hz > 0) {
+            sec = (time_t)(info.uptime_ticks / info.timer_hz);
+        }
+    }
+    if (tloc) *tloc = sec;
+    return sec;
 }
