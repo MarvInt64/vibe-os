@@ -75,8 +75,10 @@ int main() {
     uint32_t mode = (uint32_t)__sc2(SYS_DISPLAY_MODE, 0, 0);
     int screen_w = (int)((mode >> 16) & 0xffffu);
     int screen_h = (int)(mode & 0xffffu);
-    int width = 560;
-    int height = 76;
+    int width      = 560;
+    int dock_h     = 76;   /* height of the visible pill */
+    int tooltip_h  = 32;   /* transparent headroom above the pill for tooltips */
+    int height     = dock_h + tooltip_h;
     int x;
     int y;
 
@@ -97,10 +99,12 @@ int main() {
         x, y);
     vui_set_clear_color(win, VUI_COLOR_TRANSPARENT);
 
-    vui_widget *surface = vui_pill(win, 0, 0, width, height);
+    /* The pill sits in the lower dock_h pixels; the upper tooltip_h pixels are
+     * fully transparent so the tooltip bubble has room to render above the icons. */
+    vui_widget *surface = vui_pill(win, 0, tooltip_h, width, dock_h);
     vui_set_color(surface, 0x00263a54u);
 
-    vui_widget *row = vui_hbox(win, 32, 8, width - 64, height - 16);
+    vui_widget *row = vui_hbox(win, 32, tooltip_h + 8, width - 64, dock_h - 16);
     vui_set_gap(row, 18);
     vui_set_padding(row, 0);
 
