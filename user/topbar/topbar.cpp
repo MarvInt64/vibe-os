@@ -39,6 +39,8 @@ typedef unsigned char  uint8_t;
 #define SYS_TEXT_METRICS 41
 #define SYS_DESKTOP_STATUS 43
 #define SYS_MENU_DISPATCH 44
+#define SYS_REBOOT 51
+#define SYS_SHUTDOWN 52
 
 static inline ssize_t sc1(uint64_t n, uint64_t a0) {
     ssize_t r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(n), "D"(a0) : "rcx","r11","memory"); return r;
@@ -72,6 +74,7 @@ static void nap(uint64_t ticks){ sc1(SYS_TIMER_SLEEP, ticks); }
 
 struct win_options { const char *title; int32_t width, height; uint32_t flags; int32_t x, y; };
 struct win_event { uint32_t type; int32_t x, y; uint32_t buttons; uint32_t key; };
+#define EV_MOUSE_MOVE 1
 #define EV_MOUSE_DOWN 2
 #define EV_KEY 4
 #define EV_CLOSE 5
@@ -159,28 +162,73 @@ static void uitoa(unsigned v, char *out) {
     out[i] = 0;
 }
 
-/* ---- logo (rendered once, blitted each frame) ---- */
-#define LOGO_SZ 44
-static uint32_t g_logo[LOGO_SZ * LOGO_SZ];
+/* ---- logo (cached SVG, rendered dynamically for anti-aliasing) ---- */
+#define LOGO_MAX_SZ 52
+static char g_logo_svg_data[4096];
 static int g_logo_ready;
+static int g_logo_hover = 0;
+static int g_logo_hover_val = 0;
+static uint32_t g_logo_anim[LOGO_MAX_SZ * LOGO_MAX_SZ];
+
 static void load_logo(void) {
-    static char buf[4096];
     int fd = (int)sc1(SYS_OPEN, (uint64_t)(size_t)"/icons/vibeos-logo.svg");
+    int n;
+    if (fd < 0) return;
+    n = (int)sc3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)g_logo_svg_data, sizeof(g_logo_svg_data) - 1);
+    sc1(SYS_CLOSE, (uint64_t)fd);
+    if (n <= 0) return;
+    g_logo_svg_data[n] = 0;
+    g_logo_ready = 1;
+}
+static void blit_logo(int ox, int oy) {
+    int x, y;
+    if (!g_logo_ready) return;
+
+    int size = 44 + (int)(6.0f * (g_logo_hover_val / 10.0f));
+    if (size > LOGO_MAX_SZ) size = LOGO_MAX_SZ;
+
+    int r1 = 0x4d, g1 = 0xa3, b1 = 0xff; // COL_ACCENT
+    int r2 = 0xd4, g2 = 0x4d, b2 = 0xff; // Neon Purple / Pink
+    int r = r1 + (r2 - r1) * g_logo_hover_val / 10;
+    int g = g1 + (g2 - g1) * g_logo_hover_val / 10;
+    int b = b1 + (b2 - b1) * g_logo_hover_val / 10;
+    uint32_t col = (r << 16) | (g << 8) | b;
+
+    svg_render_rgba(g_logo_svg_data, g_logo_anim, size, col);
+
+    int dox = ox + (44 - size) / 2;
+    int doy = oy + (44 - size) / 2;
+
+    for (y = 0; y < size; ++y) {
+        for (x = 0; x < size; ++x) {
+            uint32_t p = g_logo_anim[y * size + x];
+            int a = (int)((p >> 24) & 255u);
+            if (a > 0) blend_px(dox + x, doy + y, p & 0xFFFFFFu, a);
+        }
+    }
+}
+
+#define POWER_SZ 20
+static uint32_t g_power[POWER_SZ * POWER_SZ];
+static int g_power_ready;
+static void load_power(void) {
+    static char buf[1024];
+    int fd = (int)sc1(SYS_OPEN, (uint64_t)(size_t)"/icons/power.svg");
     int n;
     if (fd < 0) return;
     n = (int)sc3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)buf, sizeof(buf) - 1);
     sc1(SYS_CLOSE, (uint64_t)fd);
     if (n <= 0) return;
     buf[n] = 0;
-    svg_render_rgba(buf, g_logo, LOGO_SZ, COL_ACCENT);
-    g_logo_ready = 1;
+    svg_render_rgba(buf, g_power, POWER_SZ, COL_TEXT);
+    g_power_ready = 1;
 }
-static void blit_logo(int ox, int oy) {
+static void blit_power(int ox, int oy) {
     int x, y;
-    if (!g_logo_ready) return;
-    for (y = 0; y < LOGO_SZ; ++y)
-        for (x = 0; x < LOGO_SZ; ++x) {
-            uint32_t p = g_logo[y * LOGO_SZ + x];
+    if (!g_power_ready) return;
+    for (y = 0; y < POWER_SZ; ++y)
+        for (x = 0; x < POWER_SZ; ++x) {
+            uint32_t p = g_power[y * POWER_SZ + x];
             int a = (int)((p >> 24) & 255u);
             if (a > 0) blend_px(ox + x, oy + y, p & 0xFFFFFFu, a);
         }
@@ -226,6 +274,7 @@ static void draw_sparkline(int x, int y, int w, int h, const int *hist, uint32_t
 
 /* ---- menu layout / hit testing ---- */
 static int g_menu_open = -1;     /* index of open top-level title, -1 = none */
+static int g_power_menu_open = 0; /* 1 = power menu dropdown is open, 0 = closed */
 static int g_menu_x[16];         /* x of each title */
 static int g_menu_w[16];         /* pixel width of each title label */
 static int g_menu_n;             /* number of titles */
@@ -278,8 +327,11 @@ static void render(const struct desktop_status *st) {
 
     /* logo + brand + focused app label */
     blit_logo(6, 5);
-    draw_text(58, 19, "VibeOS", COL_TEXT);
-    if (st->app_label[0]) draw_text(122, 19, st->app_label, COL_DIM);
+    //draw_text(58, 19, "VibeOS", COL_TEXT);
+
+    if (st->app_label[0]) {
+        draw_text(58, 19, st->app_label, COL_DIM);
+    }
 
     /* app menu titles */
     layout_menus(st);
@@ -291,7 +343,7 @@ static void render(const struct desktop_status *st) {
     }
 
     /* ---- right side: NET | CPU spark % | UI spark | MEM bar % | clock | power ---- */
-    sx = g_w - 430;
+    sx = g_w - 470;
     {
         int min_sx = menu_start_x(st) + 40;
         if (sx < min_sx) sx = min_sx;
@@ -325,14 +377,8 @@ static void render(const struct desktop_status *st) {
         draw_text(sx, 19, t, COL_TEXT);
         sx += 8 * 8 + 10;
     }
-    fill_rect(sx, 16, 1, 22, COL_BORDER); sx += 12;
-    {   /* power glyph: a ring with a top gap + stem */
-        static const signed char rx[] = {-2,2,4,6,7,7,6,4,1,-1,-4,-6,-7,-7,-6,-4};
-        static const signed char ry[] = {-7,-7,-6,-4,-1,1,4,6,7,7,6,4,1,-1,-4,-6};
-        int cx = sx + 8, cy = 27, k;
-        for (k = 0; k < 16; ++k) blend_px(cx + rx[k], cy + ry[k], COL_TEXT, 220);
-        fill_rect(cx, cy - 9, 1, 6, COL_TEXT);   /* stem through the gap */
-    }
+    fill_rect(sx, 16, 1, 22, COL_BORDER);
+    blit_power(g_w - 36, 17);
 
     /* ---- open dropdown ---- */
     if (g_menu_open >= 0 && g_menu_open < g_menu_n) {
@@ -356,12 +402,47 @@ static void render(const struct desktop_status *st) {
                 draw_text(rx + rw - 14 - text_w(st->menu[k].shortcut), iy + 5,
                           st->menu[k].shortcut, COL_DIM);
         }
+    } else if (g_power_menu_open) {
+        int rw = 160;
+        int rh = 2 * ITEM_H + 10;
+        int rx = g_w - rw - 6;
+        int ry = BAR_H;
+        fill_rect(rx, ry, rw, rh, COL_DROP);
+        fill_rect(rx, ry, rw, 1, COL_BORDER);
+        fill_rect(rx, ry + rh - 1, rw, 1, COL_BORDER);
+        fill_rect(rx, ry, 1, rh, COL_BORDER);
+        fill_rect(rx + rw - 1, ry, 1, rh, COL_BORDER);
+
+        int iy0 = ry + 5;
+        draw_text(rx + 14, iy0 + 5, "Reboot System", COL_TEXT);
+
+        int iy1 = ry + 5 + ITEM_H;
+        draw_text(rx + 14, iy1 + 5, "Shutdown System", COL_RED);
     }
 }
 
 /* ---- input ---- */
 static void handle_click(const struct desktop_status *st, int mx, int my) {
     int i;
+    if (g_power_menu_open) {
+        int rw = 160;
+        int rh = 2 * ITEM_H + 10;
+        int rx = g_w - rw - 6;
+        int ry = BAR_H;
+        if (mx >= rx && mx < rx + rw && my >= ry && my < ry + rh) {
+            int row = (my - ry - 5) / ITEM_H;
+            if (row == 0) {
+                sc1(SYS_REBOOT, 0);
+            } else if (row == 1) {
+                sc1(SYS_SHUTDOWN, 0);
+            }
+            g_power_menu_open = 0;
+            return;
+        }
+    }
+
+    g_power_menu_open = 0;
+
     if (g_menu_open >= 0) {       /* a dropdown is showing */
         int rx, ry, rw, rh, rows;
         dropdown_rect(st, g_menu_open, &rx, &ry, &rw, &rh, &rows);
@@ -378,6 +459,13 @@ static void handle_click(const struct desktop_status *st, int mx, int my) {
             return;
         }
     }
+
+    if (my < BAR_H && mx >= g_w - 44) {
+        g_power_menu_open = 1;
+        g_menu_open = -1;
+        return;
+    }
+
     if (my < BAR_H && mx >= 4 && mx < 116) {        /* logo / brand → System Info */
         sc1(SYS_PROCESS_SPAWN, (uint64_t)(size_t)"/bin/sysinfo");
         g_menu_open = -1;
@@ -400,7 +488,7 @@ static void present(void) {
      * stay black and cover the desktop). Afterwards only the bar strip is
      * presented, growing to include a dropdown while one is open. */
     static int prev_h = WIN_H;
-    int h = (g_menu_open >= 0) ? WIN_H : BAR_H;
+    int h = (g_menu_open >= 0 || g_power_menu_open) ? WIN_H : BAR_H;
     int ph = h > prev_h ? h : prev_h;
     prev_h = h;
     sc6(SYS_WINDOW_PRESENT_RECT, (uint64_t)g_win, (uint64_t)(size_t)g_canvas,
@@ -420,6 +508,7 @@ int main() {
     g_canvas = canvas_storage;
 
     load_logo();
+    load_power();
 
     opt.title = "Top Bar";
     opt.width = g_w; opt.height = WIN_H;
@@ -439,11 +528,33 @@ int main() {
                 layout_menus(&st);
                 handle_click(&st, ev.x, ev.y);
                 redraw = 1;
+            } else if (ev.type == EV_MOUSE_MOVE) {
+                int hover = (ev.x >= 6 && ev.x < 50 && ev.y >= 5 && ev.y < 49);
+                if (hover != g_logo_hover) {
+                    g_logo_hover = hover;
+                }
             } else if (ev.type == EV_KEY && ev.key == 0x1b) {
                 if (g_menu_open >= 0) { g_menu_open = -1; redraw = 1; }
+                if (g_power_menu_open) { g_power_menu_open = 0; redraw = 1; }
             } else if (ev.type == EV_CLOSE) {
                 return 0;
             }
+        }
+
+        int anim_changed = 0;
+        if (g_logo_hover) {
+            if (g_logo_hover_val < 10) {
+                g_logo_hover_val++;
+                anim_changed = 1;
+            }
+        } else {
+            if (g_logo_hover_val > 0) {
+                g_logo_hover_val--;
+                anim_changed = 1;
+            }
+        }
+        if (anim_changed) {
+            redraw = 1;
         }
 
         sc1(SYS_DESKTOP_STATUS, (uint64_t)(size_t)&st);
@@ -453,6 +564,7 @@ int main() {
          * focus/menu changes) so we don't blit the bar every frame. */
         sig = st.uptime_seconds ^ (st.cpu_pct << 8) ^ (st.ui_pct << 14)
             ^ (st.mem_pct << 20) ^ ((uint32_t)(g_menu_open + 1) << 26)
+            ^ ((uint32_t)g_power_menu_open << 30)
             ^ (uint32_t)st.app_label[0] ^ st.menu_count;
         if (sig != sig_prev) { redraw = 1; sig_prev = sig; }
 
@@ -460,6 +572,10 @@ int main() {
             render(&st);
             present();
         }
-        nap(6);
+        if (g_logo_hover_val > 0 && g_logo_hover_val < 10) {
+            nap(2);
+        } else {
+            nap(6);
+        }
     }
 }

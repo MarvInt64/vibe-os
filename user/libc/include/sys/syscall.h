@@ -56,7 +56,11 @@ enum {
     SYS_PTY_OPEN = 45,
     SYS_SPAWN_PTY = 46,
     SYS_PTY_INTERRUPT = 47,
-    SYS_SEEK = 48
+    SYS_SEEK = 48,
+    SYS_AUDIO_WRITE = 49,
+    SYS_AUDIO_INFO = 50,
+    SYS_REBOOT = 51,
+    SYS_SHUTDOWN = 52
 };
 
 /* Unused argument registers are explicitly zeroed: the kernel inspects rdi/rsi/
