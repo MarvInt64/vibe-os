@@ -60,7 +60,8 @@ enum {
     SYS_AUDIO_WRITE = 49,
     SYS_AUDIO_INFO = 50,
     SYS_REBOOT = 51,
-    SYS_SHUTDOWN = 52
+    SYS_SHUTDOWN = 52,
+    SYS_GETPID = 53
 };
 
 /* Unused argument registers are explicitly zeroed: the kernel inspects rdi/rsi/

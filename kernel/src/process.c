@@ -2545,6 +2545,11 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 		return 0;
 	}
 
+	if (number == SYS_GETPID) {
+		frame->rax = (uint64_t)process->pid;
+		return 0;
+	}
+
 	frame->rax = (uint64_t)syscall_dispatch(&process->syscalls, number, frame->rdi, frame->rsi, frame->rdx, frame->r10, frame->r8, frame->r9);
 	return 0;
 }

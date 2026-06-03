@@ -98,7 +98,8 @@ enum syscall_number {
 	 * Returns 0 on success or <0 on error. */
 	SYS_AUDIO_INFO = 50,
 	SYS_REBOOT = 51,
-	SYS_SHUTDOWN = 52
+	SYS_SHUTDOWN = 52,
+	SYS_GETPID = 53
 };
 
 struct system_info_snapshot {

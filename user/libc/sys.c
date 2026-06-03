@@ -136,3 +136,22 @@ int vos_thread_join(int tid) {
     if (r < 0) { errno = (int)-r; return -1; }
     return status;
 }
+
+pid_t getpid(void) {
+    return (pid_t)ck(__sc0(SYS_GETPID));
+}
+
+unsigned int sleep(unsigned int seconds) {
+    vos_sleep_ticks((unsigned long)seconds * 100);
+    return 0;
+}
+
+int usleep(useconds_t usec) {
+    unsigned long ticks = ((unsigned long)usec + 9999) / 10000;
+    if (ticks > 0) {
+        vos_sleep_ticks(ticks);
+    } else {
+        __sc0(SYS_YIELD);
+    }
+    return 0;
+}
