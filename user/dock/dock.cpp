@@ -18,13 +18,14 @@ static const DockEntry kEntries[] = {
     {"Terminal", 4, 0x0064f2ccu, "/bin/terminal", "/icons/dock/terminal.svg"},
     {"DOOM",    3, 0x00e03030u, "/bin/doom",     0},
     {"Browser", 1, 0x006eb6ffu, "/bin/browser", "/icons/dock/browser.svg"},
+    {"Files", 5, 0x007ec8ffu, "/bin/filebrowser", "/icons/dock/filebrowser.svg"},
     {"Tasks", 2, 0x0076e0b5u, "/bin/taskmgr", "/icons/dock/taskmgr.svg"},
     {"Demo", 3, 0x00f4c36bu, "/bin/uidemo", 0},
     {"C++", 4, 0x008f7bf0u, "/bin/cpptest", "/icons/dock/terminal.svg"},
     {"Info", 2, 0x00a8c7ffu, "/bin/sysinfo", 0},
 };
 
-static vui_widget *sButtons[7];
+static vui_widget *sButtons[8];
 
 static void dock_on_tick(vui_window *win) {
     (void)win;

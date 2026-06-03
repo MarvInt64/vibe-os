@@ -148,6 +148,13 @@ apps: $(DISK_IMG) $(LIBC_A)
 		$(LIBC_CRT0) build/user/sysinfo.o build/user/vexui.o build/user/svg.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/sysinfo.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/sysinfo.elf /bin/sysinfo
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Ilib/svg -c user/filebrowser/filebrowser.cpp -o build/user/filebrowser.o
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Ilib/svg -c user/filebrowser/main.cpp        -o build/user/filebrowser_main.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/filebrowser.elf \
+		$(LIBC_CRT0) build/user/filebrowser.o build/user/filebrowser_main.o \
+		build/user/vexui.o build/user/svg.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/filebrowser.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/filebrowser.elf /bin/filebrowser
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/dock/dock.cpp -o build/user/dock.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/dock.elf \
 		$(LIBC_CRT0) build/user/dock.o build/user/vexui.o build/user/svg.o $(LIBC_A)
@@ -188,6 +195,7 @@ apps: $(DISK_IMG) $(LIBC_A)
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/default.vwp /wallpapers/default.vwp
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/wallpapers/default.png /wallpapers/default.png
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/browser.svg /icons/dock/browser.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/filebrowser.svg /icons/dock/filebrowser.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/taskmgr.svg /icons/dock/taskmgr.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/terminal.svg /icons/dock/terminal.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/search.svg /icons/search.svg
