@@ -28,10 +28,15 @@ def main():
     inodes_count   = min(1024, blocks_count // 4)
     inode_tbl_size = inodes_count * INODE_SIZE
     inode_tbl_blks = (inode_tbl_size + BS - 1) // BS
-    first_data     = 4 + inode_tbl_blks
+    # Block bitmap spans enough blocks to cover all blocks_count bits.
+    # Block 2+  = block bitmap;  next block = inode bitmap;  then inode table.
+    bb_blocks  = (blocks_count + 8 * BS - 1) // (8 * BS)
+    ib_block   = 2 + bb_blocks         # inode bitmap block
+    it_start   = ib_block + 1          # inode table starts here
+    first_data = it_start + inode_tbl_blks
 
-    # ---- block bitmap (one block, 1024 bytes = 8192 bits) ----
-    bm = bytearray(BS)
+    # ---- block bitmap (bb_blocks × 1024 bytes) ----
+    bm = bytearray(bb_blocks * BS)
     for i in range(first_data):
         bm[i // 8] |= 1 << (i % 8)
     free_blocks = blocks_count - first_data
@@ -92,11 +97,14 @@ def main():
         # Block 2: block bitmap
         f.seek(2 * BS)
         f.write(bytes(bm))
-        # Block 3: inode bitmap (padded to BS)
-        f.seek(3 * BS)
+        # Blocks 2..2+bb_blocks-1: block bitmap
+        f.seek(2 * BS)
+        f.write(bytes(bm))
+        # Block ib_block: inode bitmap (padded to BS)
+        f.seek(ib_block * BS)
         f.write(bytes(ibm).ljust(BS, b'\0'))
-        # Blocks 4..4+inode_tbl_blks-1: inode table
-        f.seek(4 * BS)
+        # Blocks it_start..it_start+inode_tbl_blks-1: inode table
+        f.seek(it_start * BS)
         f.write(bytes(itbl))
         # Root directory block
         f.seek(root_blk * BS)

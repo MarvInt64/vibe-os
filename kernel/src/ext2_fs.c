@@ -153,8 +153,14 @@ int ext2_format(struct ext2_filesystem *fs, struct ramdisk_device *device) {
     
     inode_table_size = fs->superblock.inodes_count * sizeof(struct ext2_inode);
     inode_table_blocks = (inode_table_size + fs->superblock.block_size - 1) / fs->superblock.block_size;
-    /* Metadata: 0 (boot), 1 (sb), 2 (block bitmap), 3 (inode bitmap), 4.. (inode table) */
-    fs->superblock.first_data_block = 4 + inode_table_blocks;
+    /* Layout: 0=boot 1=sb 2..2+bb_blks-1=block_bitmap ib_blk=inode_bitmap it_start..=inode_table */
+    {
+        uint32_t bb_blks = (fs->superblock.blocks_count + 8u * fs->superblock.block_size - 1u)
+                           / (8u * fs->superblock.block_size);
+        uint32_t ib_blk  = 2u + bb_blks;
+        uint32_t it_start = ib_blk + 1u;
+        fs->superblock.first_data_block = it_start + inode_table_blocks;
+    }
     
     fs->superblock.blocks_per_group = 8192;
     fs->superblock.inodes_per_group = 2048;

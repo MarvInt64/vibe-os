@@ -200,31 +200,33 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/cpptest.elf $(LIBC_CRT0) build/user/cpptest.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/cpptest.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/cpptest.elf /bin/cpptest
+	$(MAKE) doom
+	@echo "Installed apps to $(DISK_IMG). They load from disk at runtime."
+
+DOOM_SRCS := $(shell ls third_party/doomgeneric/doomgeneric/*.c 2>/dev/null \
+  | grep -v 'doomgeneric_\|i_sdl\|i_allegro\|i_sound\|i_music\|midifile\|mus2mid\|gusconf\|i_cd')
+DOOM_OBJS := $(patsubst third_party/doomgeneric/doomgeneric/%.c,build/user/doom/%.o,$(DOOM_SRCS)) \
+             build/user/doom/doomgeneric_vibeos.o build/user/doom/i_sound_stub.o
+DOOM_CFLAGS := $(UCFLAGS) $(LIBC_INC) \
+  -Ithird_party/doomgeneric/doomgeneric -Iuser/doom \
+  -DNOMIXER -DFEATURE_SOUND=0 \
+  -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter \
+  -Wno-missing-field-initializers -Wno-missing-braces \
+  -Wno-gnu-zero-variadic-macro-arguments -Wno-shift-negative-value \
+  -Wno-implicit-int-conversion -Wno-sign-conversion -Wno-conversion
+
+doom: $(DISK_IMG) $(LIBC_A)
 	@mkdir -p build/user/doom
-	$(eval DOOM_SRCS := $(shell ls third_party/doomgeneric/doomgeneric/*.c \
-	  | grep -v 'doomgeneric_\|i_sdl\|i_allegro\|i_sound\|i_music\|midifile\|mus2mid\|gusconf\|i_cd'))
-	$(eval DOOM_OBJS := $(patsubst third_party/doomgeneric/doomgeneric/%.c,build/user/doom/%.o,$(DOOM_SRCS)) build/user/doom/doomgeneric_vibeos.o)
-	$(foreach src,$(DOOM_SRCS),$(UCC) $(UCFLAGS) $(LIBC_INC) \
-		-Ithird_party/doomgeneric/doomgeneric -Iuser/doom \
-		-DNOMIXER -DFEATURE_SOUND=0 \
-		-Wno-unused-function -Wno-unused-variable -Wno-unused-parameter \
-		-Wno-missing-field-initializers -Wno-missing-braces \
-		-Wno-gnu-zero-variadic-macro-arguments -Wno-shift-negative-value \
-		-Wno-implicit-int-conversion -Wno-sign-conversion -Wno-conversion \
+	$(foreach src,$(DOOM_SRCS),$(UCC) $(DOOM_CFLAGS) \
 		-c $(src) -o $(patsubst third_party/doomgeneric/doomgeneric/%.c,build/user/doom/%.o,$(src)) &&) true
-	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ithird_party/doomgeneric/doomgeneric -Iuser/doom \
-		-DNOMIXER -DFEATURE_SOUND=0 \
-		-Wno-unused-function -Wno-unused-variable -Wno-unused-parameter \
-		-c user/doom/doomgeneric_vibeos.c -o build/user/doom/doomgeneric_vibeos.o
-	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ithird_party/doomgeneric/doomgeneric -Iuser/doom \
-		-Wno-unused-function -Wno-unused-parameter \
-		-c user/doom/i_sound_stub.c -o build/user/doom/i_sound_stub.o
+	$(UCC) $(DOOM_CFLAGS) -c user/doom/doomgeneric_vibeos.c -o build/user/doom/doomgeneric_vibeos.o
+	$(UCC) $(DOOM_CFLAGS) -c user/doom/i_sound_stub.c        -o build/user/doom/i_sound_stub.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/doom.elf \
-		$(LIBC_CRT0) $(DOOM_OBJS) build/user/doom/i_sound_stub.o $(LIBC_A)
+		$(LIBC_CRT0) $(DOOM_OBJS) $(LIBC_A)
 	$(USTRIP) --strip-all build/user/doom.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/doom.elf /bin/doom
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/doom1.wad /doom1.wad
-	@echo "Installed apps to $(DISK_IMG). They load from disk at runtime."
+	@echo "DOOM installed to $(DISK_IMG)."
 
 # Create a blank persistent disk image if it does not exist yet. No external
 # tools needed — the kernel formats it as ext2 on first boot.

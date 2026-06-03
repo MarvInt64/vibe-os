@@ -30,10 +30,15 @@ class Ext2:
             die("disk not formatted (magic=0x%x). Run 'make run' once to format it." % magic)
         if (1024 << self.log_block_size) != BS:
             die("unexpected block size")
-        # Bitmaps: kernel persists only block 2 (block bitmap) and block 3
-        # (inode bitmap), each one block (1024 bytes) — matches its behaviour.
-        self.block_bitmap = bytearray(self.read_block(2))
-        self.inode_bitmap = bytearray(self.read_block(3))
+        # Block bitmap spans as many consecutive blocks as needed (starting at
+        # block 2) to cover all blocks_count bits.  Inode bitmap follows.
+        bb_blocks = (self.blocks_count + 8 * BS - 1) // (8 * BS)
+        self.bb_start  = 2
+        self.ib_start  = 2 + bb_blocks
+        self.block_bitmap = bytearray()
+        for i in range(bb_blocks):
+            self.block_bitmap += bytearray(self.read_block(self.bb_start + i))
+        self.inode_bitmap = bytearray(self.read_block(self.ib_start))
 
     def read_block(self, n):
         self.f.seek(n * BS)
@@ -71,7 +76,7 @@ class Ext2:
 
     # ---- bitmaps ----
     def alloc_block(self):
-        for i in range(self.first_data_block, min(self.blocks_count, BS * 8)):
+        for i in range(self.first_data_block, self.blocks_count):
             if not (self.block_bitmap[i >> 3] & (1 << (i & 7))):
                 self.block_bitmap[i >> 3] |= (1 << (i & 7))
                 self.free_blocks -= 1
@@ -140,10 +145,11 @@ class Ext2:
         name_b = name.encode()
         needed = (8 + len(name_b) + 3) & ~3
         node = self.read_inode(dir_ino)
+        # Try existing direct blocks first.
         for i in range(12):
             b = self.inode_block(node, i)
             if b == 0:
-                continue
+                break
             blk = bytearray(self.read_block(b))
             off = 0
             while off < BS:
@@ -152,17 +158,35 @@ class Ext2:
                     break
                 used = (8 + name_len + 3) & ~3 if ino != 0 else 0
                 if rec_len >= used + needed:
-                    # split this entry's slack into a new entry
                     new_off = off + used
                     if ino != 0:
-                        struct.pack_into("<H", blk, off + 4, used)  # shrink prev
+                        struct.pack_into("<H", blk, off + 4, used)
                     new_rec = rec_len - used
                     struct.pack_into("<IHBB", blk, new_off, new_ino, new_rec, len(name_b), file_type)
                     blk[new_off + 8:new_off + 8 + len(name_b)] = name_b
                     self.write_block(b, bytes(blk))
                     return True
                 off += rec_len
-        die("no room in directory (no indirect-block support)")
+        # All existing blocks full — allocate a new direct block (up to block[11]).
+        for i in range(12):
+            b = self.inode_block(node, i)
+            if b == 0:
+                nb = self.alloc_block()
+                if nb is None:
+                    die("no free blocks while extending directory")
+                new_blk = bytearray(BS)
+                struct.pack_into("<IHBB", new_blk, 0, new_ino, BS, len(name_b), file_type)
+                new_blk[8:8 + len(name_b)] = name_b
+                self.write_block(nb, bytes(new_blk))
+                ib = bytearray(self.read_inode(dir_ino))
+                struct.pack_into("<I", ib, 40 + i * 4, nb)
+                node_size = struct.unpack_from("<I", ib, 4)[0]
+                struct.pack_into("<I", ib, 4, node_size + BS)
+                blks = struct.unpack_from("<I", ib, 28)[0]
+                struct.pack_into("<I", ib, 28, blks + BS // 512)
+                self.write_inode(dir_ino, bytes(ib))
+                return True
+        die("no room in directory (all 12 direct blocks full)")
 
     def mkdir(self, parent_ino, name):
         """Create an empty directory `name` under parent_ino; return its inode."""
@@ -192,9 +216,11 @@ class Ext2:
         return ino
 
     def flush_meta(self):
-        # write bitmaps back
-        self.write_block(2, bytes(self.block_bitmap))
-        self.write_block(3, bytes(self.inode_bitmap))
+        # write block bitmap back (may span multiple blocks)
+        for i in range(0, len(self.block_bitmap), BS):
+            self.write_block(self.bb_start + i // BS, bytes(self.block_bitmap[i:i+BS]))
+        # write inode bitmap
+        self.write_block(self.ib_start, bytes(self.inode_bitmap))
         # update free counts in superblock
         sb = bytearray(self.read_block(1))
         struct.pack_into("<I", sb, 0x0C, self.free_blocks & 0xffffffff)
