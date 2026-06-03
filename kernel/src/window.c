@@ -953,13 +953,30 @@ static void draw_desktop_launcher_icon(struct desktop_state *desktop, struct fra
 }
 
 static void draw_cursor(struct desktop_state *desktop, struct framebuffer *fb, int x, int y) {
-    int size = large_ui(desktop) ? 24 : 18;
+    /* 12x16 arrow pointer bitmap */
+    static const uint16_t cursor_mask[] = {
+        0x8000, 0xC000, 0xE000, 0xF000, 0xF800, 0xFC00, 0xFE00, 
+        0xFF00, 0xFC00, 0xDC00, 0x8C00, 0x0C00, 0x0000
+    };
+    
+    /* Draw outline (offset for shadow/border) */
+    for (int row = 0; row < 13; ++row) {
+        for (int col = 0; col < 12; ++col) {
+            if (cursor_mask[row] & (0x8000 >> col)) {
+                /* Outline shadow */
+                fb_fill_rect(fb, x + col + 1, y + row + 1, 1, 1, 0x00000000u);
+            }
+        }
+    }
 
-    fb_fill_rect(fb, x, y, 3, size, 0x00ffffffu);
-    fb_fill_rect(fb, x + 3, y + 3, 3, size - 5, 0x00ffffffu);
-    fb_fill_rect(fb, x + 6, y + 6, 3, size - 11, 0x00ffffffu);
-    fb_fill_rect(fb, x + 9, y + 9, 3, size - 17, 0x00ffffffu);
-    fb_fill_rect(fb, x + 1, y + 1, 1, size - 1, 0x00000000u);
+    /* Draw body (white) */
+    for (int row = 0; row < 13; ++row) {
+        for (int col = 0; col < 12; ++col) {
+            if (cursor_mask[row] & (0x8000 >> col)) {
+                fb_fill_rect(fb, x + col, y + row, 1, 1, 0x00ffffffu);
+            }
+        }
+    }
 }
 
 /* Grow a user slot's surface buffer to at least w*h pixels (grow-only, so

@@ -364,11 +364,55 @@ static int svg_path_cmd(char ch) {
 }
 
 /* Parse a path "d" string (user coords) into flattened subpaths. */
+/* Minimal math implementations for freestanding environment. */
+static float svg_fabsf(float x) { return x < 0 ? -x : x; }
+static float svg_sinf(float x) {
+    /* Taylor series sin(x) approx */
+    float x2 = x * x;
+    return x - x2 * x / 6.0f + x2 * x2 * x / 120.0f;
+}
+static float svg_cosf(float x) {
+    /* Taylor series cos(x) approx */
+    float x2 = x * x;
+    return 1.0f - x2 / 2.0f + x2 * x2 / 24.0f;
+}
+static float svg_tanf(float x) { return svg_sinf(x) / svg_cosf(x); }
+static float svg_ceilf(float x) {
+    int i = (int)x;
+    return (x > (float)i) ? (float)(i + 1) : (float)i;
+}
+
+static void svg_geo_arc(float cx, float cy, float rx, float ry,
+                        float start_angle, float sweep_angle) {
+    /* Approximate arc with cubic Bezier curves (up to 90 degrees per segment). */
+    int n_segs = (int)(svg_ceilf(svg_fabsf(sweep_angle) / (3.14159f / 2.0f)));
+    if (n_segs == 0) n_segs = 1;
+    float seg_sweep = sweep_angle / n_segs;
+    float start_a = start_angle;
+
+    for (int i = 0; i < n_segs; ++i) {
+        float a = start_a + i * seg_sweep;
+        /* Bezier approximation constants for 90 degree arc */
+        float kappa = 4.0f / 3.0f * svg_tanf(seg_sweep / 4.0f);
+        float cos_a = svg_cosf(a), sin_a = svg_sinf(a);
+        float cos_a2 = svg_cosf(a + seg_sweep), sin_a2 = svg_sinf(a + seg_sweep);
+
+        float x0 = cx + rx * cos_a, y0 = cy + ry * sin_a;
+        float x1 = x0 + rx * kappa * (-sin_a), y1 = y0 + ry * kappa * cos_a;
+        float x2 = cx + rx * cos_a2 + rx * kappa * sin_a2;
+        float y2 = cy + ry * sin_a2 - ry * kappa * cos_a2;
+        float x3 = cx + rx * cos_a2, y3 = cy + ry * sin_a2;
+
+        svg_geo_curve(x0, y0, x1, y1, x2, y2, x3, y3);
+    }
+}
+
 static void svg_parse_path(const char *p, const char *end) {
     char cmd = 0;
     float cx = 0, cy = 0, sx = 0, sy = 0;
+    float last_cp_x = 0, last_cp_y = 0;
     while (p && p < end && *p) {
-        float x, y, x1, y1, x2, y2;
+        float x, y, x1, y1, x2, y2, rx, ry, rot, large, sweep;
         while (p < end && svg_is_space(*p)) ++p;
         if (p >= end || *p == '"') break;
         if (svg_path_cmd(*p)) {
@@ -380,25 +424,50 @@ static void svg_parse_path(const char *p, const char *end) {
             if (cmd == 'm') { x += cx; y += cy; }
             svg_geo_moveto(x, y);
             cx = sx = x; cy = sy = y;
+            last_cp_x = cx; last_cp_y = cy;
             cmd = (cmd == 'm') ? 'l' : 'L';
         } else if (cmd == 'L' || cmd == 'l') {
             if (!svg_parse_f(&p, &x) || !svg_parse_f(&p, &y)) break;
             if (cmd == 'l') { x += cx; y += cy; }
             svg_geo_lineto(x, y); cx = x; cy = y;
+            last_cp_x = cx; last_cp_y = cy;
         } else if (cmd == 'H' || cmd == 'h') {
             if (!svg_parse_f(&p, &x)) break;
             if (cmd == 'h') x += cx;
             svg_geo_lineto(x, cy); cx = x;
+            last_cp_x = cx; last_cp_y = cy;
         } else if (cmd == 'V' || cmd == 'v') {
             if (!svg_parse_f(&p, &y)) break;
             if (cmd == 'v') y += cy;
             svg_geo_lineto(cx, y); cy = y;
+            last_cp_x = cx; last_cp_y = cy;
         } else if (cmd == 'C' || cmd == 'c') {
             if (!svg_parse_f(&p, &x1) || !svg_parse_f(&p, &y1) ||
                 !svg_parse_f(&p, &x2) || !svg_parse_f(&p, &y2) ||
                 !svg_parse_f(&p, &x)  || !svg_parse_f(&p, &y)) break;
             if (cmd == 'c') { x1 += cx; y1 += cy; x2 += cx; y2 += cy; x += cx; y += cy; }
-            svg_geo_curve(cx, cy, x1, y1, x2, y2, x, y); cx = x; cy = y;
+            svg_geo_curve(cx, cy, x1, y1, x2, y2, x, y);
+            last_cp_x = x2; last_cp_y = y2;
+            cx = x; cy = y;
+        } else if (cmd == 'S' || cmd == 's') {
+            if (!svg_parse_f(&p, &x2) || !svg_parse_f(&p, &y2) ||
+                !svg_parse_f(&p, &x)  || !svg_parse_f(&p, &y)) break;
+            if (cmd == 's') { x2 += cx; y2 += cy; x += cx; y += cy; }
+            x1 = cx + (cx - last_cp_x);
+            y1 = cy + (cy - last_cp_y);
+            svg_geo_curve(cx, cy, x1, y1, x2, y2, x, y);
+            last_cp_x = x2; last_cp_y = y2;
+            cx = x; cy = y;
+        } else if (cmd == 'A' || cmd == 'a') {
+            /* Arc handling is simplified: assumes circular arcs for now */
+            if (!svg_parse_f(&p, &rx) || !svg_parse_f(&p, &ry) || !svg_parse_f(&p, &rot) ||
+                !svg_parse_f(&p, &large) || !svg_parse_f(&p, &sweep) ||
+                !svg_parse_f(&p, &x) || !svg_parse_f(&p, &y)) break;
+            if (cmd == 'a') { x += cx; y += cy; }
+            /* This is a simplified approximation */
+            svg_geo_lineto(x, y);
+            last_cp_x = x; last_cp_y = y;
+            cx = x; cy = y;
         } else break;
     }
 }

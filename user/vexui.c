@@ -670,7 +670,7 @@ vui_widget *vui_canvas_ex(vui_window *w, int x, int y, int width, int height, vu
 vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels, int active) {
     vui_widget *wd = new_widget(w, W_TABS);
     if (!wd) return 0;
-    wd->x=x; wd->y=y; wd->w=width; wd->h=28; scopy(wd->text, labels?labels:"", sizeof(wd->text));
+    wd->x=x; wd->y=y; wd->w=width; wd->h=34; scopy(wd->text, labels?labels:"", sizeof(wd->text));
     wd->value=active; init_margins(wd); w->dirty=1; return wd;
 }
 vui_widget *vui_pill_button(vui_window *w, int x, int y, const char *t) {
@@ -811,11 +811,26 @@ int vui_set_icon_svg_path(vui_widget *wd, const char *path){
     s = icon_slot_for(wd);
     if(s < 0) return -1;
     fd = (int)sc1(SYS_OPEN, (uint64_t)(size_t)path);
-    if(fd < 0) { g_icon_store[s][0] = 0; return fd; }
+    if(fd < 0) { 
+        g_icon_store[s][0] = 0; 
+        /* Log error to serial for debugging */
+        const char *err = "vexui: failed to open SVG icon: ";
+        sc3(SYS_WRITE, 1, (uint64_t)(size_t)err, (uint64_t)slen(err));
+        sc3(SYS_WRITE, 1, (uint64_t)(size_t)path, (uint64_t)slen(path));
+        sc3(SYS_WRITE, 1, (uint64_t)(size_t)"\n", 1);
+        return fd; 
+    }
     n = (int)sc3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)g_icon_store[s],
                  (uint64_t)(VUI_ICON_SLOT_SZ - 1));
     sc1(SYS_CLOSE, (uint64_t)fd);
-    if(n <= 0) { g_icon_store[s][0] = 0; return -1; }
+    if(n <= 0) { 
+        g_icon_store[s][0] = 0; 
+        const char *err = "vexui: failed to read SVG icon: ";
+        sc3(SYS_WRITE, 1, (uint64_t)(size_t)err, (uint64_t)slen(err));
+        sc3(SYS_WRITE, 1, (uint64_t)(size_t)path, (uint64_t)slen(path));
+        sc3(SYS_WRITE, 1, (uint64_t)(size_t)"\n", 1);
+        return -1; 
+    }
     if(n >= VUI_ICON_SLOT_SZ) n = VUI_ICON_SLOT_SZ - 1;
     g_icon_store[s][n] = 0;
     dmg_add(wd->x,wd->y,wd->w,wd->h);
@@ -1355,23 +1370,22 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
                                                    : mix(g_theme.text_dim, accent, 1u, 2u);
         int tx = wd->x + (wd->w - text_px(wd->text, 1)) / 2;
         int ty = wd->y + (wd->h - 16) / 2;
-        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, g_theme.radius + 1, fill, bd);
-        rect(w, wd->x + g_theme.radius, wd->y + 1, wd->w - 2 * g_theme.radius, 1, glass(0x00ffffffu, 32u));
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, 4, fill, bd);
+        // rect(w, wd->x + 2, wd->y + 1, wd->w - 4, 1, glass(0x00ffffffu, 32u));
         text(w, tx, ty, wd->text, tcol);
         break; }
     case W_PILLBTN: {
         /* Fully-rounded pill button (tags: Docs/Releases/Status …). Faint glass
          * fill at rest; accent-tinted on hover. */
         uint32_t accent = wd->color ? wd->color : g_theme.accent;
-        int r = wd->h / 2;
         uint32_t fill = (wd->hover || wd->pressed) ? glass(mix(g_theme.surface, accent, 1u, 5u), 230u)
                                                     : glass(mix(g_theme.surface, 0x00ffffffu, 1u, 16u), 190u);
         uint32_t bd = (wd->hover || wd->pressed) ? mix(g_theme.surface, accent, 1u, 2u)
                                                   : mix(g_theme.surface, 0x00cfe2f5u, 1u, 5u);
         int tx = wd->x + (wd->w - text_px(wd->text, 1)) / 2;
         int ty = wd->y + (wd->h - 16) / 2;
-        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, r, fill, bd);
-        rect(w, wd->x + r / 2, wd->y + 1, wd->w - r, 1, glass(0x00ffffffu, 30u));
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, 4, fill, bd);
+        rect(w, wd->x + 2, wd->y + 1, wd->w - 4, 1, glass(0x00ffffffu, 30u));
         text(w, tx, ty, wd->text, (wd->hover || wd->pressed) ? g_theme.text : g_theme.text_dim);
         break; }
     case W_TILE: {
@@ -1427,14 +1441,13 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         uint32_t bd  = (focused || wd->hover) ? mix(g_theme.surface, g_theme.accent, 1u, 2u)
                                               : glass(g_theme.border, 165u);
         fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, g_theme.radius + 1, ibg, bd);
-        rect(w, wd->x + g_theme.radius, wd->y + 1, wd->w - 2 * g_theme.radius, 1, glass(0x00ffffffu, 18u));
-        /* small magnifier, centred with the text */
-        line_h(w, wd->x + 12, cy + 3, 5, g_theme.text_dim);
-        line_h(w, wd->x + 12, cy + 8, 5, g_theme.text_dim);
-        line_v(w, wd->x + 11, cy + 4, 4, g_theme.text_dim);
-        line_v(w, wd->x + 17, cy + 4, 4, g_theme.text_dim);
-        put(w, wd->x + 18, cy + 9, g_theme.text_dim);
-        put(w, wd->x + 19, cy + 10, g_theme.text_dim);
+        // rect(w, wd->x + g_theme.radius, wd->y + 1, wd->w - 2 * g_theme.radius, 1, glass(0x00ffffffu, 18u)); no top white border
+        /* Magnifier icon. */
+        const char *isvg = widget_icon(wd);
+        if (isvg) {
+            int icon_size = 16;
+            draw_svg_icon(w, wd->x + 10, wd->y + (wd->h - icon_size) / 2, icon_size, isvg, 0x00ffffffu);
+        }
         /* Typed value (bright) or placeholder (dim); blinking-less caret. */
         if (wd->text[0]) {
             text(w, tx, cy, wd->text, g_theme.text);
@@ -1472,13 +1485,13 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
                 label[li++] = wd->text[seg_start++];
             label[li] = 0;
             if (active) {
-                fill_round_rect(w, sx + 6, wd->y + 4, sw - 12, wd->h - 8, g_theme.radius,
+                fill_round_rect(w, sx + 6, wd->y + 4, sw - 12, wd->h - 8, 4,
                                 glass(mix(g_theme.surface, g_theme.accent, 1u, 6u), 180u),
                                 mix(g_theme.surface, g_theme.accent, 1u, 3u));
-                fill_round_rect(w, sx + 14, wd->y + wd->h - 4, sw - 28, 2, 1,
+                fill_round_rect(w, sx + 14, wd->y + wd->h - 6, sw - 28, 2, 1,
                                 g_theme.accent, g_theme.accent);
             }
-            text(w, sx + (sw - text_px(label, 1)) / 2, wd->y + 6, label,
+            text(w, sx + (sw - text_px(label, 1)) / 2, wd->y + (wd->h - 16) / 2, label,
                  active ? g_theme.text : g_theme.text_dim);
         }
         break; }
@@ -1501,7 +1514,7 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         int ix = wd->x + wd->w / 2;             /* indicator left edge */
         int iw = wd->w - (ix - wd->x) - 14;
         fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, g_theme.radius + 2, glass(g_theme.surface, 224u), bd);
-        rect(w, wd->x + g_theme.radius, wd->y + 1, wd->w - 2 * g_theme.radius, 1, glass(0x00ffffffu, 24u));
+        // rect(w, wd->x + g_theme.radius, wd->y + 1, wd->w - 2 * g_theme.radius, 1, glass(0x00ffffffu, 24u));
         text(w, wd->x + 14, wd->y + 10, wd->mtitle, g_theme.text_dim);
         text_scaled(w, wd->x + 14, wd->y + 28, wd->text, accent, 2);
         text(w, wd->x + 14, wd->y + wd->h - 18, wd->msub, g_theme.text_dim);

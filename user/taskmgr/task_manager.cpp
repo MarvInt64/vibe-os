@@ -1,6 +1,7 @@
 #include "task_manager.h"
 #include "process_state.h"
 #include "string_builder.h"
+#include "layout.h"
 #include <sys/syscall.h>
 #include <vibeos.h>
 
@@ -35,27 +36,29 @@ void __attribute__((noreturn)) TaskManager::run() {
 void TaskManager::build_ui() {
     /* ---- Metric cards: self-contained vui_metric widgets (big value + chart) */
     total_label_  = vui_metric(window_,  16, 14, 144, 84, "PROCESSES", 0);
-    mem_label_    = vui_metric(window_, 168, 14, 144, 84, "MEMORY",    1);  /* progress bar */
-    ready_label_  = vui_metric(window_, 320, 14, 144, 84, "THREADS",   0);
+    cpu_label_    = vui_metric(window_, 168, 14, 144, 84, "CPU",       0);  /* chart */
+    mem_label_    = vui_metric(window_, 320, 14, 144, 84, "MEMORY",    1);  /* progress bar */
     status_label_ = vui_metric(window_, 472, 14, 152, 84, "UPTIME",    2);  /* value only */
     vui_set_color(total_label_,  VUI_ACCENT);
+    vui_set_color(cpu_label_,    VUI_ACCENT);
     vui_set_color(mem_label_,    VUI_WARN);
-    vui_set_color(ready_label_,  VUI_OK);
     vui_set_color(status_label_, VUI_ACCENT);
 
     /* ---- Navigation/search strip ---------------------------------------- */
-    auto *tabs = vui_tabs(window_, 16, 112, 392, "PROCESSES|SYSTEM|SERVICES|PERFORMANCE", 0);
+    auto *tabs = vui_tabs(window_, 16, 112, 400, "PROCESSES|SYSTEM|SERVICES|NETWORK", 0);
     vui_set_anchor(tabs, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
 
     search_ = vui_input(window_, 422, 113, 202, "Search processes...");
+    vui_set_icon_svg_path(search_, "/icons/search.svg");
     vui_set_anchor(search_, VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
     vui_on_click(search_, on_search_cb);   /* re-filter as the user types */
 
-    /* ---- Process table: no bordered panel (the reference has none) — just a
+    /* Process table: no bordered panel (the reference has none) — just a
      * header row, a thin underline, then the rows on the window surface. ---- */
     auto *headers = vui_hbox(window_, 30, 164, 580, 16);
     vui_set_anchor(headers, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
-    vui_set_gap(headers, 6);
+    vui_set_gap(headers, Layout::kRowGap);
+    vui_set_padding(headers, Layout::kRowPadding);
 
     /* Column headers — widths mirror the per-row columns in process_row.cpp
      * (NAME expands; USER 56, STATUS 76, CPU 52, MEM 80, ACTION 52). */
@@ -64,24 +67,25 @@ void TaskManager::build_ui() {
     vui_box_add(headers, h_name);
 
     auto *h_user = vui_label(window_, 0, 0, "USER");
-    vui_set_size(h_user, 56, 0);
+    vui_set_size(h_user, Layout::kUserWidth, 0);
     vui_box_add(headers, h_user);
 
     auto *h_state = vui_label(window_, 0, 0, "STATUS");
-    vui_set_size(h_state, 76, 0);
+    vui_set_size(h_state, Layout::kStateWidth, 0);
     vui_box_add(headers, h_state);
 
     auto *h_cpu = vui_label(window_, 0, 0, "CPU");
-    vui_set_size(h_cpu, 52, 0);
+    vui_set_size(h_cpu, Layout::kCpuWidth, 0);
     vui_box_add(headers, h_cpu);
 
     auto *h_mem = vui_label(window_, 0, 0, "MEM");
-    vui_set_size(h_mem, 80, 0);
+    vui_set_size(h_mem, Layout::kMemWidth, 0);
     vui_box_add(headers, h_mem);
 
     auto *h_action = vui_label(window_, 0, 0, "ACTION");
-    vui_set_size(h_action, 52, 0);
+    vui_set_size(h_action, Layout::kKillWidth, 0);
     vui_box_add(headers, h_action);
+
 
     /* Process-rows VBox — fills the remaining panel area on all sides. */
     rows_vbox_ = vui_vbox(window_, 30, 188, 580, 210);
@@ -113,6 +117,7 @@ static bool name_matches(const char *name, const char *q) {
 void TaskManager::refresh() {
     unsigned int  loaded = 0, ready = 0, sleeping = 0, total_threads = 0;
     unsigned long total_mem = 0;
+    unsigned long total_cpu_tenths = 0;
     int row = 0;   /* pack active processes into the top rows (no gaps) */
 
     struct vos_system_info info{};
@@ -158,6 +163,7 @@ void TaskManager::refresh() {
         if (query[0] && !name_matches(p.name, query)) continue;
         if (row < kRows)
             rows_[row++].update(p, cpu_tenths);
+        total_cpu_tenths += cpu_tenths;
     }
     prev_uptime_ = info.uptime_ticks;
     for (int r = row; r < kRows; ++r) rows_[r].hide();
@@ -170,6 +176,15 @@ void TaskManager::refresh() {
         StringBuilder<24> s; s.append("of ").append(pmax);
         vui_set_metric(total_label_, v.c_str(), s.c_str());
         vui_metric_push(total_label_, pmax ? (int)(loaded * 100u / pmax) : 0);
+    }
+    /* CPU: total utilisation %. */
+    {
+        unsigned int cpu_pct = (unsigned int)(total_cpu_tenths / 10);
+        StringBuilder<16> v;
+        v.append(cpu_pct);
+        v.append("%");
+        vui_set_metric(cpu_label_, v.c_str(), "utilisation");
+        vui_metric_push(cpu_label_, (int)cpu_pct);
     }
     /* MEMORY: heap used %, used / total, with a progress bar. */
     {
@@ -209,12 +224,9 @@ void TaskManager::set_status(const char *text, vui_u32 color) {
 /* ---- Static callbacks -------------------------------------------------- */
 
 void TaskManager::on_kill_cb(vui_widget *self) {
-    /* Recover the slot index stored in the button's user pointer. */
-    int slot = static_cast<int>(
+    /* Recover the PID stored in the button's user pointer. */
+    unsigned int pid = static_cast<unsigned int>(
         reinterpret_cast<unsigned long>(vui_get_user(self)));
-    if (slot < 0 || slot >= VUI_PROCESS_MAX) return;
-
-    unsigned int pid = s_instance_->rows_[slot].pid();
     if (pid == 0) return;
 
     int result = vui_process_kill(pid);

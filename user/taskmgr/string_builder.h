@@ -22,7 +22,7 @@ public:
         char tmp[22];
         int n = 0;
         while (v && n < (int)sizeof(tmp)) { tmp[n++] = '0' + (int)(v % 10); v /= 10; }
-        while (n--) { if (len_ + 1 < Cap) buf_[len_++] = tmp[n + 1]; }
+        while (n--) { if (len_ + 1 < Cap) buf_[len_++] = tmp[n]; }
         buf_[len_] = '\0';
         return *this;
     }

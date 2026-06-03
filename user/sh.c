@@ -23,6 +23,7 @@
 #define SYS_JOURNAL_READ 32
 #define SYS_MKDIR 26
 #define SYS_DISPLAY_MODE 27
+#define SYS_SYSTEM_INFO 39
 
 typedef unsigned long size_t;
 typedef long ssize_t;
@@ -38,6 +39,18 @@ struct net_info {
     uint32_t ip;
     uint32_t netmask;
     uint32_t gateway;
+};
+
+struct system_info_snapshot {
+    uint64_t uptime_ticks;
+    uint32_t timer_hz;
+    uint32_t process_count;
+    uint32_t process_max;
+    uint32_t app_window_max;
+    uint64_t heap_used_bytes;
+    uint64_t heap_total_bytes;
+    char version[16];
+    char build[32];
 };
 
 static inline ssize_t syscall4(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
@@ -167,7 +180,13 @@ static void show_help(void) {
 }
 
 static void show_about(void) {
-	write_line("VibeOS Shell v2.0");
+    struct system_info_snapshot info;
+    if (syscall1(SYS_SYSTEM_INFO, (uint64_t)(size_t)&info) == 0) {
+        write_str("VibeOS Kernel v");
+        write_line(info.version);
+    } else {
+        write_line("VibeOS Kernel version unavailable");
+    }
 }
 
 static void cmd_clear(void) {

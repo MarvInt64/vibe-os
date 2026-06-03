@@ -92,7 +92,10 @@ $(BEARSSL_LIB): $(BEARSSL_OBJS)
 
 bearssl: $(BEARSSL_LIB)
 
-.PHONY: all kernel iso run run-debug run-serial clean user disk newdisk apps libc bearssl
+.PHONY: all kernel iso run run-debug run-serial clean user disk newdisk apps libc bearssl bump-version
+
+bump-version:
+	@./scripts/bump_version.sh
 
 # Userspace app toolchain (separate ELF binaries, NOT compiled into the kernel).
 UCC := clang
@@ -187,6 +190,7 @@ apps: $(DISK_IMG) $(LIBC_A)
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/browser.svg /icons/dock/browser.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/taskmgr.svg /icons/dock/taskmgr.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/terminal.svg /icons/dock/terminal.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/search.svg /icons/search.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/vibeos-logo.svg /icons/vibeos-logo.svg
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/hello.c -o build/user/hello.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/hello.elf $(LIBC_CRT0) build/user/hello.o $(LIBC_A)
@@ -240,7 +244,7 @@ newdisk:
 	rm -f $(DISK_IMG)
 	$(MAKE) disk
 
-all: kernel
+all: bump-version kernel apps
 
 user:
 	@mkdir -p build/user
@@ -300,3 +304,8 @@ $(OUT_DIR)/kernel/%.o: kernel/src/%.S
 # Without this, changing a struct in a header left stale objects with a
 # mismatched layout — a memory-corruption heisenbug (e.g. a frozen cursor).
 -include $(KERNEL_OBJECTS:.o=.d)
+
+$(KERNEL_OBJECTS): kernel/include/version.h
+
+kernel/include/version.h:
+	@$(MAKE) bump-version

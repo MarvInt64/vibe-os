@@ -14,6 +14,7 @@
 #include "vfs.h"
 #include "window.h"
 #include "winsys.h"
+#include "version.h"
 
 /* Provided by kernel.c: the live compositor, or 0 if the GUI isn't running. */
 struct desktop_state *desktop_active(void);
@@ -1994,7 +1995,7 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         out->app_window_max = MAX_USER_APPS;
         out->heap_used_bytes = kmalloc_get_used();
         out->heap_total_bytes = kmalloc_get_total();
-        process_write_user_string(out->version, sizeof(out->version), "0.2");
+        process_write_user_string(out->version, sizeof(out->version), VERSION_STRING);
         process_write_user_string(out->build, sizeof(out->build), __DATE__ " " __TIME__);
         frame->rax = 0;
         return 0;

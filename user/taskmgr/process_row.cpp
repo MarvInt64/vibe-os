@@ -1,19 +1,20 @@
 #include "process_row.h"
 #include "process_state.h"
 #include "string_builder.h"
+#include "layout.h"
 
 /* Widget geometry constants — keep them in one place so the whole row
  * can be adjusted without hunting through the code. */
-static constexpr int kTopRowHeight  = 20;
+static constexpr int kTopRowHeight  = Layout::kRowHeight;
 /* Columns: NAME(expand) | USER | STATUS | CPU | MEM | KILL — widths mirror the
  * header HBox in task_manager.cpp::build_ui. */
-static constexpr int kUserWidth     = 56;
-static constexpr int kStateWidth    = 76;
-static constexpr int kCpuWidth      = 52;
-static constexpr int kMemWidth      = 80;
-static constexpr int kKillWidth     = 52;
-static constexpr int kRowPadding    = 3;
-static constexpr int kRowGap        = 6;
+static constexpr int kUserWidth     = Layout::kUserWidth;
+static constexpr int kStateWidth    = Layout::kStateWidth;
+static constexpr int kCpuWidth      = Layout::kCpuWidth;
+static constexpr int kMemWidth      = Layout::kMemWidth;
+static constexpr int kKillWidth     = Layout::kKillWidth;
+static constexpr int kRowPadding    = Layout::kRowPadding;
+static constexpr int kRowGap        = Layout::kRowGap;
 
 /* RAM colour thresholds (bytes): green under 8 MB, amber under 20 MB, red above.
  * The browser's static umalloc heap pushes it into the red, which is useful
@@ -130,6 +131,7 @@ void ProcessRow::update(const vui_process_info &p, int cpu_tenths) {
 
     /* The running process is the scheduler — disallow killing it. */
     vui_set_visible(kill_button_, s != ProcessState::Running ? 1 : 0);
+    vui_set_user(kill_button_, reinterpret_cast<void *>(static_cast<unsigned long>(p.pid)));
 
     vui_set_visible(row_vbox_,     1);
     vui_set_visible(name_label_,   1);
