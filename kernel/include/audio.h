@@ -54,8 +54,11 @@ struct ac97_buffer_descriptor {
     uint32_t control;
 } __attribute__((packed));
 
-/* Software ring buffer for PCM submission */
-#define AUDIO_RING_SIZE  65536  /* ~340ms at 48kHz stereo 16-bit */
+/* Per-process voice mixer: each process that submits audio gets an
+ * independent ring buffer.  audio_tick() sums all active voices together
+ * before feeding the DMA engine so multiple apps play simultaneously. */
+#define AUDIO_VOICES     4      /* max simultaneous audio-producing processes */
+#define AUDIO_RING_SIZE  32768  /* per-voice ring: ~170 ms at 48kHz stereo 16-bit */
 
 /* Diagnostic snapshot of the audio device + driver state. Mirrored byte-for-byte
  * by struct audio_info in user/libc/include/audio.h (SYS_AUDIO_INFO). */
@@ -82,7 +85,11 @@ struct audio_info {
 };
 
 void audio_init(void);
-int  audio_write(const void *data, uint32_t bytes);
+/* Write PCM for the given process pid.  Each pid gets its own voice slot so
+ * multiple processes can play audio simultaneously without corruption. */
+int  audio_write(uint32_t pid, const void *data, uint32_t bytes);
+/* Release the voice held by pid (called when a process exits). */
+void audio_release_voice(uint32_t pid);
 void audio_tick(void);
 int  audio_present(void);
 void audio_get_info(struct audio_info *info);

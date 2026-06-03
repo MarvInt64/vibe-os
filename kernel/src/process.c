@@ -355,6 +355,10 @@ static void process_reap(struct process *process) {
         }
     }
 
+    /* Release any audio voice held by this process so the slot can be reused
+     * by the next process that wants to play audio. */
+    audio_release_voice(process->pid);
+
     process->loaded = 0;
     process->state = PROCESS_STATE_EMPTY;
     process->pid = 0;
@@ -2560,7 +2564,7 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 		if (buf == 0 || bytes == 0) {
 			frame->rax = (uint64_t)(-SYSCALL_EINVAL);
 		} else {
-			frame->rax = (uint64_t)(int64_t)audio_write(buf, bytes);
+			frame->rax = (uint64_t)(int64_t)audio_write(process->pid, buf, bytes);
 		}
 		return 0;
 	}

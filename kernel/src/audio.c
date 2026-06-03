@@ -53,22 +53,127 @@ static uint16_t g_vendor_id = 0;
 static uint16_t g_device_id = 0;
 static uint8_t  g_pci_bus = 0;
 static uint8_t  g_pci_slot = 0;
-/* Running count of buffers the engine drained that we had to pad with silence
- * (ring underruns). Surfaced via audio_get_info() for diagnostics. */
 static uint32_t g_underruns = 0;
 
 /* Buffer descriptors and PCM buffers in BSS (identity-mapped = phys addr) */
 static struct ac97_buffer_descriptor g_bdl[AC97_BD_COUNT] __attribute__((aligned(8)));
 static uint8_t g_pcm_bufs[AC97_BD_COUNT][AC97_BD_BYTES] __attribute__((aligned(128)));
 
-/* Software ring buffer for userspace PCM submission */
-static uint8_t g_ring[AUDIO_RING_SIZE];
-static volatile uint32_t g_ring_head;
-static volatile uint32_t g_ring_tail;
-
-/* Index of the next free buffer descriptor to hand to the hardware. The buffers
- * the DMA still has to play are [CIV .. g_head_bd-1]. */
+/* Index of the next free buffer descriptor to hand to the hardware. */
 static int g_head_bd;
+
+/* ---- Per-process voice ring buffers ----------------------------------------
+ *
+ * Each process that submits audio gets its own ring buffer (a "voice").
+ * audio_tick() reads from all active voices, sums the int16 samples, clamps
+ * to [-32768, 32767], and writes the result to the DMA engine.  This lets
+ * multiple apps (e.g., two DOOM instances) play simultaneously without
+ * corrupting each other's PCM data.
+ *
+ * Voice slot 0 is reserved for the legacy single-pid path if needed.
+ * pid == 0 means the slot is free. */
+struct audio_voice {
+    uint32_t         pid;               /* owning process (0 = free) */
+    uint8_t          ring[AUDIO_RING_SIZE];
+    volatile uint32_t head;             /* write pointer */
+    volatile uint32_t tail;             /* read pointer  */
+};
+
+static struct audio_voice g_voices[AUDIO_VOICES];
+
+/* ---- Voice ring helpers -------------------------------------------------- */
+
+static uint32_t voice_available(const struct audio_voice *v) {
+    uint32_t h = v->head, t = v->tail;
+    return (h >= t) ? (h - t) : (AUDIO_RING_SIZE - t + h);
+}
+
+static uint32_t voice_free(const struct audio_voice *v) {
+    return AUDIO_RING_SIZE - 1 - voice_available(v);
+}
+
+static void voice_write(struct audio_voice *v, const void *data, uint32_t bytes) {
+    uint32_t head = v->head;
+    uint32_t first = AUDIO_RING_SIZE - head;
+    if (bytes > first) {
+        memcpy(v->ring + head, data, first);
+        memcpy(v->ring, (const uint8_t *)data + first, bytes - first);
+    } else {
+        memcpy(v->ring + head, data, bytes);
+    }
+    v->head = (head + bytes) % AUDIO_RING_SIZE;
+}
+
+/* Read exactly 'bytes' from the voice ring; returns bytes actually read. */
+static uint32_t voice_read(struct audio_voice *v, void *out, uint32_t bytes) {
+    uint32_t avail = voice_available(v);
+    if (bytes > avail) bytes = avail;
+    if (bytes == 0) return 0;
+    uint32_t tail = v->tail;
+    uint32_t first = AUDIO_RING_SIZE - tail;
+    if (bytes > first) {
+        memcpy(out, v->ring + tail, first);
+        memcpy((uint8_t *)out + first, v->ring, bytes - first);
+    } else {
+        memcpy(out, v->ring + tail, bytes);
+    }
+    v->tail = (tail + bytes) % AUDIO_RING_SIZE;
+    return bytes;
+}
+
+/* Find the voice slot for pid, or allocate a free one.
+ * Returns NULL if all slots are occupied by different processes. */
+static struct audio_voice *voice_for_pid(uint32_t pid) {
+    int i, free_slot = -1;
+    for (i = 0; i < AUDIO_VOICES; i++) {
+        if (g_voices[i].pid == pid) return &g_voices[i];
+        if (g_voices[i].pid == 0 && free_slot < 0) free_slot = i;
+    }
+    if (free_slot >= 0) {
+        g_voices[free_slot].pid  = pid;
+        g_voices[free_slot].head = 0;
+        g_voices[free_slot].tail = 0;
+        return &g_voices[free_slot];
+    }
+    return 0; /* no free slot — caller gets silence */
+}
+
+/* Mix all active voices into one DMA-sized buffer of int16 stereo PCM.
+ * Voices with insufficient data contribute silence for the missing portion. */
+static void mix_voices(uint8_t *out) {
+    /* Accumulate in int32 to avoid overflow when summing multiple voices. */
+    int32_t acc[AC97_BD_BYTES / 2];
+    uint8_t  tmp[AC97_BD_BYTES];
+    int i, v;
+
+    for (i = 0; i < AC97_BD_BYTES / 2; i++) acc[i] = 0;
+
+    for (v = 0; v < AUDIO_VOICES; v++) {
+        if (g_voices[v].pid == 0) continue;
+        if (voice_available(&g_voices[v]) < AC97_BD_BYTES) {
+            /* Underrun: this voice has nothing to contribute this buffer.
+             * Leave its portion as zero (silence) — no gap in playback. */
+            continue;
+        }
+        voice_read(&g_voices[v], tmp, AC97_BD_BYTES);
+        {
+            const int16_t *src = (const int16_t *)tmp;
+            for (i = 0; i < AC97_BD_BYTES / 2; i++)
+                acc[i] += (int32_t)src[i];
+        }
+    }
+
+    /* Clamp and write to the DMA staging buffer. */
+    {
+        int16_t *dst = (int16_t *)out;
+        for (i = 0; i < AC97_BD_BYTES / 2; i++) {
+            int32_t s = acc[i];
+            if      (s >  32767) s =  32767;
+            else if (s < -32768) s = -32768;
+            dst[i] = (int16_t)s;
+        }
+    }
+}
 
 /* ---- AC97 helpers ---- */
 static inline void mixer_write16(uint16_t reg, uint16_t val) {
@@ -104,59 +209,7 @@ static inline void bm_write8(uint16_t reg, uint8_t val) {
     outb(g_bm_base + reg, val);
 }
 
-/* ---- Software ring buffer ----
- * head = write pointer (producer), tail = read pointer (consumer).
- * Available (unread) bytes: from tail to head. */
-static uint32_t ring_available(void) {
-    uint32_t head = g_ring_head;
-    uint32_t tail = g_ring_tail;
-    if (head >= tail) return head - tail;
-    return (AUDIO_RING_SIZE - tail) + head;
-}
-
-static uint32_t ring_free(void) {
-    return AUDIO_RING_SIZE - 1 - ring_available();
-}
-
-static void ring_write(const void *data, uint32_t bytes) {
-    uint32_t head = g_ring_head;
-    uint32_t first = AUDIO_RING_SIZE - head;
-    if (bytes > first) {
-        memcpy(g_ring + head, data, first);
-        memcpy(g_ring, (const uint8_t *)data + first, bytes - first);
-    } else {
-        memcpy(g_ring + head, data, bytes);
-    }
-    g_ring_head = (head + bytes) % AUDIO_RING_SIZE;
-}
-
-static uint32_t ring_read(void *data, uint32_t bytes) {
-    uint32_t avail = ring_available();
-    if (bytes > avail) bytes = avail;
-    if (bytes == 0) return 0;
-    uint32_t tail = g_ring_tail;
-    uint32_t first = AUDIO_RING_SIZE - tail;
-    if (bytes > first) {
-        memcpy(data, g_ring + tail, first);
-        memcpy((uint8_t *)data + first, g_ring, bytes - first);
-    } else {
-        memcpy(data, g_ring + tail, bytes);
-    }
-    g_ring_tail = (tail + bytes) % AUDIO_RING_SIZE;
-    return bytes;
-}
-
-/* ---- Called periodically from the kernel main loop ----
- *
- * Producer/consumer model: the DMA engine plays the buffer-descriptor ring from
- * CIV up to LVI and then stops (DCH). Each tick we hand it as many *complete*
- * 512-byte PCM buffers as the software ring currently holds, advancing LVI to
- * the last one we filled. We never pad a buffer with silence mid-stream — that
- * was the source of the scratching — so the DAC only ever sees an unbroken run
- * of real samples. If the producer can't keep up the engine simply halts on a
- * buffer boundary (clean gap), and we restart it the moment data returns. */
-static uint32_t g_tick_count = 0;
-static uint32_t g_write_count = 0;
+/* ---- Called periodically from the kernel main loop ----------------------- */
 
 void audio_tick(void) {
     if (!g_audio_present) return;
@@ -164,20 +217,14 @@ void audio_tick(void) {
     uint8_t  civ = bm_read8(AC97_BM_PCM_OUT_CIV);
     uint16_t sr  = bm_read16(AC97_BM_PCM_OUT_SR);
 
-    /* Buffers still owned by the hardware (queued, not yet played). */
     int queued = (g_head_bd - (int)civ + AC97_BD_COUNT) % AC97_BD_COUNT;
     int filled = 0;
 
-    /* Queue every buffer. Real audio from the ring when available; silence
-     * otherwise so the DMA engine keeps running without restarts (restarts
-     * cause a ~35 Hz buzz from the CIV-replay at each stop/start). */
-    while (queued < AC97_BD_COUNT - 1)
-    {
-        if (ring_available() >= AC97_BD_BYTES) {
-            ring_read(g_pcm_bufs[g_head_bd], AC97_BD_BYTES);
-        } else {
-            memset(g_pcm_bufs[g_head_bd], 0, AC97_BD_BYTES);
-        }
+    /* Fill available DMA slots.  mix_voices() sums all active voice rings into
+     * a single 512-byte int16 buffer; silence is written if all voices are dry
+     * so the DMA engine never restarts (restarts cause a brief buzz). */
+    while (queued < AC97_BD_COUNT - 1) {
+        mix_voices(g_pcm_bufs[g_head_bd]);
         g_head_bd = (g_head_bd + 1) % AC97_BD_COUNT;
         ++queued;
         ++filled;
@@ -186,67 +233,46 @@ void audio_tick(void) {
     if (filled > 0) {
         bm_write8(AC97_BM_PCM_OUT_LVI,
                   (uint8_t)((g_head_bd + AC97_BD_COUNT - 1) % AC97_BD_COUNT));
-        /* The engine had drained and stopped — resuming it after a real
-         * starvation counts as an underrun for diagnostics. */
         if (sr & AC97_SR_DCH) {
             ++g_underruns;
             bm_write8(AC97_BM_PCM_OUT_CR, AC97_CR_RPBM);
         }
     }
 
-    if (sr & (AC97_SR_BCIS | AC97_SR_LVBCI)) {
+    if (sr & (AC97_SR_BCIS | AC97_SR_LVBCI))
         bm_write16(AC97_BM_PCM_OUT_SR, sr & (AC97_SR_BCIS | AC97_SR_LVBCI));
-    }
-
-    /* Log every ~500 ticks so we can see the engine state without flooding */
-    // if ((g_tick_count % 500) == 0) {
-    //     serial_write("AUDIO_TICK: tick=");
-    //     serial_write_hex_u64(g_tick_count);
-    //     serial_write(" civ=");
-    //     serial_write_hex_u64(civ);
-    //     serial_write(" lvi=");
-    //     serial_write_hex_u64(bm_read8(AC97_BM_PCM_OUT_LVI));
-    //     serial_write(" sr=");
-    //     serial_write_hex_u64(sr);
-    //     serial_write(" ring=");
-    //     serial_write_hex_u64(ring_available());
-    //     serial_write(" head=");
-    //     serial_write_hex_u64((uint64_t)(unsigned)g_head_bd);
-    //     serial_write(" writes=");
-    //     serial_write_hex_u64(g_write_count);
-    //     serial_write("\n");
-    // }
-    ++g_tick_count;
 }
 
-/* ---- Public API ---- */
-int audio_write(const void *data, uint32_t bytes) {
+/* ---- Public API ---------------------------------------------------------- */
+
+/* Write PCM data for the given process pid into its dedicated voice ring.
+ * If no voice is allocated yet, the first free slot is claimed.
+ * Returns bytes accepted (may be less than 'bytes' if the ring is full). */
+int audio_write(uint32_t pid, const void *data, uint32_t bytes) {
     if (!g_audio_present || !data || bytes == 0) return 0;
 
-    uint32_t free = ring_free();
-    uint32_t avail_before = ring_available();
+    struct audio_voice *v = voice_for_pid(pid);
+    if (!v) return 0;  /* all voice slots occupied — caller gets silence */
 
+    uint32_t free = voice_free(v);
     if (bytes > free) bytes = free;
     if (bytes == 0) return 0;
 
-    ring_write(data, bytes);
-
-    /* Log first call and every 35th (≈ once per second at 35 tics/s) */
-    if (g_write_count == 0 || (g_write_count % 35) == 0) {
-        serial_write("AUDIO_WRITE: call=");
-        serial_write_hex_u64(g_write_count);
-        serial_write(" bytes=");
-        serial_write_hex_u64(bytes);
-        serial_write(" ring_before=");
-        serial_write_hex_u64(avail_before);
-        serial_write(" ring_after=");
-        serial_write_hex_u64(ring_available());
-        serial_write(" free_was=");
-        serial_write_hex_u64(free);
-        serial_write("\n");
-    }
-    ++g_write_count;
+    voice_write(v, data, bytes);
     return (int)bytes;
+}
+
+/* Release the voice for pid (call when the process exits). */
+void audio_release_voice(uint32_t pid) {
+    int i;
+    for (i = 0; i < AUDIO_VOICES; i++) {
+        if (g_voices[i].pid == pid) {
+            g_voices[i].pid  = 0;
+            g_voices[i].head = 0;
+            g_voices[i].tail = 0;
+            return;
+        }
+    }
 }
 
 int audio_present(void) {
@@ -254,6 +280,8 @@ int audio_present(void) {
 }
 
 void audio_get_info(struct audio_info *info) {
+    int i;
+    uint32_t total_used = 0, total_free = 0;
     if (!info) return;
     memset(info, 0, sizeof(*info));
     info->present     = (uint32_t)g_audio_present;
@@ -268,9 +296,15 @@ void audio_get_info(struct audio_info *info) {
     info->bits        = 16;
     info->bd_count    = AC97_BD_COUNT;
     info->bd_bytes    = AC97_BD_BYTES;
-    info->ring_size   = AUDIO_RING_SIZE;
-    info->ring_used   = ring_available();
-    info->ring_free   = ring_free();
+    /* Report aggregate ring usage across all active voices. */
+    for (i = 0; i < AUDIO_VOICES; i++) {
+        if (g_voices[i].pid == 0) continue;
+        total_used += voice_available(&g_voices[i]);
+        total_free += voice_free(&g_voices[i]);
+    }
+    info->ring_size   = AUDIO_RING_SIZE * AUDIO_VOICES;
+    info->ring_used   = total_used;
+    info->ring_free   = total_free ? total_free : (AUDIO_RING_SIZE - 1);
     info->underruns   = g_underruns;
     if (g_audio_present) {
         info->civ = bm_read8(AC97_BM_PCM_OUT_CIV);
