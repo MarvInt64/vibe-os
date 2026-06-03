@@ -106,7 +106,7 @@ void Browser::on_back() {
         __builtin_strncpy(url_, history_[hist_pos_], sizeof url_);
         url_len_ = (int)__builtin_strlen(url_);
         vui_set_text(w_url_bar_, url_);
-        load_url(url_);
+        navigate(url_, false);
     }
 }
 
@@ -116,7 +116,7 @@ void Browser::on_forward() {
         __builtin_strncpy(url_, history_[hist_pos_], sizeof url_);
         url_len_ = (int)__builtin_strlen(url_);
         vui_set_text(w_url_bar_, url_);
-        load_url(url_);
+        navigate(url_, false);
     }
 }
 
@@ -191,6 +191,64 @@ void __attribute__((noreturn)) Browser::run() {
 
     render();
     vui_run(win_);
+}
+
+/* ---- DNS cache --------------------------------------------------------- */
+
+bool Browser::dns_lookup(const char *host, uint32_t *ip_out) {
+    for (int i = 0; i < dns_cache_count_; ++i) {
+        if (__builtin_strcmp(dns_cache_[i].host, host) == 0) {
+            *ip_out = dns_cache_[i].ip;
+            return true;
+        }
+    }
+    return false;
+}
+
+void Browser::dns_insert(const char *host, uint32_t ip) {
+    if (dns_cache_count_ < DNS_CACHE_CAP) {
+        __builtin_strncpy(dns_cache_[dns_cache_count_].host, host, 255);
+        dns_cache_[dns_cache_count_].host[255] = '\0';
+        dns_cache_[dns_cache_count_].ip = ip;
+        ++dns_cache_count_;
+    } else {
+        for (int i = 0; i < DNS_CACHE_CAP - 1; ++i) {
+            __builtin_memcpy(&dns_cache_[i], &dns_cache_[i+1], sizeof(DnsEntry));
+        }
+        __builtin_strncpy(dns_cache_[DNS_CACHE_CAP - 1].host, host, 255);
+        dns_cache_[DNS_CACHE_CAP - 1].host[255] = '\0';
+        dns_cache_[DNS_CACHE_CAP - 1].ip = ip;
+    }
+}
+
+/* ---- proportional drawing helpers for form fields --------------------- */
+
+int Browser::text_width_proportional(const char *s, int px) {
+    int w = 0;
+    while (*s) {
+        unsigned char cp = (unsigned char)*s;
+        const af_glyph *g = appfont_get(cp, px);
+        w += g ? g->advance : px / 2;
+        ++s;
+    }
+    return w;
+}
+
+void Browser::draw_text_proportional(int rx, int sy, const char *s, int max_w, uint32_t color, int px, bool bold) {
+    int pen = rx;
+    int base = sy + appfont_ascent(px);
+    while (*s) {
+        unsigned char cp = (unsigned char)*s;
+        const af_glyph *g = appfont_get(cp, px);
+        int adv = g ? g->advance : px / 2;
+        if (pen - rx + adv > max_w) break;
+        if (g) {
+            blit_glyph_aa(g, pen + g->xoff, base + g->yoff, color);
+            if (bold) blit_glyph_aa(g, pen + g->xoff + 1, base + g->yoff, color);
+        }
+        pen += adv;
+        ++s;
+    }
 }
 
 /* ---- canvas drawing helpers -------------------------------------------- */
@@ -319,6 +377,7 @@ int Browser::dechunk(char *b, int blen) {
     while (ri < blen) {
         int sz = 0, any = 0;
         for (;;) {
+            if (ri >= blen) break;
             char c = b[ri]; int hv = -1;
             if (c>='0'&&c<='9') hv=c-'0'; else if ((c|32)>='a'&&(c|32)<='f') hv=(c|32)-'a'+10;
             if (hv < 0) break; sz=sz*16+hv; ++ri; any=1;
@@ -351,7 +410,12 @@ int Browser::fetch_raw(const char *url, char *out, int cap, int *bodyoff) {
     while (u[i]&&u[i]!='/'&&h<(int)sizeof(host)-1) host[h++]=u[i++]; host[h]='\0';
     path[0]='/'; p=1;
     if (u[i]=='/'){++i; while(u[i]&&p<(int)sizeof(path)-1) path[p++]=u[i++];} path[p]='\0';
-    if (!parse_ipv4(host, &ip)) { if (vos_resolve(host,&ip)<0) return -1; }
+    if (!parse_ipv4(host, &ip)) {
+        if (!s_instance_ || !s_instance_->dns_lookup(host, &ip)) {
+            if (vos_resolve(host,&ip)<0) return -1;
+            if (s_instance_) s_instance_->dns_insert(host, ip);
+        }
+    }
     req.ip=ip; req.port=secure?443:80; req.host=host; req.path=path; req.out=out; req.cap=cap; req.user_agent=BROWSER_USER_AGENT;
     req.timeout_ms = 4000;
     n = secure ? vos_https_get(&req) : vos_http_get(&req);
@@ -408,11 +472,10 @@ void Browser::layout_current() {
     clamp_scroll();
 }
 
-void Browser::navigate(const char *url) {
+void Browser::navigate(const char *url, bool push_to_history) {
     if (!url || !url[0]) return;
-    blogf("browser: navigate url=%s", url);
-    int cur = fetch_state_.load(std::memory_order_acquire);
-    if (cur == (int)FetchState::Fetching) { blog("browser: navigate ignored (already fetching)"); return; }
+    blogf("browser: navigate url=%s push=%d", url, push_to_history);
+    uint32_t gen = ++load_gen_;
     __builtin_strncpy(pending_url_, url, sizeof pending_url_);
     pending_url_[sizeof pending_url_ - 1] = '\0';
     progress_phase_ = 0;
@@ -421,21 +484,23 @@ void Browser::navigate(const char *url) {
     fields_seeded_ = false;
     fetch_state_.store((int)FetchState::Fetching, std::memory_order_release);
     if (worker_.joinable()) worker_.detach();
-    worker_ = std::thread([this] { fetch_worker(); });
+    worker_ = std::thread([this, gen, push_to_history] { fetch_worker(gen, push_to_history); });
 }
 
-void Browser::fetch_worker() {
-    blogf("browser: fetch_worker start url=%s", pending_url_);
+void Browser::fetch_worker(uint32_t gen, bool push_to_history) {
+    blogf("browser: fetch_worker start url=%s gen=%u", pending_url_, gen);
     text_ready_.store(false, std::memory_order_release);
-    load_url(pending_url_);
+    load_url(pending_url_, gen, push_to_history);
+    if (load_gen_.load(std::memory_order_acquire) != gen) { blog("browser: fetch_worker aborted (after load_url)"); return; }
     blogf("browser: fetch_worker after load_url html_len=%d", html_len_);
     text_ready_.store(true, std::memory_order_release);
-    load_images();
+    load_images(gen);
+    if (load_gen_.load(std::memory_order_acquire) != gen) { blog("browser: fetch_worker aborted (after load_images)"); return; }
     fetch_state_.store((int)FetchState::Ready, std::memory_order_release);
     blog("browser: fetch_worker done");
 }
 
-void Browser::load_images() {
+void Browser::load_images(uint32_t gen) {
     if (!html_buf_ || html_len_ <= 0) return;
     dom_doc dom; dom_init(&dom);
     dom_node *root = dom_parse(&dom, html_buf_, html_len_);
@@ -460,7 +525,9 @@ void Browser::load_images() {
     Walk::go(root, srcs, n, MAX_IMGS);
     dom_free(&dom);
     for (int i = 0; i < n; ++i) {
+        if (load_gen_.load(std::memory_order_acquire) != gen) return;
         if (image_load(srcs[i]) < 0) continue;
+        if (load_gen_.load(std::memory_order_acquire) != gen) return;
         { std::lock_guard<std::mutex> lk(layout_mutex_); layout_current(); }
         images_dirty_.store(true, std::memory_order_release);
     }
@@ -474,11 +541,12 @@ void Browser::poll_fetch() {
     }
 }
 
-void Browser::load_url(const char *start_url) {
+void Browser::load_url(const char *start_url, uint32_t gen, bool push_to_history) {
     static char cur[1024], host[256], path[512], loc[1024];
     if (!start_url || !start_url[0]) { return; }
     __builtin_strncpy(cur, start_url, sizeof cur); cur[sizeof cur-1]='\0';
     for (int redir = 0; redir < 6; ++redir) {
+        if (load_gen_.load(std::memory_order_acquire) != gen) return;
         const char *u = cur; uint32_t ip; int h=0,p=0,i=0,n,bodyoff,secure=0,code;
         char *raw; vos_http_req req;
         if (__builtin_strncmp(u,"https://",8)==0){secure=1;u+=8;}
@@ -487,8 +555,12 @@ void Browser::load_url(const char *start_url) {
         p=0; path[p++]='/'; if(u[i]=='/'){ ++i; while(u[i]&&p<(int)sizeof(path)-1) path[p++]=u[i++]; } path[p]='\0';
         blogf("browser: load_url host=%s path=%s secure=%d", host, path, secure);
         if (!parse_ipv4(host,&ip)) {
-            if (vos_resolve(host,&ip)<0) { blogf("browser: resolve FAILED host=%s", host); return; }
+            if (!dns_lookup(host, &ip)) {
+                if (vos_resolve(host,&ip)<0) { blogf("browser: resolve FAILED host=%s", host); return; }
+                dns_insert(host, ip);
+            }
         }
+        if (load_gen_.load(std::memory_order_acquire) != gen) return;
         blogf("browser: resolved ip=%u.%u.%u.%u", (ip>>24)&255,(ip>>16)&255,(ip>>8)&255,ip&255);
         static constexpr int RAW_CAP = 512 * 1024;
         raw = static_cast<char *>(__builtin_malloc(RAW_CAP + 1));
@@ -496,6 +568,7 @@ void Browser::load_url(const char *start_url) {
         req.ip=ip; req.port=secure?443:80; req.host=host; req.path=path;
         req.out=raw; req.cap=RAW_CAP; req.user_agent=BROWSER_USER_AGENT; req.timeout_ms=0;
         n = secure ? vos_https_get(&req) : vos_http_get(&req);
+        if (load_gen_.load(std::memory_order_acquire) != gen) { __builtin_free(raw); return; }
         blogf("browser: %s_get returned n=%d", secure?"https":"http", n);
         if (n <= 0) { __builtin_free(raw); return; }
         raw[n] = '\0';
@@ -522,7 +595,7 @@ void Browser::load_url(const char *start_url) {
         __builtin_memcpy(html_buf_, raw+bodyoff, (unsigned)blen);
         html_buf_[blen] = '\0'; html_len_ = blen;
         images_clear(); layout_current(); seed_fields();
-        __builtin_free(raw); push_history(cur);
+        __builtin_free(raw); if (push_to_history) push_history(cur);
         return;
     }
 }
@@ -687,9 +760,15 @@ void Browser::render() {
             fill(rx, sy, r.w, r.h, face); fill(rx, sy, r.w, 1, border); fill(rx, sy + r.h - 1, r.w, 1, border); fill(rx, sy, 1, r.h, border); fill(rx + r.w - 1, sy, 1, r.h, border);
             const char *text = button ? ((r.off>=0 && r.off<layout_.field_count && layout_.fields[r.off].value[0]) ? layout_.fields[r.off].value : "Submit") : ((r.off>=0 && r.off<MAX_FIELDS) ? field_values_[r.off] : "");
             uint32_t tcol = button ? 0x00ffffffu : (r.color ? r.color : 0x00202632u);
-            int ty = sy + (r.h - r.px) / 2; int tx = rx + (button ? (r.w - (int)__builtin_strlen(text)*8)/2 : 6); if (tx < rx + 4) tx = rx + 4;
-            int maxchars = (r.w - 10) / 8; if (maxchars < 0) maxchars = 0; draw_text_n(tx, ty, text, maxchars, tcol);
-            if (focused && !button) { int n = (int)__builtin_strlen(text); if (n > maxchars) n = maxchars; int cx = rx + 6 + n*8; fill(cx, sy+3, 2, r.h-6, COL_ACCENT); }
+            int ty = sy + (r.h - r.px) / 2;
+            int text_w = text_width_proportional(text, r.px);
+            int tx = rx + (button ? (r.w - text_w)/2 : 6); if (tx < rx + 4) tx = rx + 4;
+            draw_text_proportional(tx, ty, text, r.w - 10, tcol, r.px, button);
+            if (focused && !button) {
+                int cx = tx + text_width_proportional(text, r.px);
+                if (cx > rx + r.w - 4) cx = rx + r.w - 4;
+                fill(cx, sy+3, 2, r.h-6, COL_ACCENT);
+            }
             continue;
         }
         if (r.link >= 0 && r.link == hover_link_ && sy >= 0) fill(rx-1, sy, r.w+2, r.h, COL_HOVER);

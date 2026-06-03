@@ -958,22 +958,35 @@ static void draw_cursor(struct desktop_state *desktop, struct framebuffer *fb, i
         0x8000, 0xC000, 0xE000, 0xF000, 0xF800, 0xFC00, 0xFE00, 
         0xFF00, 0xFC00, 0xDC00, 0x8C00, 0x0C00, 0x0000
     };
+    (void)desktop;
     
-    /* Draw outline (offset for shadow/border) */
-    for (int row = 0; row < 13; ++row) {
-        for (int col = 0; col < 12; ++col) {
-            if (cursor_mask[row] & (0x8000 >> col)) {
-                /* Outline shadow */
-                fb_fill_rect(fb, x + col + 1, y + row + 1, 1, 1, 0x00000000u);
-            }
-        }
+    int x_min = 0, y_min = 0, x_max = (int)fb->width, y_max = (int)fb->height;
+    if (fb->clip_enabled) {
+        x_min = fb->clip_x;
+        y_min = fb->clip_y;
+        x_max = fb->clip_x + fb->clip_width;
+        y_max = fb->clip_y + fb->clip_height;
     }
 
-    /* Draw body (white) */
     for (int row = 0; row < 13; ++row) {
+        uint16_t mask = cursor_mask[row];
+        int py = y + row;
+        int py_shadow = py + 1;
+        
+        uint32_t *row_pixels = (py >= y_min && py < y_max) ? (uint32_t *)((uint8_t *)fb->base + (uint32_t)py * fb->pitch) : 0;
+        uint32_t *row_shadow_pixels = (py_shadow >= y_min && py_shadow < y_max) ? (uint32_t *)((uint8_t *)fb->base + (uint32_t)py_shadow * fb->pitch) : 0;
+
         for (int col = 0; col < 12; ++col) {
-            if (cursor_mask[row] & (0x8000 >> col)) {
-                fb_fill_rect(fb, x + col, y + row, 1, 1, 0x00ffffffu);
+            if (mask & (0x8000 >> col)) {
+                int px = x + col;
+                int px_shadow = px + 1;
+                
+                if (row_shadow_pixels && px_shadow >= x_min && px_shadow < x_max) {
+                    row_shadow_pixels[px_shadow] = 0x00000000u;
+                }
+                if (row_pixels && px >= x_min && px < x_max) {
+                    row_pixels[px] = 0x00ffffffu;
+                }
             }
         }
     }
@@ -1769,7 +1782,90 @@ static void compose_scene_rect(struct desktop_state *desktop, struct framebuffer
         render_window_surface(desktop, index);
     }
 
-    fb_blit_rect(fb, &desktop->background_fb, rect);
+    /* Occlusion culling: Subtract the opaque regions of all overlapping windows
+     * that are on top of the background. */
+    struct rect_list {
+        struct rect rects[128];
+        int count;
+    };
+    
+    struct rect_list list;
+    list.rects[0] = *rect;
+    list.count = 1;
+
+    for (order = 0; order < WINDOW_COUNT; ++order) {
+        int index = desktop->z_order[order];
+        struct window_state *window = &desktop->windows[index];
+
+        if (!window->visible) continue;
+        
+        int opaque = 0;
+        if (!(window->flags & WINSYS_WINDOW_TRANSLUCENT)) {
+            if (is_user_app_slot(index)) {
+                opaque = 1;
+            } else {
+                opaque = (g_chrome_theme.window_alpha == 255u);
+            }
+        }
+
+        if (!opaque) continue;
+
+        /* Opaque window rect (slightly inset to protect rounded corner transparency/borders) */
+        int inset = 8;
+        if (window->width <= inset * 2 || window->height <= inset * 2) continue;
+        struct rect w_rect = rect_from_bounds(window->x + inset, window->y + inset, 
+                                               window->width - (inset * 2), window->height - (inset * 2));
+        
+        if (!rects_intersect(&w_rect, rect)) continue;
+
+        int original_count = list.count;
+        struct rect_list next_list;
+        next_list.count = 0;
+
+        for (int i = 0; i < original_count; ++i) {
+            struct rect R = list.rects[i];
+            if (!rects_intersect(&R, &w_rect)) {
+                if (next_list.count < 128) {
+                    next_list.rects[next_list.count++] = R;
+                }
+                continue;
+            }
+
+            // Top part
+            if (w_rect.y > R.y) {
+                if (next_list.count < 128) {
+                    next_list.rects[next_list.count++] = rect_from_bounds(R.x, R.y, R.width, w_rect.y - R.y);
+                }
+            }
+            // Bottom part
+            if (w_rect.y + w_rect.height < R.y + R.height) {
+                if (next_list.count < 128) {
+                    next_list.rects[next_list.count++] = rect_from_bounds(R.x, w_rect.y + w_rect.height, R.width, (R.y + R.height) - (w_rect.y + w_rect.height));
+                }
+            }
+            // Left & Right parts inside the Y span
+            int y0 = w_rect.y > R.y ? w_rect.y : R.y;
+            int y1 = w_rect.y + w_rect.height < R.y + R.height ? w_rect.y + w_rect.height : R.y + R.height;
+            if (y1 > y0) {
+                if (w_rect.x > R.x) {
+                    if (next_list.count < 128) {
+                        next_list.rects[next_list.count++] = rect_from_bounds(R.x, y0, w_rect.x - R.x, y1 - y0);
+                    }
+                }
+                if (w_rect.x + w_rect.width < R.x + R.width) {
+                    if (next_list.count < 128) {
+                        next_list.rects[next_list.count++] = rect_from_bounds(w_rect.x + w_rect.width, y0, (R.x + R.width) - (w_rect.x + w_rect.width), y1 - y0);
+                    }
+                }
+            }
+        }
+        
+        list = next_list;
+    }
+
+    for (int i = 0; i < list.count; ++i) {
+        fb_blit_rect(fb, &desktop->background_fb, &list.rects[i]);
+    }
 
     for (order = 0; order < WINDOW_COUNT; ++order) {
         int index = desktop->z_order[order];

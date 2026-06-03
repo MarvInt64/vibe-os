@@ -61,8 +61,8 @@ endif
 QEMU_CPU ?= max
 QEMU_MEM ?= 512M
 
-CFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -mno-mmx -mno-sse -mno-sse2 -fno-vectorize -fno-slp-vectorize -fno-builtin -Wall -Wextra -Wpedantic -std=c11 -Ikernel/include -Ithird_party/bearssl/inc -MMD -MP
-KCXXFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -mno-mmx -mno-sse -mno-sse2 -fno-vectorize -fno-slp-vectorize -fno-builtin -Wall -Wextra -Wpedantic -std=c++20 -fno-exceptions -fno-rtti -Ikernel/include -MMD -MP
+CFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -mno-mmx -mno-sse -mno-sse2 -fno-vectorize -fno-slp-vectorize -fno-builtin -Wall -Wextra -Wpedantic -std=c11 -Ikernel/include -Ithird_party/bearssl/inc -MMD -MP -O2
+KCXXFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -mno-mmx -mno-sse -mno-sse2 -fno-vectorize -fno-slp-vectorize -fno-builtin -Wall -Wextra -Wpedantic -std=c++20 -fno-exceptions -fno-rtti -Ikernel/include -MMD -MP -O2
 ASFLAGS := -target x86_64-none-elf -ffreestanding -D__ASSEMBLER__
 LDFLAGS := -nostdlib -static -T linker.ld
 

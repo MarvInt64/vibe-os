@@ -21,16 +21,22 @@ static uint32_t lerp_color(uint32_t a, uint32_t b, uint32_t step, uint32_t total
 }
 
 static uint32_t blend_color(uint32_t dest, uint32_t src, uint8_t alpha) {
-    uint32_t dr = (dest >> 16) & 0xffu;
-    uint32_t dg = (dest >> 8) & 0xffu;
-    uint32_t db = dest & 0xffu;
-    uint32_t sr = (src >> 16) & 0xffu;
-    uint32_t sg = (src >> 8) & 0xffu;
-    uint32_t sb = src & 0xffu;
+    if (alpha == 0u) {
+        return dest;
+    }
+    if (alpha == 255u) {
+        return src;
+    }
 
-    return ((((sr * alpha) + (dr * (255u - alpha))) / 255u) << 16) |
-           ((((sg * alpha) + (dg * (255u - alpha))) / 255u) << 8) |
-           (((sb * alpha) + (db * (255u - alpha))) / 255u);
+    uint32_t src_rb = src & 0x00ff00ffu;
+    uint32_t dest_rb = dest & 0x00ff00ffu;
+    uint32_t rb = ((src_rb * alpha + dest_rb * (256u - alpha)) >> 8) & 0x00ff00ffu;
+
+    uint32_t src_g = src & 0x0000ff00u;
+    uint32_t dest_g = dest & 0x0000ff00u;
+    uint32_t g = ((src_g * alpha + dest_g * (256u - alpha)) >> 8) & 0x0000ff00u;
+
+    return rb | g;
 }
 
 static int clamp_min(int value, int min) {
@@ -130,6 +136,22 @@ static int rounded_rect_contains(int px, int py, int x, int y, int width, int he
 	return (dx * dx) + (dy * dy) <= (radius * radius);
 }
 
+static int fast_isqrt(int val) {
+	if (val <= 0) return 0;
+	int temp, g = 0;
+	if (val >= 1024) { g = 32; }
+	else if (val >= 256) { g = 16; }
+	else if (val >= 64) { g = 8; }
+	else if (val >= 16) { g = 4; }
+	else if (val >= 4) { g = 2; }
+	else { g = 1; }
+
+	temp = (g + val / g) >> 1;
+	g = (temp + val / temp) >> 1;
+	if (g * g > val) g--;
+	return g;
+}
+
 static void get_rounded_rect_scanline_bounds(int y_pos, int x, int y, int width, int height, int radius, int *out_x0, int *out_x1) {
 	int right = x + width - 1;
 	int bottom = y + height - 1;
@@ -148,18 +170,14 @@ static void get_rounded_rect_scanline_bounds(int y_pos, int x, int y, int width,
 
 	if (y_pos < y + radius) {
 		int dy = (y + radius - 1) - y_pos;
-		int dx = 0;
-		while ((dx * dx) + (dy * dy) <= (radius * radius)) {
-			++dx;
-		}
+		int target = radius * radius - dy * dy;
+		int dx = (target <= 0) ? 1 : fast_isqrt(target) + 1;
 		*out_x0 = x + radius - dx;
 		*out_x1 = right - radius + dx;
 	} else {
 		int dy = y_pos - (bottom - radius + 1);
-		int dx = 0;
-		while ((dx * dx) + (dy * dy) <= (radius * radius)) {
-			++dx;
-		}
+		int target = radius * radius - dy * dy;
+		int dx = (target <= 0) ? 1 : fast_isqrt(target) + 1;
 		*out_x0 = x + radius - dx;
 		*out_x1 = right - radius + dx;
 	}

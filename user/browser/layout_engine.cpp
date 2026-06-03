@@ -109,6 +109,26 @@ static void str_copy(char *dst, int cap, const char *src) {
 
 static bool parse_color(const char *s, unsigned &out) {
     while (*s == ' ') ++s;
+    if (ieq_pfx(s, "rgb") || ieq_pfx(s, "rgba")) {
+        const char *p = s;
+        while (*p && *p != '(') ++p;
+        if (*p == '(') {
+            ++p;
+            auto next_num = [&p]() {
+                while (*p && (*p == ' ' || *p == ',')) ++p;
+                int v = 0;
+                while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); ++p; }
+                return v;
+            };
+            int r = next_num();
+            int g = next_num();
+            int b = next_num();
+            if (r >= 0 && r <= 255 && g >= 0 && g <= 255 && b >= 0 && b <= 255) {
+                out = ((unsigned)r << 16) | ((unsigned)g << 8) | (unsigned)b;
+                return true;
+            }
+        }
+    }
     if (*s == '#') {
         ++s;
         auto hd = [](char c) -> int {
@@ -141,6 +161,8 @@ struct StyleDecls {
     unsigned bg;
     bool     hidden;
     int      width;   /* explicit CSS width in px (0 = unset; not inherited) */
+    int      margin_top;    /* explicit CSS margin-top in px (-1 = unset) */
+    int      margin_bottom; /* explicit CSS margin-bottom in px (-1 = unset) */
 };
 
 static void apply_decls(const char *css, StyleDecls &st) {
@@ -169,6 +191,12 @@ static void apply_decls(const char *css, StyleDecls &st) {
         else if (ieq(prop,"visibility")) { const char *w=val; while(*w==' ')++w; if(ieq(w,"hidden")) st.hidden=true; }
         else if (ieq(prop,"width"))      { const char *w=val; int px=0; while(*w==' ')++w;
                                            while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} if(px>0&&px<=2000) st.width=px; }
+        else if (ieq(prop,"margin-top")) { const char *w=val; int px=0; while(*w==' ')++w;
+                                           while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} st.margin_top=px; }
+        else if (ieq(prop,"margin-bottom")) { const char *w=val; int px=0; while(*w==' ')++w;
+                                           while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} st.margin_bottom=px; }
+        else if (ieq(prop,"margin"))     { const char *w=val; int px=0; while(*w==' ')++w;
+                                           while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} st.margin_top=px; st.margin_bottom=px; }
     }
 }
 
@@ -185,6 +213,8 @@ struct Style {
     bool     hidden    = false;
     bool     pre       = false;   /* preserve whitespace */
     int      width     = 0;       /* CSS width px for this element (not inherited) */
+    int      margin_top    = -1;
+    int      margin_bottom = -1;
 };
 
 /* ---- layout state ------------------------------------------------------ */
@@ -222,7 +252,7 @@ static void st_pop (State &S) { if(S.sp>0) --S.sp; }
  * so it applies per-element (it must not inherit to children). */
 static void apply_css(State &S, dom_node *node) {
     StyleDecls d{S.stk[S.sp].px, S.stk[S.sp].bold, S.stk[S.sp].underline,
-                 S.stk[S.sp].color, S.stk[S.sp].bg, S.stk[S.sp].hidden, 0};
+                 S.stk[S.sp].color, S.stk[S.sp].bg, S.stk[S.sp].hidden, 0, -1, -1};
     if (S.sheet) { char buf[640]; css_match(S.sheet, node, buf, sizeof buf); apply_decls(buf, d); }
     const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
     S.stk[S.sp].px        = d.px;
@@ -232,10 +262,12 @@ static void apply_css(State &S, dom_node *node) {
     S.stk[S.sp].bg        = d.bg;
     S.stk[S.sp].hidden    = d.hidden;
     S.stk[S.sp].width     = d.width;
+    S.stk[S.sp].margin_top    = d.margin_top;
+    S.stk[S.sp].margin_bottom = d.margin_bottom;
 }
 
 static bool check_hidden(State &S, dom_node *node) {
-    StyleDecls d{BODY_PX,false,false,COL_TEXT,0,false,0};
+    StyleDecls d{BODY_PX,false,false,COL_TEXT,0,false,0, -1, -1};
     if (S.sheet) { char buf[640]; css_match(S.sheet, node, buf, sizeof buf); apply_decls(buf, d); }
     const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
     return d.hidden;
@@ -404,34 +436,40 @@ static void walk(State &S, dom_node *node) {
 
     /* ---- Headings ----------------------------------------------------- */
     if (ieq(t,"h1")) {
-        block_break(S,18); st_push(S);
-        S.stk[S.sp].px=30; S.stk[S.sp].bold=true; S.stk[S.sp].color=COL_HEAD;
-        apply_css(S,node); walk_children(S,node); st_pop(S);
-        add_rule(S,COL_RULE,1); block_break(S,10); return;
+        st_push(S); S.stk[S.sp].px=30; S.stk[S.sp].bold=true; S.stk[S.sp].color=COL_HEAD;
+        apply_css(S,node);
+        int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 18;
+        int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 10;
+        block_break(S,mt); walk_children(S,node);
+        add_rule(S,COL_RULE,1); block_break(S,mb); st_pop(S); return;
     }
     if (ieq(t,"h2")) {
-        block_break(S,16); st_push(S);
-        S.stk[S.sp].px=24; S.stk[S.sp].bold=true; S.stk[S.sp].color=COL_HEAD;
-        apply_css(S,node); walk_children(S,node); st_pop(S);
-        block_break(S,10); return;
+        st_push(S); S.stk[S.sp].px=24; S.stk[S.sp].bold=true; S.stk[S.sp].color=COL_HEAD;
+        apply_css(S,node);
+        int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 16;
+        int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 10;
+        block_break(S,mt); walk_children(S,node); block_break(S,mb); st_pop(S); return;
     }
     if (ieq(t,"h3")) {
-        block_break(S,14); st_push(S);
-        S.stk[S.sp].px=20; S.stk[S.sp].bold=true; S.stk[S.sp].color=COL_HEAD;
-        apply_css(S,node); walk_children(S,node); st_pop(S);
-        block_break(S,8); return;
+        st_push(S); S.stk[S.sp].px=20; S.stk[S.sp].bold=true; S.stk[S.sp].color=COL_HEAD;
+        apply_css(S,node);
+        int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 14;
+        int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 8;
+        block_break(S,mt); walk_children(S,node); block_break(S,mb); st_pop(S); return;
     }
     if (ieq(t,"h4")) {
-        block_break(S,12); st_push(S);
-        S.stk[S.sp].px=17; S.stk[S.sp].bold=true; S.stk[S.sp].color=COL_HEAD;
-        apply_css(S,node); walk_children(S,node); st_pop(S);
-        block_break(S,6); return;
+        st_push(S); S.stk[S.sp].px=17; S.stk[S.sp].bold=true; S.stk[S.sp].color=COL_HEAD;
+        apply_css(S,node);
+        int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 12;
+        int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 6;
+        block_break(S,mt); walk_children(S,node); block_break(S,mb); st_pop(S); return;
     }
     if (ieq(t,"h5")||ieq(t,"h6")) {
-        block_break(S,10); st_push(S);
-        S.stk[S.sp].px=15; S.stk[S.sp].bold=true; S.stk[S.sp].color=COL_HEAD;
-        apply_css(S,node); walk_children(S,node); st_pop(S);
-        block_break(S,4); return;
+        st_push(S); S.stk[S.sp].px=15; S.stk[S.sp].bold=true; S.stk[S.sp].color=COL_HEAD;
+        apply_css(S,node);
+        int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 10;
+        int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 4;
+        block_break(S,mt); walk_children(S,node); block_break(S,mb); st_pop(S); return;
     }
 
     /* ---- Inline formatting -------------------------------------------- */
@@ -463,29 +501,35 @@ static void walk(State &S, dom_node *node) {
 
     /* ---- Pre-formatted code block ------------------------------------- */
     if (ieq(t,"pre")) {
-        block_break(S,10); st_push(S);
-        S.stk[S.sp].pre=true; S.stk[S.sp].bg=0;
+        st_push(S); S.stk[S.sp].pre=true; S.stk[S.sp].bg=0;
         S.stk[S.sp].color=0x2a3a4au;
         if (S.stk[S.sp].px>13) S.stk[S.sp].px-=2;
         apply_css(S,node);
+        int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 10;
+        int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 10;
+        block_break(S,mt);
         int bg_idx=begin_bg(S,COL_CODEBG);
         S.cx=S.stk[S.sp].left+8;
         walk_children(S,node);
         if (!S.at_sol) newline(S);
         end_bg(S,bg_idx);
-        st_pop(S); block_break(S,10); return;
+        block_break(S,mb);
+        st_pop(S); return;
     }
 
     /* ---- Block quote -------------------------------------------------- */
     if (ieq(t,"blockquote")) {
-        block_break(S,10); st_push(S);
-        S.stk[S.sp].left+=22; S.stk[S.sp].color=COL_QUOTE;
+        st_push(S); S.stk[S.sp].left+=22; S.stk[S.sp].color=COL_QUOTE;
         apply_css(S,node);
+        int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 10;
+        int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 10;
+        block_break(S,mt);
         int y0=S.cy;
         walk_children(S,node);
         if (!S.at_sol) newline(S);
         accent_bar(S,y0,COL_ACCENT);
-        st_pop(S); block_break(S,10); return;
+        block_break(S,mb);
+        st_pop(S); return;
     }
 
     /* ---- Lists -------------------------------------------------------- */
@@ -524,7 +568,12 @@ static void walk(State &S, dom_node *node) {
     }
 
     /* ---- Paragraphs --------------------------------------------------- */
-    if (ieq(t,"p")) { block_break(S,12); st_push(S); apply_css(S,node); walk_children(S,node); st_pop(S); block_break(S,12); return; }
+    if (ieq(t,"p")) {
+        st_push(S); apply_css(S,node);
+        int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 12;
+        int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 12;
+        block_break(S,mt); walk_children(S,node); block_break(S,mb); st_pop(S); return;
+    }
 
     /* ---- Form: establish the action/method context for child controls -- */
     if (ieq(t,"form")) {
@@ -534,9 +583,13 @@ static void walk(State &S, dom_node *node) {
         const char *mth = dom_attr(node,"method");
         str_copy(S.form_action, sizeof S.form_action, act ? act : "");
         S.form_method_post = (mth && (mth[0]=='p'||mth[0]=='P'));
-        block_break(S,8); st_push(S); apply_css(S,node);
+        st_push(S); apply_css(S,node);
+        int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 8;
+        int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 8;
+        block_break(S,mt);
         if (!S.stk[S.sp].hidden) walk_children(S,node);
-        st_pop(S); block_break(S,8);
+        block_break(S,mb);
+        st_pop(S);
         for (int i=0;i<256;++i) S.form_action[i]=saved_action[i];
         S.form_method_post = saved_post;
         return;
@@ -629,7 +682,13 @@ static void walk(State &S, dom_node *node) {
         ieq(t,"nav")    ||ieq(t,"address") ||ieq(t,"center") ||
         ieq(t,"body")   ||ieq(t,"html")) {
         st_push(S); apply_css(S,node);
-        if (!S.stk[S.sp].hidden) { block_break(S,0); walk_children(S,node); if(!S.at_sol)newline(S); }
+        if (!S.stk[S.sp].hidden) {
+            int mt = S.stk[S.sp].margin_top >= 0 ? S.stk[S.sp].margin_top : 0;
+            int mb = S.stk[S.sp].margin_bottom >= 0 ? S.stk[S.sp].margin_bottom : 0;
+            block_break(S, mt);
+            walk_children(S, node);
+            block_break(S, mb);
+        }
         st_pop(S); return;
     }
 

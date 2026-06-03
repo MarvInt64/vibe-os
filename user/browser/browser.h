@@ -94,6 +94,7 @@ private:
 
     /* ---- threaded fetch ------------------------------------------------- */
     std::atomic<int> fetch_state_{(int)FetchState::Idle};
+    std::atomic<uint32_t> load_gen_{0};
     int   progress_phase_ = 0;          /* marquee animation position (UI only) */
     char  pending_url_[1024] = {};      /* URL handed to the worker to load     */
     std::thread worker_;                /* the in-flight network worker, if any */
@@ -136,6 +137,14 @@ private:
     ImgEntry images_[MAX_IMGS] = {};
     int      n_imgs_   = 0;
 
+    /* ---- DNS cache ----------------------------------------------------- */
+    static constexpr int DNS_CACHE_CAP = 16;
+    struct DnsEntry { char host[256]; uint32_t ip; };
+    DnsEntry dns_cache_[DNS_CACHE_CAP] = {};
+    int      dns_cache_count_ = 0;
+    bool     dns_lookup(const char *host, uint32_t *ip_out);
+    void     dns_insert(const char *host, uint32_t ip);
+
     /* ---- helpers: canvas drawing --------------------------------------- */
     void fill(int x, int y, int w, int h, uint32_t c);
     void draw_glyph(int x, int y, char ch, uint32_t c);
@@ -144,6 +153,8 @@ private:
     void blit_glyph_aa(const struct af_glyph *g, int ox, int oy,
                        uint32_t color);
     void draw_run_text(int rx, int sy, const wl_run *r);
+    void draw_text_proportional(int rx, int sy, const char *s, int max_w, uint32_t color, int px, bool bold);
+    int  text_width_proportional(const char *s, int px);
     void present();
 
     /* ---- helpers: HTTP ------------------------------------------------- */
@@ -157,10 +168,10 @@ private:
 
     /* ---- helpers: navigation ------------------------------------------- */
     void push_history(const char *url);
-    void navigate(const char *url);   /* hand off to the worker thread */
-    void load_url(const char *url);   /* inner: resolves scheme, follows redirects */
-    void fetch_worker();              /* runs on the worker thread: load pending_url_ */
-    void load_images();               /* worker thread: fetch images, re-layout each */
+    void navigate(const char *url, bool push_to_history = true);   /* hand off to the worker thread */
+    void load_url(const char *url, uint32_t gen, bool push_to_history);   /* inner: resolves scheme, follows redirects */
+    void fetch_worker(uint32_t gen, bool push_to_history);              /* runs on the worker thread: load pending_url_ */
+    void load_images(uint32_t gen);               /* worker thread: fetch images, re-layout each */
     void poll_fetch();                /* UI thread: react to worker completion */
     void layout_current();
     void resolve_href(const char *href, char *out, int cap) const;

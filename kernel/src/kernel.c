@@ -36,6 +36,53 @@ struct desktop_state *desktop_active(void) {
 }
 static struct tty g_cli_tty;
 static uint32_t g_backbuffer_storage[1920u * 1080u];
+static uint32_t s_cursor_backup[32 * 32];
+static struct rect s_cursor_backup_rect;
+
+static void backup_cursor_area(struct framebuffer *fb, const struct rect *rect) {
+    int rx = rect->x;
+    int ry = rect->y;
+    int rw = rect->width;
+    int rh = rect->height;
+
+    if (rx < 0) { rw += rx; rx = 0; }
+    if (ry < 0) { rh += ry; ry = 0; }
+    if (rx + rw > (int)fb->width) { rw = (int)fb->width - rx; }
+    if (ry + rh > (int)fb->height) { rh = (int)fb->height - ry; }
+
+    s_cursor_backup_rect.x = rx;
+    s_cursor_backup_rect.y = ry;
+    s_cursor_backup_rect.width = rw;
+    s_cursor_backup_rect.height = rh;
+
+    if (rw <= 0 || rh <= 0 || rw > 32 || rh > 32) return;
+
+    for (int y = 0; y < rh; ++y) {
+        uint32_t *src = (uint32_t *)((uint8_t *)fb->base + (uint32_t)(ry + y) * fb->pitch) + rx;
+        uint32_t *dst = &s_cursor_backup[y * 32];
+        for (int x = 0; x < rw; ++x) {
+            dst[x] = src[x];
+        }
+    }
+}
+
+static void restore_cursor_area(struct framebuffer *fb) {
+    int rx = s_cursor_backup_rect.x;
+    int ry = s_cursor_backup_rect.y;
+    int rw = s_cursor_backup_rect.width;
+    int rh = s_cursor_backup_rect.height;
+
+    if (rw <= 0 || rh <= 0 || rw > 32 || rh > 32) return;
+
+    for (int y = 0; y < rh; ++y) {
+        uint32_t *dst = (uint32_t *)((uint8_t *)fb->base + (uint32_t)(ry + y) * fb->pitch) + rx;
+        uint32_t *src = &s_cursor_backup[y * 32];
+        for (int x = 0; x < rw; ++x) {
+            dst[x] = src[x];
+        }
+    }
+}
+
 extern uint8_t __kernel_end[];
 
 static void halt_forever(void);
@@ -503,12 +550,15 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
                 }
 
                 if (have_present) {
+                    /* Backup the clean pixels under the new cursor location */
+                    backup_cursor_area(&g_backbuffer, &current_cursor_rect);
+
                     /* Draw cursor into the back buffer, present the whole
                      * region at once, then erase the cursor from the back
-                     * buffer by re-rendering the scene under it. */
+                     * buffer by restoring the backed-up pixels. */
                     desktop_draw_cursor_overlay(&g_desktop, &g_backbuffer);
                     fb_blit_rect(&g_framebuffer, &g_backbuffer, &present);
-                    desktop_render_rect(&g_desktop, &g_backbuffer, &current_cursor_rect);
+                    restore_cursor_area(&g_backbuffer);
 
                     presented_cursor_x = g_desktop.mouse_x;
                     presented_cursor_y = g_desktop.mouse_y;
