@@ -99,6 +99,19 @@ void on_forward_click(vui_widget *) { Browser::s_instance_->on_forward(); }
 void on_url_enter_cb(vui_widget *) { Browser::s_instance_->on_url_enter(); }
 void on_tick_cb(vui_window *) { Browser::s_instance_->on_tick(); }
 void on_resize_cb(vui_window *, int w, int h) { Browser::s_instance_->on_resize(w, h); }
+void on_key_cb(vui_window *, unsigned key) { Browser::s_instance_->on_key(key); }
+void on_scroll_cb(vui_window *, int dy) { Browser::s_instance_->on_scroll(dy); }
+void on_mouse_move_cb(vui_window *, int x, int y) {
+    if (y < BAR_H) return;
+    Browser::s_instance_->on_mouse_move(x, y - BAR_H);
+}
+void on_click_cb(vui_window *, int x, int y) {
+    if (y < BAR_H) return;
+    Browser::s_instance_->on_click(x, y - BAR_H);
+}
+void on_mouse_release_cb(vui_window *, int x, int y) {
+    Browser::s_instance_->on_mouse_release(x, y - BAR_H);
+}
 
 void Browser::on_back() {
     if (hist_pos_ > 0) {
@@ -183,6 +196,11 @@ void __attribute__((noreturn)) Browser::run() {
 
     vui_on_tick(win_, on_tick_cb);
     vui_on_resize(win_, on_resize_cb);
+    vui_on_key(win_, on_key_cb);
+    vui_on_scroll(win_, on_scroll_cb);
+    vui_on_mouse_move(win_, on_mouse_move_cb);
+    vui_on_mouse_click(win_, on_click_cb);
+    vui_on_mouse_release(win_, on_mouse_release_cb);
 
     const char *hint = "example.com";
     __builtin_strcpy(url_, hint);
@@ -777,21 +795,34 @@ void Browser::render() {
         if (r.underline && sy + r.h - 2 >= 0) fill(rx, sy + r.h - 2, r.w, 1, r.color);
     }
     if (layout_.height > content_h()) {
-        int track_h = win_h_; int knob_h  = track_h * content_h() / layout_.height; if (knob_h < 10) knob_h = 10;
+        int track_h = content_h();
+        int knob_h  = track_h * content_h() / layout_.height; if (knob_h < 10) knob_h = 10;
         int knob_y  = (track_h - knob_h) * scroll_ / (layout_.height - content_h());
-        fill(win_w_ - SCROLLBAR_W, 0, SCROLLBAR_W, track_h, COL_SCROLLBG); fill(win_w_ - SCROLLBAR_W, knob_y, SCROLLBAR_W, knob_h, COL_ACCENT);
+        
+        // Track: subtle, dark semi-transparent panel background
+        fill(win_w_ - SCROLLBAR_W, 0, SCROLLBAR_W, track_h, 0x000e1622u);
+        
+        // Knob: rounded pill inset by 2 pixels
+        uint32_t knob_col = scroll_dragging_ ? COL_ACCENT : (scroll_hovered_ ? 0x004da3ffu : 0x00334155u);
+        fill(win_w_ - SCROLLBAR_W + 2, knob_y + 2, SCROLLBAR_W - 4, knob_h - 4, knob_col);
     }
 }
 
 void Browser::on_key(uint32_t k) {
+    int old_focused = focused_field_;
     if (focused_field_ >= 0 && focused_field_ < MAX_FIELDS) {
         char *v = field_values_[focused_field_]; int n = (int)__builtin_strlen(v);
         if (k == '\n' || k == '\r') submit_form(focused_field_);
         else if (k == 0x08) { if (n > 0) v[n-1] = '\0'; }
         else if (k == 0x1b) focused_field_ = -1;
         else if (k >= 0x20 && k < 0x7f && n < 126) { v[n]=(char)k; v[n+1]='\0'; }
+        if (focused_field_ != old_focused || k != '\n') {
+            render();
+            vui_request_repaint(win_);
+        }
         return;
     }
+    int old_scroll = scroll_;
     switch (k) {
     case 'j':            scroll_ += 20; clamp_scroll(); break;
     case 'k':            scroll_ -= 20; clamp_scroll(); break;
@@ -804,23 +835,111 @@ void Browser::on_key(uint32_t k) {
     case ']':            on_forward(); break;
     default: break;
     }
+    if (scroll_ != old_scroll || k == 'r') {
+        render();
+        vui_request_repaint(win_);
+    }
 }
 
-void Browser::on_mouse_move(int x, int y) { int hl = link_at(x, y); if (hl != hover_link_) hover_link_ = hl; }
+void Browser::on_mouse_move(int x, int y) {
+    if (scroll_dragging_) {
+        int track_h = content_h();
+        int knob_h = track_h * content_h() / layout_.height;
+        if (knob_h < 10) knob_h = 10;
+        int denom = track_h - knob_h;
+        if (denom > 0) {
+            int dy = y - scroll_drag_start_y_;
+            int delta_scroll = dy * (layout_.height - content_h()) / denom;
+            scroll_ = scroll_drag_start_scroll_ + delta_scroll;
+            clamp_scroll();
+            render();
+            vui_request_repaint(win_);
+        }
+        return;
+    }
+    
+    bool old_hovered = scroll_hovered_;
+    scroll_hovered_ = (x >= win_w_ - SCROLLBAR_W);
+    if (scroll_hovered_ != old_hovered) {
+        render();
+        vui_request_repaint(win_);
+    }
+    
+    int hl = link_at(x, y);
+    if (hl != hover_link_) {
+        hover_link_ = hl;
+        render();
+        vui_request_repaint(win_);
+    }
+}
 
 void Browser::on_click(int x, int y) {
+    if (x >= win_w_ - SCROLLBAR_W) {
+        focused_field_ = -1;
+        int track_h = content_h();
+        int knob_h = track_h * content_h() / layout_.height;
+        if (knob_h < 10) knob_h = 10;
+        int knob_y = (track_h - knob_h) * scroll_ / (layout_.height - content_h());
+        
+        if (y >= knob_y && y < knob_y + knob_h) {
+            scroll_dragging_ = true;
+            scroll_drag_start_y_ = y;
+            scroll_drag_start_scroll_ = scroll_;
+        } else {
+            scroll_ = (y - knob_h / 2) * (layout_.height - content_h()) / (track_h - knob_h);
+            clamp_scroll();
+            render();
+            vui_request_repaint(win_);
+        }
+        return;
+    }
+    
+    int old_focused = focused_field_;
     int fi = field_at(x, y);
     if (fi >= 0 && fi < layout_.field_count) {
         int kind = layout_.fields[fi].kind;
         if (kind == WLF_SUBMIT || kind == WLF_BUTTON) { focused_field_ = -1; submit_form(fi); }
         else focused_field_ = fi;
+        if (focused_field_ != old_focused) {
+            render();
+            vui_request_repaint(win_);
+        }
         return;
     }
     focused_field_ = -1;
-    { char href[1024]; if (hit_link(x, y, href, sizeof href)) { __builtin_strncpy(url_, href, sizeof url_); url_len_ = (int)__builtin_strlen(url_); vui_set_text(w_url_bar_, url_); navigate(url_); } }
+    if (focused_field_ != old_focused) {
+        render();
+        vui_request_repaint(win_);
+    }
+    {
+        char href[1024];
+        if (hit_link(x, y, href, sizeof href)) {
+            __builtin_strncpy(url_, href, sizeof url_);
+            url_len_ = (int)__builtin_strlen(url_);
+            vui_set_text(w_url_bar_, url_);
+            navigate(url_);
+        }
+    }
 }
 
-void Browser::on_scroll(int dy) { scroll_ += dy * 3 * 20; clamp_scroll(); }
+void Browser::on_mouse_release(int x, int y) {
+    (void)x; (void)y;
+    if (scroll_dragging_) {
+        scroll_dragging_ = false;
+        render();
+        vui_request_repaint(win_);
+    }
+}
+
+void Browser::on_scroll(int dy) {
+    int old_scroll = scroll_;
+    scroll_ += dy * 3 * 20;
+    clamp_scroll();
+    if (scroll_ != old_scroll) {
+        render();
+        vui_request_repaint(win_);
+    }
+}
 
 void Browser::on_resize(int w, int h) {
     if (w < 80) w = 80; if (h < 60) h = 60; if (w > BROW_MAX_W) w = BROW_MAX_W; if (h > BROW_MAX_H) h = BROW_MAX_H;

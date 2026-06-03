@@ -40,7 +40,7 @@ static constexpr int BAR_H       = 36;  /* VexUI bar height          */
 static constexpr int STATUS_H    = 18;  /* status line height        */
 static constexpr int CONTENT_TOP = BAR_H;
 static constexpr int MARGIN      = 0;   /* VexUI handles margins     */
-static constexpr int SCROLLBAR_W = 6;   /* scrollbar width           */
+static constexpr int SCROLLBAR_W = 10;  /* scrollbar width           */
 static constexpr int PAGE_PAD    = 14;  /* inner left padding        */
 
 class Browser {
@@ -54,6 +54,7 @@ public:
     void on_key(uint32_t k);
     void on_mouse_move(int x, int y);
     void on_click(int x, int y);
+    void on_mouse_release(int x, int y);
     void on_scroll(int dy);
     void on_resize(int w, int h);
     void on_back();
@@ -120,6 +121,10 @@ private:
     wl_doc    layout_   = {};
     int       scroll_   = 0;
     int       hover_link_ = -1;
+    bool      scroll_dragging_ = false;
+    int       scroll_drag_start_y_ = 0;
+    int       scroll_drag_start_scroll_ = 0;
+    bool      scroll_hovered_ = false;
 
     /* ---- form fields --------------------------------------------------- */
     /* Editable values persist across re-layouts (keyed by field index, which

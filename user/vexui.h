@@ -189,9 +189,10 @@ void vui_on_key(vui_window *w, vui_key_callback cb);
 void vui_set_tooltip(vui_widget *wgt, const char *tip);
 /* Register a mouse-wheel handler for this window. */
 void vui_on_scroll(vui_window *w, vui_scroll_callback cb);
-/* Register mouse move and click handlers for this window. */
+/* Register mouse move, click, and release handlers for this window. */
 void vui_on_mouse_move(vui_window *w, vui_mouse_callback cb);
 void vui_on_mouse_click(vui_window *w, vui_mouse_callback cb);
+void vui_on_mouse_release(vui_window *w, vui_mouse_callback cb);
 /* Declare an entry for this window's dock-icon context menu. The window server
  * shows it (below the standard Show/Hide) and invokes `cb` when picked. Up to
  * 6 entries; extra calls are ignored. */
