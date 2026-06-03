@@ -22,17 +22,18 @@ FileDialog *FileDialog::instance_ = nullptr;
 /* Helper: retrieve directory entry with kind/size info in one pass. */
 static int readdir_entry_ex(const char *path, uint32_t index, char *name, size_t name_size, uint64_t *kind, uint64_t *size) {
     long ret;
-    uint64_t out_kind = 0;
-    register uint64_t r8_val __asm__("r8");
-    register uint64_t r10 __asm__("r10") = name_size;
+    register uint64_t r8_val   __asm__("r8")  = 0;
+    register uint64_t r10_val  __asm__("r10") = name_size;
+    register uint64_t rdx_val  __asm__("rdx") = (uint64_t)(size_t)name;
+
     __asm__ volatile(
         "int $0x80"
-        : "=a"(ret), "=d"(out_kind), "=r"(r8_val)
-        : "a"((long)SYS_READDIR), "D"((uint64_t)(size_t)path), "S"((uint64_t)index), "d"((uint64_t)(size_t)name), "r"(r10)
+        : "=a"(ret), "+r"(rdx_val), "+r"(r8_val)
+        : "a"((long)SYS_READDIR), "D"((uint64_t)(size_t)path), "S"((uint64_t)index), "r"(rdx_val), "r"(r10_val)
         : "rcx", "r11", "memory"
     );
-    if (kind) *kind = out_kind;
-    if (size) *size = r8_val;
+    if (kind) *kind = rdx_val; /* kind is returned in RDX */
+    if (size) *size = r8_val;  /* size is returned in R8 */
     return (int)ret;
 }
 

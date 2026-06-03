@@ -1877,6 +1877,7 @@ void vui_quit(vui_window *w){ if(w) w->open=0; }
 int vui_window_id(vui_window *w){ return w ? w->id : -1; }
 
 int vui_file_dialog(const char *title, const char *initial_path, char *out_path, int out_cap, int save_mode) {
+    emit("vui_file_dialog: entered\n");
     (void)title;
     char arg[256];
     char res_file[64];
@@ -1903,12 +1904,25 @@ int vui_file_dialog(const char *title, const char *initial_path, char *out_path,
     arg[ai++] = ';';
     scopy(arg + ai, res_file, 256 - ai);
 
+    emit("vui_file_dialog: spawning /bin/filedialog with arg: ");
+    emit(arg);
+    emit("\n");
+
     /* Remove old result if it exists */
     sc1(SYS_UNLINK, (uint64_t)(size_t)res_file);
 
     /* Spawn the dialog app */
     int child = (int)sc2(SYS_PROCESS_SPAWN, (uint64_t)(size_t)"/bin/filedialog", (uint64_t)(size_t)arg);
-    if (child <= 0) return 0;
+    if (child <= 0) {
+        emit("vui_file_dialog: spawn failed\n");
+        return 0;
+    }
+
+    emit("vui_file_dialog: spawned child pid=");
+    /* Simple integer print */
+    { char b[16]; int i=0, v=child; if(v==0) b[i++]='0'; else { while(v>0){ b[i++]='0'+(v%10); v/=10; } }
+      while(i>0){ char c=b[--i]; sc3(SYS_WRITE, 1, (uint64_t)(size_t)&c, 1); } }
+    emit("\n");
 
     /* Wait for it to finish */
     int status = 0;
@@ -1916,22 +1930,32 @@ int vui_file_dialog(const char *title, const char *initial_path, char *out_path,
         do_yield();
     }
 
-    if (status != 0) return 0; /* Cancelled or error */
+    emit("vui_file_dialog: child finished, status=");
+    { char b[16]; int i=0, v=status; if(v==0) b[i++]='0'; else { if(v<0){ emit("-"); v=-v; } while(v>0){ b[i++]='0'+(v%10); v/=10; } }
+      while(i>0){ char c=b[--i]; sc3(SYS_WRITE, 1, (uint64_t)(size_t)&c, 1); } }
+    emit("\n");
 
     /* Read the result back */
     int fd = (int)sc1(SYS_OPEN, (uint64_t)(size_t)res_file);
-    if (fd < 0) return 0;
+    if (fd < 0) {
+        emit("vui_file_dialog: could not open result file\n");
+        return 0;
+    }
     
     int n = (int)sc3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)out_path, (uint64_t)(out_cap - 1));
     sc1(SYS_CLOSE, (uint64_t)fd);
     
     if (n > 0) {
         out_path[n] = '\0';
+        emit("vui_file_dialog: success, path=");
+        emit(out_path);
+        emit("\n");
         /* Cleanup */
         sc1(SYS_UNLINK, (uint64_t)(size_t)res_file);
         return 1;
     }
 
+    emit("vui_file_dialog: no data read from result file\n");
     return 0;
 }
 
