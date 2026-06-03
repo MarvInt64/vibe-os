@@ -248,6 +248,11 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/stat.elf $(LIBC_CRT0) build/user/stat.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/stat.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/stat.elf /bin/stat
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/su.c -o build/user/su.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/su.elf $(LIBC_CRT0) build/user/su.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/su.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/su.elf /bin/su
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/shadow /etc/shadow
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/chmod.c  -o build/user/chmod.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/chmod.elf  $(LIBC_CRT0) build/user/chmod.o  $(LIBC_A)
 	$(USTRIP) --strip-all build/user/chmod.elf

@@ -29,8 +29,8 @@
 #define SYS_EXIT 4
 #define SYS_PROCESS_SPAWN 5
 #define SYS_WAITPID 6
-#define SYS_OPEN 7
-#define SYS_CLOSE 8
+#define SYS_OPEN     7
+#define SYS_CLOSE    8
 #define SYS_STAT 9
 #define SYS_READDIR 10
 #define SYS_CHDIR 11
@@ -48,6 +48,7 @@
 #define SYS_MKDIR 26
 #define SYS_DISPLAY_MODE 27
 #define SYS_SYSTEM_INFO 39
+#define SYS_GETUID  55
 
 typedef unsigned long size_t;
 typedef long ssize_t;
@@ -122,11 +123,23 @@ static int strcmp(const char *a, const char *b) {
     return (unsigned char)*a - (unsigned char)*b;
 }
 
+static int strncmp(const char *a, const char *b, size_t n) {
+    while (n-- && *a && *a == *b) { a++; b++; }
+    if (!n) return 0;
+    return (unsigned char)*a - (unsigned char)*b;
+}
+
 static char *strcat(char *dest, const char *src) {
   char *ret = dest;
   while (*dest) dest++;
   while ((*dest++ = *src++));
   return ret;
+}
+
+static char *strcpy(char *dst, const char *src) {
+    char *ret = dst;
+    while ((*dst++ = *src++));
+    return ret;
 }
 
 static void write_stdout(const char *s, size_t len) {
@@ -144,15 +157,6 @@ static void write_line(const char *s) {
 
 static void write_char(char c) {
     write_stdout(&c, 1);
-}
-
-static ssize_t read_stdin(char *buf, size_t len) {
-    ssize_t n;
-    while (1) {
-        n = syscall3(SYS_READ, 0, (uint64_t)(size_t)buf, len);
-        if (n > 0) return n;
-        yield();
-    }
 }
 
 static int chdir(const char *path) {
@@ -175,114 +179,407 @@ static int spawn_with_arg(const char *path, const char *arg) {
     return (int)syscall2(SYS_PROCESS_SPAWN, (uint64_t)(size_t)path, (uint64_t)(size_t)arg);
 }
 
-static void waitpid(int pid) {
-    syscall2(SYS_WAITPID, (uint64_t)pid, 0);
+static int waitpid_ret(int pid) {
+    return (int)syscall2(SYS_WAITPID, (uint64_t)pid, 0);
 }
 
 #define MAX_ARGS 8
 #define MAX_ARG_LEN 64
 #define MAX_PATH 256
-#define MAX_INPUT 128
+/* Expand input cap to fit history lines and variable-expanded strings. */
+#define MAX_INPUT 512
+#define LINE_CAP  512
+
+/* ---- History ring buffer ------------------------------------------------- */
+
+#define HIST_CAP 100
+
+static char g_hist[HIST_CAP][LINE_CAP];
+static int  g_hist_head  = 0;  /* index of next slot to write */
+static int  g_hist_total = 0;  /* total entries ever added */
+
+/*
+ * Add a line to history, skipping empty strings and exact duplicates of the
+ * most recent entry so the history doesn't fill with repeated commands.
+ */
+static void hist_add(const char *line) {
+    if (!line || !line[0]) return;
+    /* Deduplicate against the last entry. */
+    if (g_hist_total > 0) {
+        int last = (g_hist_head - 1 + HIST_CAP) % HIST_CAP;
+        if (strcmp(g_hist[last], line) == 0) return;
+    }
+    int slot = g_hist_head % HIST_CAP;
+    int i;
+    for (i = 0; line[i] && i < LINE_CAP - 1; ++i)
+        g_hist[slot][i] = line[i];
+    g_hist[slot][i] = '\0';
+    g_hist_head = (g_hist_head + 1) % HIST_CAP;
+    g_hist_total++;
+}
+
+/*
+ * Retrieve a history entry by recency. back=1 returns the most recent entry.
+ * Returns NULL if out of range.
+ */
+static const char *hist_get(int back) {
+    if (back < 1 || back > g_hist_total || back > HIST_CAP) return 0;
+    int idx = (g_hist_head - back + HIST_CAP * 2) % HIST_CAP;
+    return g_hist[idx];
+}
+
+/* ---- Shell state --------------------------------------------------------- */
 
 static char g_cwd[MAX_PATH] = "/";
 static char g_input[MAX_INPUT];
+static char g_expanded[MAX_INPUT];  /* variable-expanded copy of g_input */
 static char g_args[MAX_ARGS][MAX_ARG_LEN];
-static int g_argc;
+static int  g_argc;
 static char g_full_path[MAX_PATH];
 static char g_io_buf[1024];
 static char g_ping_arg_buf[256];
-static char g_cd_path[MAX_PATH];
-static char g_cd_buf[MAX_PATH];
+static int  g_last_exit = 0;  /* exit code of the last foreground command */
 
-static int spawn_with_arguments(const char *path) {
-    char full_args[256];
-    full_args[0] = '\0';
-    for (int i = 1; i < g_argc && i < MAX_ARGS; ++i) {
-        if (i > 1) {
-            strcat(full_args, " ");
+/* ---- Username from /etc/passwd ------------------------------------------ */
+
+/*
+ * Parse /etc/passwd (colon-separated) to find the username for a given uid.
+ * Format: name:x:uid:gid:gecos:home:shell
+ * Falls back to "root" for uid 0 or "user" for others when the file is absent.
+ */
+static void get_username(uint32_t uid, char *buf, size_t cap) {
+    /* Open /etc/passwd using a raw read — no libc here. */
+    static char passwd_buf[512];
+    ssize_t n = syscall3(SYS_READ,
+                         (uint64_t)(size_t)"/etc/passwd",
+                         (uint64_t)(size_t)passwd_buf,
+                         sizeof(passwd_buf) - 1);
+    if (n <= 0) {
+        /* File unreadable; use sensible defaults. */
+        const char *def = (uid == 0) ? "root" : "user";
+        size_t i;
+        for (i = 0; def[i] && i < cap - 1; ++i) buf[i] = def[i];
+        buf[i] = '\0';
+        return;
+    }
+    passwd_buf[n] = '\0';
+
+    /* Walk each newline-terminated line. */
+    char *line = passwd_buf;
+    while (*line) {
+        /* field 0: name */
+        char *p = line;
+        while (*p && *p != ':' && *p != '\n') p++;
+        size_t name_len = (size_t)(p - line);
+
+        /* Skip to field 2 (uid), which is after two colons. */
+        int colons = 0;
+        while (*p && *p != '\n' && colons < 2) {
+            if (*p == ':') colons++;
+            p++;
         }
-        strcat(full_args, g_args[i]);
+        /* Parse the uid number in field 2. */
+        uint32_t entry_uid = 0;
+        while (*p >= '0' && *p <= '9') {
+            entry_uid = entry_uid * 10 + (uint32_t)(*p - '0');
+            p++;
+        }
+        if (entry_uid == uid) {
+            if (name_len >= cap) name_len = cap - 1;
+            size_t i;
+            for (i = 0; i < name_len; ++i) buf[i] = line[i];
+            buf[name_len] = '\0';
+            return;
+        }
+        /* Advance to the next line. */
+        while (*line && *line != '\n') line++;
+        if (*line == '\n') line++;
     }
-    if (full_args[0] != '\0') {
-        return spawn_with_arg(path, full_args);
+    /* No match — fall back. */
+    const char *def = (uid == 0) ? "root" : "user";
+    size_t i;
+    for (i = 0; def[i] && i < cap - 1; ++i) buf[i] = def[i];
+    buf[i] = '\0';
+}
+
+/* ---- Variable expansion -------------------------------------------------- */
+
+/*
+ * Copy src to dst, replacing shell variables inline.
+ * We handle $?, $HOME, $PATH, $USER, $USERNAME so scripts and interactive
+ * users can reference them without a real environment table.
+ */
+static void expand_vars(const char *src, char *dst, size_t cap,
+                        int last_exit, uint32_t uid, const char *username) {
+    size_t di = 0;
+    size_t si = 0;
+
+    while (src[si] && di < cap - 1) {
+        if (src[si] != '$') {
+            dst[di++] = src[si++];
+            continue;
+        }
+        /* Peek at what follows '$'. */
+        si++;  /* skip '$' */
+        const char *insert = 0;
+        char num_buf[12];
+
+        if (src[si] == '?') {
+            /* Last exit code — convert to decimal string. */
+            int v = last_exit;
+            int neg = (v < 0);
+            if (neg) v = -v;
+            int i = 0;
+            if (v == 0) { num_buf[i++] = '0'; }
+            else {
+                char tmp[12]; int ti = 0;
+                while (v) { tmp[ti++] = (char)('0' + v % 10); v /= 10; }
+                if (neg) tmp[ti++] = '-';
+                while (ti > 0) num_buf[i++] = tmp[--ti];
+            }
+            num_buf[i] = '\0';
+            insert = num_buf;
+            si++;
+        } else if (strncmp(src + si, "HOME", 4) == 0 && !(src[si+4] >= 'A' && src[si+4] <= 'Z') && !(src[si+4] >= 'a' && src[si+4] <= 'z') && src[si+4] != '_') {
+            insert = (uid == 0) ? "/root" : "/home/user";
+            si += 4;
+        } else if (strncmp(src + si, "PATH", 4) == 0 && !(src[si+4] >= 'A' && src[si+4] <= 'Z') && !(src[si+4] >= 'a' && src[si+4] <= 'z') && src[si+4] != '_') {
+            insert = "/bin";
+            si += 4;
+        } else if (strncmp(src + si, "USERNAME", 8) == 0) {
+            insert = username;
+            si += 8;
+        } else if (strncmp(src + si, "USER", 4) == 0 && !(src[si+4] >= 'A' && src[si+4] <= 'Z') && !(src[si+4] >= 'a' && src[si+4] <= 'z') && src[si+4] != '_') {
+            insert = username;
+            si += 4;
+        } else {
+            /* Unknown variable — emit literal '$'. */
+            dst[di++] = '$';
+            continue;
+        }
+
+        if (insert) {
+            while (*insert && di < cap - 1)
+                dst[di++] = *insert++;
+        }
+    }
+    dst[di] = '\0';
+}
+
+/* ---- Tab completion ------------------------------------------------------ */
+
+static void prompt_str(const char *username, uint32_t uid);  /* forward decl */
+
+/*
+ * Complete the current token in buf[0..len-1].
+ * Searches /bin/ for command completion or the parent directory for path
+ * completion. On a unique match, fills in the missing characters.
+ * On multiple matches, lists them and reprints the prompt + buffer.
+ */
+static void tab_complete(char *buf, int *len_ptr,
+                         const char *username, uint32_t uid) {
+    int len = *len_ptr;
+
+    /* Find start of the current (incomplete) token. */
+    int tok_start = len;
+    while (tok_start > 0 && buf[tok_start - 1] != ' ') tok_start--;
+    const char *tok = buf + tok_start;
+    int tok_len = len - tok_start;
+
+    /* Decide whether this is a path completion or a command completion. */
+    int is_path = 0;
+    int i;
+    for (i = 0; i < tok_len; ++i) {
+        if (tok[i] == '/') { is_path = 1; break; }
+    }
+    if (tok_len > 0 && tok[0] == '.') is_path = 1;
+
+    char dir_path[MAX_PATH];
+    const char *prefix;
+    int prefix_len;
+
+    if (is_path) {
+        /* Split the token into directory + prefix basename. */
+        int last_slash = -1;
+        for (i = 0; i < tok_len; ++i) {
+            if (tok[i] == '/') last_slash = i;
+        }
+        if (last_slash < 0) {
+            strcpy(dir_path, g_cwd);
+            prefix = tok;
+            prefix_len = tok_len;
+        } else {
+            /* Copy directory portion. */
+            if (tok[0] == '/') {
+                int di = 0;
+                for (i = 0; i <= last_slash && i < MAX_PATH - 1; ++i)
+                    dir_path[di++] = tok[i];
+                dir_path[di] = '\0';
+            } else {
+                strcpy(dir_path, g_cwd);
+                if (dir_path[strlen(dir_path) - 1] != '/')
+                    strcat(dir_path, "/");
+                int di = (int)strlen(dir_path);
+                for (i = 0; i <= last_slash && di < MAX_PATH - 1; ++i)
+                    dir_path[di++] = tok[i];
+                dir_path[di] = '\0';
+            }
+            prefix = tok + last_slash + 1;
+            prefix_len = tok_len - last_slash - 1;
+        }
     } else {
-        return spawn(path);
+        strcpy(dir_path, "/bin");
+        prefix = tok;
+        prefix_len = tok_len;
+    }
+
+    /* Collect matching entries. */
+#define COMP_MAX 32
+    static char matches[COMP_MAX][64];
+    int match_count = 0;
+    char entry[64];
+    uint32_t idx;
+
+    for (idx = 0; match_count < COMP_MAX; ++idx) {
+        entry[0] = '\0';
+        int r = readdir_entry(dir_path, idx, entry, sizeof(entry));
+        if (r <= 0) break;
+        if (!entry[0]) continue;
+        if (prefix_len == 0 || strncmp(entry, prefix, (size_t)prefix_len) == 0) {
+            strcpy(matches[match_count++], entry);
+        }
+    }
+
+    if (match_count == 0) return;
+
+    if (match_count == 1) {
+        /* Single match: append the missing characters to the buffer. */
+        const char *rest = matches[0] + prefix_len;
+        while (*rest && len < LINE_CAP - 1) {
+            buf[len++] = *rest;
+            write_char(*rest);
+            rest++;
+        }
+        *len_ptr = len;
+        return;
+    }
+
+    /* Multiple matches: show them on a new line then reprint the prompt. */
+    write_str("\n");
+    for (i = 0; i < match_count; ++i) {
+        write_str(matches[i]);
+        write_char(' ');
+    }
+    write_str("\n");
+    prompt_str(username, uid);
+    write_stdout(buf, (size_t)len);
+}
+
+/* ---- Readline with history and Ctrl sequences ---------------------------- */
+
+/*
+ * Read a line character-by-character so we can handle arrow keys, backspace,
+ * Ctrl+C, Ctrl+U and tab completion without relying on any line discipline.
+ * The terminal in VibeOS passes raw bytes so we must do all of this ourselves.
+ */
+static void readline(char *buf, int cap, const char *username, uint32_t uid) {
+    int len = 0;
+    int hist_nav = 0;  /* how many entries back we have navigated; 0 = current */
+
+    while (1) {
+        char c = 0;
+        ssize_t n = syscall3(SYS_READ, 0, (uint64_t)(size_t)&c, 1);
+        if (n <= 0) { yield(); continue; }
+
+        if (c == '\n' || c == '\r') {
+            buf[len] = '\0';
+            write_char('\n');
+            return;
+        }
+
+        if (c == 0x03) {
+            /* Ctrl+C: cancel the current line. */
+            write_str("^C\n");
+            buf[0] = '\0';
+            return;
+        }
+
+        if (c == 0x15) {
+            /* Ctrl+U: erase entire line by emitting backspace-space-backspace
+             * for each character already typed. */
+            while (len > 0) {
+                write_str("\b \b");
+                len--;
+            }
+            continue;
+        }
+
+        if (c == '\t') {
+            tab_complete(buf, &len, username, uid);
+            continue;
+        }
+
+        if (c == '\x7f' || c == '\b') {
+            /* Backspace: erase last character from display and buffer. */
+            if (len > 0) {
+                write_str("\b \b");
+                len--;
+            }
+            continue;
+        }
+
+        if (c == '\x1b') {
+            /* Escape sequence: read '[' then the final byte. */
+            char seq[2] = {0, 0};
+            syscall3(SYS_READ, 0, (uint64_t)(size_t)&seq[0], 1);
+            syscall3(SYS_READ, 0, (uint64_t)(size_t)&seq[1], 1);
+            if (seq[0] != '[') continue;
+
+            if (seq[1] == 'A') {
+                /* Arrow up: navigate history backwards. */
+                const char *entry = hist_get(hist_nav + 1);
+                if (!entry) continue;
+                hist_nav++;
+                /* Erase current line and substitute the history entry. */
+                while (len > 0) { write_str("\b \b"); len--; }
+                while (*entry && len < cap - 1) {
+                    buf[len++] = *entry;
+                    write_char(*entry);
+                    entry++;
+                }
+            } else if (seq[1] == 'B') {
+                /* Arrow down: navigate history forwards (toward present). */
+                if (hist_nav == 0) continue;
+                hist_nav--;
+                while (len > 0) { write_str("\b \b"); len--; }
+                if (hist_nav > 0) {
+                    const char *entry = hist_get(hist_nav);
+                    if (entry) {
+                        while (*entry && len < cap - 1) {
+                            buf[len++] = *entry;
+                            write_char(*entry);
+                            entry++;
+                        }
+                    }
+                }
+                /* hist_nav == 0 means "back to empty current line". */
+            }
+            /* Left/right arrows: ignore — cursor movement not yet implemented. */
+            continue;
+        }
+
+        /* Ordinary printable character. */
+        if (c >= 0x20 && c < 0x7f && len < cap - 1) {
+            buf[len++] = c;
+            write_char(c);
+            hist_nav = 0;  /* Any new input resets history navigation. */
+        }
     }
 }
 
-static void prompt(void) {
-    write_str(g_cwd);
-    write_str("$ ");
-}
-
-static void show_help(void) {
-	write_line("Commands: help, about, clear, ls, cd, pwd, cat, edit, stat, echo, touch, mkdir, rm, cp, mv, ifconfig, ping, curl, display, gui, uidemo, taskmgr, browser, exit");
-}
+/* ---- Utility helpers ----------------------------------------------------- */
 
 static void write_dec(uint64_t n);   /* defined later */
-
-static void show_about(void) {
-    struct system_info_snapshot info;
-    int res = (int)syscall1(SYS_SYSTEM_INFO, (uint64_t)(size_t)&info);
-    if (res == 0) {
-        write_str("VibeOS Kernel v");
-        write_line(info.version);
-    } else {
-        write_str("Kernel version fetch failed. Res: ");
-        write_dec((uint64_t)-res);
-        write_line("");
-    }
-}
-
-static void cmd_clear(void) {
-	write_str("\x1b[2J\x1b[H");
-}
-
-static void cmd_pwd(void) {
-	write_line(g_cwd);
-}
-
-static void build_full_path(const char *path) {
-    size_t i = 0;
-    if (path[0] == '/') {
-        while (path[i] && i < MAX_PATH - 1) { g_full_path[i] = path[i]; i++; }
-        g_full_path[i] = 0;
-    } else {
-        while (g_cwd[i]) { g_full_path[i] = g_cwd[i]; i++; }
-        if (i > 0 && g_full_path[i-1] != '/') g_full_path[i++] = '/';
-        const char *p = path;
-        while (*p && i < MAX_PATH - 1) g_full_path[i++] = *p++;
-        g_full_path[i] = 0;
-    }
-}
-
-static void normalize_path(char *path) {
-    char *p = path;
-    char *out = path;
-    
-    while (*p) {
-        if (p[0] == '/' && p[1] == '.') {
-            if (p[2] == '.' && (p[3] == '/' || p[3] == 0)) {
-                p += 3;
-                while (out > path && *--out != '/');
-            } else if (p[2] == '/' || p[2] == 0) {
-                p += 2;
-            } else {
-                *out++ = *p++;
-            }
-        } else {
-            *out++ = *p++;
-        }
-    }
-    
-    if (out == path) {
-        *out++ = '/';
-    } else if (out > path + 1 && out[-1] == '/') {
-        /* Remove trailing slash if not root */
-        out--;
-    }
-    *out = 0;
-}
 
 static const char *strerror(int err) {
     if (err < 0) err = -err;
@@ -308,13 +605,102 @@ static const char *strerror(int err) {
     }
 }
 
+/* ---- Prompt -------------------------------------------------------------- */
+
+static char g_username[32];
+static uint32_t g_uid;
+
+/*
+ * Emit the prompt: "name@vibeos:/path# " for root, "name@vibeos:/path$ " for
+ * regular users.  The '#' vs '$' distinction is the Unix convention.
+ */
+static void prompt_str(const char *username, uint32_t uid) {
+    write_str(username);
+    write_str("@vibeos:");
+    write_str(g_cwd);
+    write_str(uid == 0 ? "# " : "$ ");
+}
+
+static void prompt(void) {
+    prompt_str(g_username, g_uid);
+}
+
+/* ---- Command helpers ----------------------------------------------------- */
+
+static void show_help(void) {
+    write_line("Commands: help, about, clear, ls, cd, pwd, cat, edit, stat, echo, touch, mkdir, rm, cp, mv, ifconfig, ping, curl, display, gui, uidemo, taskmgr, browser, exit");
+}
+
+static void show_about(void) {
+    struct system_info_snapshot info;
+    int res = (int)syscall1(SYS_SYSTEM_INFO, (uint64_t)(size_t)&info);
+    if (res == 0) {
+        write_str("VibeOS Kernel v");
+        write_line(info.version);
+    } else {
+        write_str("Kernel version fetch failed. Res: ");
+        write_dec((uint64_t)-res);
+        write_line("");
+    }
+}
+
+static void cmd_clear(void) {
+    write_str("\x1b[2J\x1b[H");
+}
+
+static void cmd_pwd(void) {
+    write_line(g_cwd);
+}
+
+static void build_full_path(const char *path) {
+    size_t i = 0;
+    if (path[0] == '/') {
+        while (path[i] && i < MAX_PATH - 1) { g_full_path[i] = path[i]; i++; }
+        g_full_path[i] = 0;
+    } else {
+        while (g_cwd[i]) { g_full_path[i] = g_cwd[i]; i++; }
+        if (i > 0 && g_full_path[i-1] != '/') g_full_path[i++] = '/';
+        const char *p = path;
+        while (*p && i < MAX_PATH - 1) g_full_path[i++] = *p++;
+        g_full_path[i] = 0;
+    }
+}
+
+static void normalize_path(char *path) {
+    char *p = path;
+    char *out = path;
+
+    while (*p) {
+        if (p[0] == '/' && p[1] == '.') {
+            if (p[2] == '.' && (p[3] == '/' || p[3] == 0)) {
+                p += 3;
+                while (out > path && *--out != '/');
+            } else if (p[2] == '/' || p[2] == 0) {
+                p += 2;
+            } else {
+                *out++ = *p++;
+            }
+        } else {
+            *out++ = *p++;
+        }
+    }
+
+    if (out == path) {
+        *out++ = '/';
+    } else if (out > path + 1 && out[-1] == '/') {
+        /* Remove trailing slash if not root. */
+        out--;
+    }
+    *out = 0;
+}
+
+/*
+ * Change directory — silently update g_cwd on success, print an error on
+ * failure. Debug prints removed; they were useful only during initial dev.
+ */
 static void cmd_cd(const char *path) {
     size_t i, j;
     char buf[MAX_PATH];
-
-    write_str("CD: path='");
-    write_str(path);
-    write_str("'\n");
 
     if (!path || !path[0]) {
         path = "/";
@@ -336,10 +722,6 @@ static void cmd_cd(const char *path) {
     }
     buf[i] = 0;
 
-    write_str("CD: buf='");
-    write_str(buf);
-    write_str("'\n");
-
     normalize_path(buf);
 
     int res = chdir(buf);
@@ -357,16 +739,16 @@ static void cmd_cd(const char *path) {
 }
 
 static void cmd_ls(const char *path) {
-	char name[64];
-	uint32_t index;
-	int result;
+    char name[64];
+    uint32_t index;
+    int result;
 
-	if (!path || !path[0]) path = g_cwd;
+    if (!path || !path[0]) path = g_cwd;
 
-	for (index = 0; ; index++) {
-		name[0] = 0;
-		result = readdir_entry(path, index, name, sizeof(name));
-		if (result < 0) {
+    for (index = 0; ; index++) {
+        name[0] = 0;
+        result = readdir_entry(path, index, name, sizeof(name));
+        if (result < 0) {
             write_str("ls: ");
             write_str(path);
             write_str(": ");
@@ -374,10 +756,9 @@ static void cmd_ls(const char *path) {
             break;
         }
         if (result == 0) break;
-		if (name[0]) write_line(name);
-	}
+        if (name[0]) write_line(name);
+    }
 }
-
 
 static void write_dec(uint64_t n);   /* defined later */
 
@@ -393,8 +774,7 @@ static int parse_uint(const char *s) {
 }
 
 static void cmd_display(int argc) {
-    /* Curated list of resolutions the BGA/QEMU std-vga reliably supports
-     * (all within the compositor's 1920x1080 buffer limit). */
+    /* Curated list of resolutions the BGA/QEMU std-vga reliably supports. */
     static const char *modes[] = {
         "1920 1080", "1680 1050", "1512 982", "1440 900",
         "1366 768", "1280 800", "1280 720", "1024 768", "800 600", 0
@@ -416,8 +796,6 @@ static void cmd_display(int argc) {
     write_line("Supported modes (use: display <w> <h>):");
     for (i = 0; modes[i]; ++i) { write_str("  "); write_line(modes[i]); }
 }
-
-
 
 static void itoa(uint64_t n, char *s) {
     char buf[24];
@@ -488,7 +866,7 @@ static void cmd_dmesg(void) {
 
     for (seq = 0; seq < total; ++seq) {
         if (syscall2(SYS_JOURNAL_READ, (uint64_t)seq, (uint64_t)(size_t)&e) != 1) {
-            continue;   /* scrolled out of the ring */
+            continue;
         }
         write_str("[#");
         write_dec(e.seq);
@@ -581,10 +959,8 @@ static void cmd_ping(const char *args) {
         return;
     }
 
-    /* Parse optional flags before the target. */
     const char *target_str = args;
     if (args[0] == '-') {
-        /* '-c N' or '-t' */
         if (args[1] == 'c' && args[2] == ' ') {
             count = 0;
             const char *p = args + 3;
@@ -592,10 +968,7 @@ static void cmd_ping(const char *args) {
                 count = count * 10 + (*p - '0');
                 ++p;
             }
-            if (count <= 0) {
-                write_line("ping: invalid count");
-                return;
-            }
+            if (count <= 0) { write_line("ping: invalid count"); return; }
             target_str = p;
             while (*target_str == ' ') ++target_str;
         } else if (args[1] == 't' && args[2] == ' ') {
@@ -615,7 +988,6 @@ static void cmd_ping(const char *args) {
         return;
     }
 
-    /* Copy target to avoid modifying original string */
     {
         int i = 0;
         while (target_str[i] && i + 1 < (int)sizeof(target)) {
@@ -651,31 +1023,24 @@ static void cmd_ping(const char *args) {
 
         if (res >= 0) {
             ++replies;
-            write_str("seq=");
-            write_dec((uint64_t)seq);
+            write_str("seq="); write_dec((uint64_t)seq);
             write_str(" : reply from "); write_ip(ip);
             write_str(" rtt="); write_dec((uint64_t)rtt); write_line(" ms");
         } else {
-            write_str("seq=");
-            write_dec((uint64_t)seq);
+            write_str("seq="); write_dec((uint64_t)seq);
             write_line(" : timeout");
         }
 
         if (continuous) {
-            /* Sleep 1 second between pings. Check for Ctrl+C between sends. */
             syscall1(SYS_TIMER_SLEEP, 1000);
-
-            /* Check if a key was pressed (non-blocking read of 1 byte). */
             char c = 0;
-            /* Use a non-blocking read with minimal timeout: yield then check. */
             syscall1(SYS_YIELD, 0);
             ssize_t nr = syscall3(SYS_READ, (uint64_t)0, (uint64_t)(size_t)&c, (uint64_t)1);
             if (nr > 0 && c == 0x03) {
                 write_line("^C");
                 break;
             }
-        } else if (!continuous) {
-            /* Fixed count: small delay between packets */
+        } else {
             syscall1(SYS_TIMER_SLEEP, 200);
         }
     }
@@ -722,11 +1087,9 @@ static void cmd_curl(const char *url) {
         write_line("Usage: curl <host[/path]>");
         return;
     }
-    /* Strip an optional http:// prefix. */
     if (url[0]=='h'&&url[1]=='t'&&url[2]=='t'&&url[3]=='p'&&url[4]==':'&&url[5]=='/'&&url[6]=='/') {
         url += 7;
     }
-    /* Split into host and path at the first '/'. */
     while (url[i] && url[i] != '/' && h < (int)sizeof(g_host_buf) - 1) {
         g_host_buf[h++] = url[i++];
     }
@@ -757,7 +1120,7 @@ static void cmd_curl(const char *url) {
     req.out = g_http_buf;
     req.cap = (int)sizeof(g_http_buf) - 1;
     req.user_agent = "VibeOS github.com/MarvInt64/vibe-os";
-    req.timeout_ms = 0;   /* kernel default */
+    req.timeout_ms = 0;
 
     n = (int)syscall1(SYS_NET_HTTP_GET, (uint64_t)(size_t)&req);
     if (n <= 0) {
@@ -770,10 +1133,10 @@ static void cmd_curl(const char *url) {
     write_str("["); write_dec((uint64_t)n); write_line(" bytes received]");
 }
 
-
+/* ---- Input parsing ------------------------------------------------------- */
 
 static void parse_input(void) {
-    char *p = g_input;
+    char *p = g_expanded;
     g_argc = 0;
 
     while (*p && g_argc < MAX_ARGS) {
@@ -792,6 +1155,39 @@ static void parse_input(void) {
     }
 }
 
+/* ---- Background-app detection -------------------------------------------- */
+
+/*
+ * GUI apps must run in the background so the shell remains interactive.
+ * Centralising the check here avoids the two identical blocks that existed
+ * before, one for is_path commands and one for /bin/ commands.
+ */
+static int is_background_app(const char *cmd) {
+    return strcmp(cmd, "uidemo")    == 0 ||
+           strcmp(cmd, "taskmgr")  == 0 ||
+           strcmp(cmd, "browser")  == 0 ||
+           strcmp(cmd, "dock")     == 0 ||
+           strcmp(cmd, "sysinfo")  == 0 ||
+           strcmp(cmd, "wallpaper") == 0 ||
+           strcmp(cmd, "audiocfg") == 0;
+}
+
+static int spawn_with_arguments(const char *path) {
+    char full_args[256];
+    full_args[0] = '\0';
+    for (int i = 1; i < g_argc && i < MAX_ARGS; ++i) {
+        if (i > 1) strcat(full_args, " ");
+        strcat(full_args, g_args[i]);
+    }
+    if (full_args[0] != '\0') {
+        return spawn_with_arg(path, full_args);
+    } else {
+        return spawn(path);
+    }
+}
+
+/* ---- Command dispatcher -------------------------------------------------- */
+
 static void execute_command(void) {
     if (g_argc == 0) return;
 
@@ -800,52 +1196,49 @@ static void execute_command(void) {
     size_t i;
 
     if (strcmp(cmd, "help") == 0) {
-		show_help();
-	} else if (strcmp(cmd, "about") == 0) {
-		show_about();
-	} else if (strcmp(cmd, "clear") == 0) {
-		cmd_clear();
-	} else if (strcmp(cmd, "pwd") == 0) {
-		cmd_pwd();
-	} else if (strcmp(cmd, "cd") == 0) {
-		cmd_cd(g_argc > 1 ? g_args[1] : "");
-	} else if (strcmp(cmd, "ls") == 0) {
-		cmd_ls(g_argc > 1 ? g_args[1] : "");
-	} else if (strcmp(cmd, "ifconfig") == 0 || strcmp(cmd, "ip") == 0) {
-		cmd_ifconfig();
-	} else if (strcmp(cmd, "ping") == 0) {
-		/* Build full arg string from g_args[1..g_argc-1] so flags like -t and -c work. */
-		g_ping_arg_buf[0] = '\0';
-		for (int i = 1; i < g_argc && i < 16; ++i) {
-			if (i > 1) {
-				/* Append space separator */
-				int len = 0; while (g_ping_arg_buf[len]) ++len;
-				if (len + 1 < (int)sizeof(g_ping_arg_buf)) g_ping_arg_buf[len] = ' ';
-			}
-			/* Append g_args[i] */
-			int bi = 0; while (g_ping_arg_buf[bi]) ++bi;
-			int ai = 0;
-			while (g_args[i][ai] && bi + 1 < (int)sizeof(g_ping_arg_buf)) {
-				g_ping_arg_buf[bi++] = g_args[i][ai++];
-			}
-			g_ping_arg_buf[bi] = '\0';
-		}
-		cmd_ping(g_ping_arg_buf);
-	} else if (strcmp(cmd, "curl") == 0 || strcmp(cmd, "fetch") == 0 || strcmp(cmd, "wget") == 0) {
-		cmd_curl(g_argc > 1 ? g_args[1] : "");
-	} else if (strcmp(cmd, "display") == 0 || strcmp(cmd, "resolution") == 0) {
-		cmd_display(g_argc);
-	} else if (strcmp(cmd, "dmesg") == 0 || strcmp(cmd, "journal") == 0) {
-		cmd_dmesg();
-	} else if (strcmp(cmd, "gui") == 0 || strcmp(cmd, "wm") == 0 || strcmp(cmd, "desktop") == 0) {
-		write_line("Starting VibeOS desktop...");
-		syscall1(SYS_WINDOWMGR_START, 0);
-	} else if (strcmp(cmd, "exit") == 0) {
-		write_line("Goodbye!");
-		syscall1(SYS_EXIT, 0);
+        show_help();
+    } else if (strcmp(cmd, "about") == 0) {
+        show_about();
+    } else if (strcmp(cmd, "clear") == 0) {
+        cmd_clear();
+    } else if (strcmp(cmd, "pwd") == 0) {
+        cmd_pwd();
+    } else if (strcmp(cmd, "cd") == 0) {
+        cmd_cd(g_argc > 1 ? g_args[1] : "");
+    } else if (strcmp(cmd, "ls") == 0) {
+        cmd_ls(g_argc > 1 ? g_args[1] : "");
+    } else if (strcmp(cmd, "ifconfig") == 0 || strcmp(cmd, "ip") == 0) {
+        cmd_ifconfig();
+    } else if (strcmp(cmd, "ping") == 0) {
+        g_ping_arg_buf[0] = '\0';
+        for (int k = 1; k < g_argc && k < 16; ++k) {
+            if (k > 1) {
+                int len = 0; while (g_ping_arg_buf[len]) ++len;
+                if (len + 1 < (int)sizeof(g_ping_arg_buf)) g_ping_arg_buf[len] = ' ';
+            }
+            int bi = 0; while (g_ping_arg_buf[bi]) ++bi;
+            int ai = 0;
+            while (g_args[k][ai] && bi + 1 < (int)sizeof(g_ping_arg_buf)) {
+                g_ping_arg_buf[bi++] = g_args[k][ai++];
+            }
+            g_ping_arg_buf[bi] = '\0';
+        }
+        cmd_ping(g_ping_arg_buf);
+    } else if (strcmp(cmd, "curl") == 0 || strcmp(cmd, "fetch") == 0 || strcmp(cmd, "wget") == 0) {
+        cmd_curl(g_argc > 1 ? g_args[1] : "");
+    } else if (strcmp(cmd, "display") == 0 || strcmp(cmd, "resolution") == 0) {
+        cmd_display(g_argc);
+    } else if (strcmp(cmd, "dmesg") == 0 || strcmp(cmd, "journal") == 0) {
+        cmd_dmesg();
+    } else if (strcmp(cmd, "gui") == 0 || strcmp(cmd, "wm") == 0 || strcmp(cmd, "desktop") == 0) {
+        write_line("Starting VibeOS desktop...");
+        syscall1(SYS_WINDOWMGR_START, 0);
+    } else if (strcmp(cmd, "exit") == 0) {
+        write_line("Goodbye!");
+        syscall1(SYS_EXIT, 0);
     } else {
         int is_path = (cmd[0] == '/' || (cmd[0] == '.' && cmd[1] == '/'));
-        
+
         if (is_path) {
             if (cmd[0] == '.' && cmd[1] == '/') {
                 spawn_path[0] = '\0';
@@ -866,71 +1259,54 @@ static void execute_command(void) {
                 }
                 spawn_path[i] = 0;
             }
-            
-            int bg = 0;
-            if (g_argc > 1 && strcmp(g_args[g_argc - 1], "&") == 0) {
-                bg = 1;
-                g_argc--;
-            } else if (strcmp(cmd, "uidemo") == 0 || strcmp(cmd, "taskmgr") == 0 ||
-                       strcmp(cmd, "browser") == 0 || strcmp(cmd, "dock") == 0 ||
-                       strcmp(cmd, "sysinfo") == 0 || strcmp(cmd, "wallpaper") == 0 ||
-                       strcmp(cmd, "audiocfg") == 0) {
-                bg = 1;
-            }
-            
-            int pid = spawn_with_arguments(spawn_path);
-            if (pid <= 0) {
-                write_str("spawn: ");
-                write_str(spawn_path);
-                write_str(": ");
-                write_line(strerror(pid));
-            } else {
-                if (!bg) {
-                    waitpid(pid);
-                }
-            }
         } else {
             spawn_path[0] = '\0';
             strcat(spawn_path, "/bin/");
             strcat(spawn_path, cmd);
-            
-            int bg = 0;
-            if (g_argc > 1 && strcmp(g_args[g_argc - 1], "&") == 0) {
-                bg = 1;
-                g_argc--;
-            } else if (strcmp(cmd, "uidemo") == 0 || strcmp(cmd, "taskmgr") == 0 ||
-                       strcmp(cmd, "browser") == 0 || strcmp(cmd, "dock") == 0 ||
-                       strcmp(cmd, "sysinfo") == 0 || strcmp(cmd, "wallpaper") == 0 ||
-                       strcmp(cmd, "audiocfg") == 0) {
-                bg = 1;
-            }
-            
-            int pid = spawn_with_arguments(spawn_path);
-            if (pid <= 0) {
-                if (pid == -2) {
-                    write_str("Unknown: ");
-                    write_line(cmd);
-                } else {
-                    write_str("spawn: ");
-                    write_str(spawn_path);
-                    write_str(": ");
-                    write_line(strerror(pid));
-                }
+        }
+
+        /* Check explicit '&' suffix first, then the known GUI app list. */
+        int bg = 0;
+        if (g_argc > 1 && strcmp(g_args[g_argc - 1], "&") == 0) {
+            bg = 1;
+            g_argc--;
+        } else if (is_background_app(cmd)) {
+            bg = 1;
+        }
+
+        int pid = spawn_with_arguments(spawn_path);
+        if (pid <= 0) {
+            if (pid == -2) {
+                write_str("Unknown: ");
+                write_line(cmd);
             } else {
-                if (!bg) {
-                    waitpid(pid);
-                }
+                write_str("spawn: ");
+                write_str(spawn_path);
+                write_str(": ");
+                write_line(strerror(pid));
+            }
+            g_last_exit = pid;
+        } else {
+            if (!bg) {
+                /* Capture the child's exit code so $? works. */
+                g_last_exit = waitpid_ret(pid);
             }
         }
     }
 }
 
+/* ---- Entry point --------------------------------------------------------- */
+
 void _start(void) {
-    ssize_t len;
     struct system_info_snapshot info;
-    
+
     getcwd(g_cwd, sizeof(g_cwd));
-    
+
+    /* Fetch uid once at startup; it can change via su in a child process but
+     * the shell itself keeps running as the same uid. */
+    g_uid = (uint32_t)syscall1(SYS_GETUID, 0);
+    get_username(g_uid, g_username, sizeof(g_username));
+
     write_line("");
     if (syscall1(SYS_SYSTEM_INFO, (uint64_t)(size_t)&info) == 0) {
         write_str("VibeOS Shell | Kernel v");
@@ -939,17 +1315,20 @@ void _start(void) {
         write_line("VibeOS Shell v2.0 (fallback)");
     }
     write_line("");
-    
+
     while (1) {
         prompt();
 
-        len = read_stdin(g_input, sizeof(g_input) - 1);
-        if (len <= 0) continue;
+        /* readline handles all line-editing, history, and tab completion. */
+        readline(g_input, sizeof(g_input), g_username, g_uid);
 
-        while (len > 0 && (g_input[len - 1] == '\n' || g_input[len - 1] == '\r')) {
-            len--;
-        }
-        g_input[len] = 0;
+        if (!g_input[0]) continue;
+
+        /* Expand variables before parsing so $? and $HOME work everywhere. */
+        expand_vars(g_input, g_expanded, sizeof(g_expanded),
+                    g_last_exit, g_uid, g_username);
+
+        hist_add(g_input);  /* Store the raw (pre-expansion) line in history. */
 
         parse_input();
         execute_command();

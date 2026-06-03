@@ -27,6 +27,7 @@
 #include "process.h"
 #include "string.h"
 #include "serial.h"
+#include "syscall.h"
 
 #define VFS_USER_MAX_FILES 32
 #define VFS_USER_MAX_SIZE 8192
@@ -452,9 +453,52 @@ static struct vfs_user_file *find_user_file(const char *path) {
 	return 0;
 }
 
+/* Forward declaration — defined near the bottom of this file with the other
+ * permission helpers so they all live in one place. */
+static int vfs_access_ok(const char *path, int want);
+
+/*
+ * Extract the parent directory of a path into buf.
+ * "/foo/bar" -> "/foo", "/file" -> "/", "/" -> "/".
+ * This lets permission checks target the directory that will be modified,
+ * which is the POSIX rule: write on the directory, not on the file itself.
+ */
+static void parent_dir(const char *path, char *buf, size_t cap) {
+    size_t len = string_length(path);
+    size_t last_slash = 0;
+    size_t i;
+
+    /* Find the last '/' — everything before it is the parent. */
+    for (i = 0; i < len; ++i) {
+        if (path[i] == '/') last_slash = i;
+    }
+
+    if (last_slash == 0) {
+        /* The parent is root (e.g. path="/file"). */
+        buf[0] = '/';
+        buf[1] = '\0';
+        return;
+    }
+
+    if (last_slash >= cap - 1) last_slash = cap - 2;
+    for (i = 0; i < last_slash && i < cap - 1; ++i)
+        buf[i] = path[i];
+    buf[i] = '\0';
+}
+
 int vfs_create(const char *path) {
     if (path == 0 || string_length(path) >= 64) {
         return -1;
+    }
+
+    /* Check write+execute on the parent directory so unprivileged processes
+     * cannot create files in directories they don't own (e.g. /bin, /etc). */
+    if (g_ext2 != 0) {
+        char parent[64];
+        parent_dir(path, parent, sizeof(parent));
+        if (!vfs_access_ok(parent, 06)) {
+            return -SYSCALL_EACCES;
+        }
     }
 
     /* When a persistent ext2 filesystem is mounted it is authoritative:
@@ -485,6 +529,16 @@ int vfs_create(const char *path) {
 int vfs_unlink(const char *path) {
 	struct vfs_user_file *f;
 
+	/* Removing an entry modifies the directory, so check write+execute on
+	 * the parent — same rule as vfs_create. */
+	if (g_ext2 != 0 && path != 0) {
+		char parent[64];
+		parent_dir(path, parent, sizeof(parent));
+		if (!vfs_access_ok(parent, 06)) {
+			return -SYSCALL_EACCES;
+		}
+	}
+
 	/* Prefer the persistent ext2 filesystem when mounted. */
 	if (g_ext2 != 0 && path != 0 && path[0] == '/') {
 		if (ext2_unlink(g_ext2, path) == 0) {
@@ -504,7 +558,14 @@ int vfs_mkdir(const char *path) {
 	if (path == 0 || path[0] != '/') {
 		return -1;
 	}
+	/* Creating a directory appends an entry to the parent directory,
+	 * so the caller needs write+execute on the parent. */
 	if (g_ext2 != 0) {
+		char parent[64];
+		parent_dir(path, parent, sizeof(parent));
+		if (!vfs_access_ok(parent, 06)) {
+			return -SYSCALL_EACCES;
+		}
 		if (ext2_mkdir(g_ext2, path, 0755) != 0) {
 			return 0;
 		}
