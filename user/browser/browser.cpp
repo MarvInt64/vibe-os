@@ -171,6 +171,16 @@ void __attribute__((noreturn)) Browser::run() {
     w_canvas_ = vui_canvas_ex(win_, 0, BAR_H, win_w_, win_h_ - BAR_H, canvas_, BROW_MAX_W);
     vui_set_anchor(w_canvas_, VUI_ANCHOR_LEFT | VUI_ANCHOR_RIGHT | VUI_ANCHOR_TOP | VUI_ANCHOR_BOTTOM);
 
+    /* Menu bar — registered with the window server so the top bar shows it. */
+    vui_widget *mb     = vui_menubar(win_);
+    vui_widget *m_page = vui_menu(win_, mb, "Page");
+    vui_on_click(vui_menuitem(win_, m_page, "Reload"),
+                 [](vui_widget *) { s_instance_->layout_current(); });
+    vui_menu_separator(win_, m_page);
+    vui_on_click(vui_menuitem(win_, m_page, "Close"),
+                 [](vui_widget *) { exit(0); });
+    vui_sync_menubar(win_);
+
     vui_on_tick(win_, on_tick_cb);
     vui_on_resize(win_, on_resize_cb);
 

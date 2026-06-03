@@ -67,6 +67,7 @@ static void nap(uint64_t ticks){ sc1(SYS_TIMER_SLEEP, ticks); }
 #define WIN_POSITIONED 0x4u
 #define WIN_ALWAYS_ON_TOP 0x8u
 #define WIN_TRANSLUCENT 0x10u
+#define WIN_NO_SHADOW   0x20u
 #define TRANSPARENT_KEY 0x00ff00ffu
 
 struct win_options { const char *title; int32_t width, height; uint32_t flags; int32_t x, y; };
@@ -422,7 +423,7 @@ int main() {
 
     opt.title = "Top Bar";
     opt.width = g_w; opt.height = WIN_H;
-    opt.flags = WIN_FRAMELESS | WIN_NO_DOCK | WIN_POSITIONED | WIN_ALWAYS_ON_TOP | WIN_TRANSLUCENT;
+    opt.flags = WIN_FRAMELESS | WIN_NO_DOCK | WIN_POSITIONED | WIN_ALWAYS_ON_TOP | WIN_TRANSLUCENT | WIN_NO_SHADOW;
     opt.x = 0; opt.y = 0;
     g_win = (int)sc1(SYS_WINDOW_CREATE_EX, (uint64_t)(size_t)&opt);
     if (g_win < 0) return 1;

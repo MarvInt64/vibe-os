@@ -1763,7 +1763,8 @@ static void compose_scene_rect(struct desktop_state *desktop, struct framebuffer
         full_window_rect = window_rect(window);
         if (!rects_intersect(&full_window_rect, rect)) continue;
 
-        draw_shadow_block(fb, window->x, window->y, window->width, window->height);
+        if (!(window->flags & WINSYS_WINDOW_NO_SHADOW))
+            draw_shadow_block(fb, window->x, window->y, window->width, window->height);
 
         if (is_user_app_slot(index) &&
             !(window->flags & WINSYS_WINDOW_TRANSLUCENT)) {

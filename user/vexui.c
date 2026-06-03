@@ -29,11 +29,13 @@ typedef unsigned char uint8_t;
 #define SYS_PROCESS_KILL 29
 #define SYS_WINDOW_SET_MENU 30
 #define SYS_WINDOW_CREATE_EX 35
+#define SYS_WINDOW_SET_MENUBAR 37
 #define SYS_WINDOW_PRESENT_RECT 38
 #define SYS_TEXT_DRAW 40
 #define SYS_TEXT_METRICS 41
 
 struct winsys_event { uint32_t type; int32_t x; int32_t y; uint32_t buttons; uint32_t key; };
+struct vos_menubar_item { char label[28]; char shortcut[16]; vui_u32 flags; vui_u32 action_id; };
 #define EV_MOUSE_MOVE 1
 #define EV_MOUSE_DOWN 2
 #define EV_MOUSE_UP 3
@@ -1042,6 +1044,27 @@ static void layout_menu_dropdown(struct vui_window *w) {
 
 /* Create the menu bar.  It sits at y=0 and is MENUBAR_H px tall.
  * Other widgets should start at y >= MENUBAR_H. */
+/* Register all W_MENU widgets as the window-server menu bar so the top bar can
+ * display the focused app's menus.  Call once after building the menu bar. */
+void vui_sync_menubar(vui_window *w) {
+#define VUI_MAX_MENUBAR_ITEMS 64
+    struct vos_menubar_item items[VUI_MAX_MENUBAR_ITEMS];
+    int count = 0, i;
+    if (!w) return;
+    for (i = 0; i < w->widget_count && count < VUI_MAX_MENUBAR_ITEMS; ++i) {
+        struct vui_widget *wd = &w->widgets[i];
+        if (wd->type != W_MENU) continue;
+        scopy(items[count].label, wd->text, sizeof(items[count].label));
+        items[count].shortcut[0] = 0;
+        items[count].flags = 0;
+        items[count].action_id = (vui_u32)i;
+        ++count;
+    }
+    sc3(SYS_WINDOW_SET_MENUBAR, (uint64_t)w->id,
+        (uint64_t)(size_t)items, (uint64_t)count);
+#undef VUI_MAX_MENUBAR_ITEMS
+}
+
 vui_widget *vui_menubar(vui_window *w) {
     vui_widget *wd = new_widget(w, W_MENUBAR);
     if (!wd) return 0;

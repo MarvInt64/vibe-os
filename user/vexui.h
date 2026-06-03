@@ -47,6 +47,7 @@ typedef unsigned int vui_u32;
 #define VUI_WINDOW_POSITIONED 0x00000004u
 #define VUI_WINDOW_ALWAYS_ON_TOP 0x00000008u
 #define VUI_WINDOW_TRANSLUCENT   0x00000010u
+#define VUI_WINDOW_NO_SHADOW     0x00000020u   /* suppress drop shadow (shell panels) */
 
 typedef struct vui_window vui_window;
 typedef struct vui_widget vui_widget;
@@ -233,6 +234,9 @@ void vui_set_expand(vui_widget *child);
  * to the full window width.  Call this before creating other widgets so that
  * panels and boxes placed below it start at y = VUI_MENUBAR_HEIGHT. */
 vui_widget *vui_menubar(vui_window *w);
+/* Push the window's W_MENU entries to the window server so the top bar shows
+ * the focused app's menus.  Call once after adding all menus. */
+void vui_sync_menubar(vui_window *w);
 
 /* Add a dropdown menu to a menu bar (e.g. "File", "Edit", "View").
  * Returns a menu widget; attach items to it with vui_menuitem(). */

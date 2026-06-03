@@ -15,11 +15,13 @@
 #define WINSYS_MAX_WIDTH  1920
 #define WINSYS_MAX_HEIGHT 640
 
-#define WINSYS_WINDOW_FRAMELESS 0x00000001u
-#define WINSYS_WINDOW_NO_DOCK   0x00000002u
-#define WINSYS_WINDOW_POSITIONED 0x00000004u
+#define WINSYS_WINDOW_FRAMELESS     0x00000001u
+#define WINSYS_WINDOW_NO_DOCK       0x00000002u
+#define WINSYS_WINDOW_POSITIONED    0x00000004u
 #define WINSYS_WINDOW_ALWAYS_ON_TOP 0x00000008u
 #define WINSYS_WINDOW_TRANSLUCENT   0x00000010u
+/* Do not draw a drop shadow beneath this window (useful for shell panels). */
+#define WINSYS_WINDOW_NO_SHADOW     0x00000020u
 
 struct winsys_window_options {
     const char *title;
