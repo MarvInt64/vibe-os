@@ -487,6 +487,18 @@ int vfs_mkdir(const char *path) {
 }
 
 ssize_t vfs_write(const char *path, size_t offset, const void *data, size_t count) {
+	/* 1. Try ext2 */
+	if (g_ext2 != 0 && path[0] == '/') {
+		uint32_t ino = ext2_lookup_inode(g_ext2, path);
+		if (ino == 0) {
+			ino = ext2_create(g_ext2, path, 0644);
+		}
+		if (ino != 0) {
+			return ext2_write(g_ext2, ino, (uint32_t)offset, count, data);
+		}
+	}
+
+	/* 2. Fallback to RAM user files */
 	struct vfs_user_file *f = find_user_file(path);
 	size_t i;
 	if (f == 0) {

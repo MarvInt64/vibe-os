@@ -11,7 +11,9 @@
 static inline int open(const char *path, int flags, ...) {
     extern int vos_open_path(const char *);
     extern int vos_creat_path(const char *);
-    if (flags & O_WRONLY) return vos_creat_path(path);
+    if ((flags & O_CREAT) || (flags & O_WRONLY) || (flags & O_RDWR)) {
+        return vos_creat_path(path);
+    }
     return vos_open_path(path);
 }
 #endif

@@ -787,10 +787,21 @@ static ssize_t process_vfs_read(void *object, void *buffer, size_t count) {
 }
 
 static ssize_t process_vfs_write(void *object, const void *buffer, size_t count) {
-    (void)object;
-    (void)buffer;
-    (void)count;
-    return -SYSCALL_ENOSYS;
+    struct process_vfs_handle *handle = (struct process_vfs_handle *)object;
+
+    if (handle == 0 || buffer == 0 || !handle->used) {
+        return -SYSCALL_EINVAL;
+    }
+
+    if (handle->kind == 1) {
+        /* path-based: user files or ext2 */
+        ssize_t n = vfs_write(handle->path, handle->offset, buffer, count);
+        if (n > 0) handle->offset += (size_t)n;
+        return n;
+    } else {
+        /* embedded files: read-only */
+        return -SYSCALL_EACCES;
+    }
 }
 
 static int process_vfs_ioctl(void *object, uint32_t request, uintptr_t arg) {
@@ -2453,7 +2464,12 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 		serial_write("SYS_CREAT: path=");
 		serial_write(path);
 		serial_write("\n");
-		frame->rax = (uint64_t)vfs_create(path);
+		int result = vfs_create(path);
+		if (result < 0) {
+			frame->rax = (uint64_t)result;
+		} else {
+			frame->rax = (uint64_t)process_open_vfs_from_parent(process, path);
+		}
 		return 0;
 	}
 
