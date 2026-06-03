@@ -120,6 +120,11 @@ void TaskManager::refresh() {
 
     const char *query = search_ ? vui_input_text(search_) : "";
 
+    /* Time elapsed since the last refresh (in ticks).  Used as the denominator
+     * for delta-CPU so we show current utilisation, not a lifetime average. */
+    unsigned long delta_uptime = (info.uptime_ticks > prev_uptime_)
+                                 ? (info.uptime_ticks - prev_uptime_) : 1;
+
     for (int slot = 0; slot < VUI_PROCESS_MAX; ++slot) {
         vui_process_info p{};
         auto s = ProcessState::Empty;
@@ -127,7 +132,10 @@ void TaskManager::refresh() {
         if (vui_process_snapshot(static_cast<unsigned int>(slot), &p) > 0)
             s = static_cast<ProcessState>(p.state);
 
-        if (!p.loaded || !state_is_active(s)) continue;
+        if (!p.loaded || !state_is_active(s)) {
+            prev_runtime_[slot] = 0;
+            continue;
+        }
 
         /* Cards/counts reflect ALL processes. */
         ++loaded;
@@ -136,14 +144,22 @@ void TaskManager::refresh() {
         total_mem     += p.mem_bytes;
         total_threads += p.thread_count;
 
+        /* Delta-CPU: fraction of wall-clock ticks since last refresh that this
+         * process ran.  Multiply by 1000 for one decimal place (tenths of %).
+         * Falls back to lifetime average on the first refresh when prev==0. */
+        unsigned long rt_now  = p.runtime_ticks;
+        unsigned long rt_prev = prev_runtime_[slot];
+        unsigned long delta_rt = (rt_now >= rt_prev) ? (rt_now - rt_prev) : rt_now;
+        int cpu_tenths = (int)((unsigned long long)delta_rt * 1000ULL / delta_uptime);
+        if (cpu_tenths > 1000) cpu_tenths = 1000; /* clamp to 100.0% */
+        prev_runtime_[slot] = rt_now;
+
         /* The search box only filters which ROWS are shown. */
         if (query[0] && !name_matches(p.name, query)) continue;
-        if (row < kRows) {
-            int cpu_tenths = info.uptime_ticks
-                ? (int)((unsigned long long)p.runtime_ticks * 1000ULL / info.uptime_ticks) : 0;
+        if (row < kRows)
             rows_[row++].update(p, cpu_tenths);
-        }
     }
+    prev_uptime_ = info.uptime_ticks;
     for (int r = row; r < kRows; ++r) rows_[r].hide();
 
     unsigned int pmax = info.process_max ? info.process_max

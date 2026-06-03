@@ -65,4 +65,9 @@ private:
     vui_widget *rows_vbox_ = nullptr; /* VBox that owns all ProcessRow slots */
 
     int tick_ = 0; /* incremented each VexUI tick */
+
+    /* Per-slot runtime snapshot from the previous refresh cycle.  Used to
+     * compute delta-CPU (current utilisation) instead of lifetime fraction. */
+    unsigned long prev_runtime_[VUI_PROCESS_MAX] = {};
+    unsigned long prev_uptime_ = 0; /* uptime_ticks at the last refresh */
 };
