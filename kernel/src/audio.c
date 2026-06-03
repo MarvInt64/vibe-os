@@ -144,15 +144,14 @@ static void mix_voices(uint8_t *out) {
     /* Accumulate in int32 to avoid overflow when summing multiple voices. */
     int32_t acc[AC97_BD_BYTES / 2];
     uint8_t  tmp[AC97_BD_BYTES];
-    int i, v;
+    int i, v, active = 0;
 
     for (i = 0; i < AC97_BD_BYTES / 2; i++) acc[i] = 0;
 
     for (v = 0; v < AUDIO_VOICES; v++) {
         if (g_voices[v].pid == 0) continue;
         if (voice_available(&g_voices[v]) < AC97_BD_BYTES) {
-            /* Underrun: this voice has nothing to contribute this buffer.
-             * Leave its portion as zero (silence) — no gap in playback. */
+            /* Underrun: this voice has nothing for this buffer — silence. */
             continue;
         }
         voice_read(&g_voices[v], tmp, AC97_BD_BYTES);
@@ -161,9 +160,19 @@ static void mix_voices(uint8_t *out) {
             for (i = 0; i < AC97_BD_BYTES / 2; i++)
                 acc[i] += (int32_t)src[i];
         }
+        active++;
     }
 
-    /* Clamp and write to the DMA staging buffer. */
+    /* Normalise by the number of contributing voices so summing N full-scale
+     * streams doesn't clip.  With one voice the gain is 1.0 (unchanged);
+     * with two voices each contributes at 0.5 scale, preventing hard
+     * clipping which sounds like buzzing/crackling. */
+    if (active > 1) {
+        for (i = 0; i < AC97_BD_BYTES / 2; i++)
+            acc[i] /= active;
+    }
+
+    /* Clamp (should rarely be needed after normalisation) and write to DMA. */
     {
         int16_t *dst = (int16_t *)out;
         for (i = 0; i < AC97_BD_BYTES / 2; i++) {
