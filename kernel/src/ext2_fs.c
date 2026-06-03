@@ -113,20 +113,31 @@ static int ext2_write_superblock(struct ext2_filesystem *fs) {
 }
 
 static int ext2_write_bitmaps(struct ext2_filesystem *fs) {
-    uint8_t *block = (uint8_t *)kmalloc(fs->superblock.block_size);
-    if (!block) return -1;
-    
+    uint32_t bs  = fs->superblock.block_size;
+    uint32_t bb_blks = (fs->superblock.blocks_count + 8u * bs - 1u) / (8u * bs);
+    uint32_t ib_blk  = 2u + bb_blks;
     uint32_t block_bitmap_size = (fs->superblock.blocks_count + 7) / 8;
-    uint32_t inode_bitmap_size = (fs->superblock.inodes_count + 7) / 8;
-    
-    memset(block, 0, fs->superblock.block_size);
-    memcpy(block, fs->block_bitmap, block_bitmap_size);
-    ext2_write_block(fs, 2, block);
-    
-    memset(block, 0, fs->superblock.block_size);
+    uint32_t inode_bitmap_size = (fs->superblock.inodes_count  + 7) / 8;
+    uint8_t *block = (uint8_t *)kmalloc(bs);
+    uint32_t i;
+
+    if (!block) return -1;
+
+    /* Write block bitmap across as many blocks as needed. */
+    for (i = 0; i < bb_blks; ++i) {
+        uint32_t off = i * bs;
+        uint32_t len = bs;
+        if (off + len > block_bitmap_size) len = block_bitmap_size - off;
+        memset(block, 0, bs);
+        memcpy(block, fs->block_bitmap + off, len);
+        ext2_write_block(fs, 2u + i, block);
+    }
+
+    /* Write inode bitmap. */
+    memset(block, 0, bs);
     memcpy(block, fs->inode_bitmap, inode_bitmap_size);
-    ext2_write_block(fs, 3, block);
-    
+    ext2_write_block(fs, ib_blk, block);
+
     kfree(block);
     return 0;
 }
@@ -230,8 +241,14 @@ int ext2_format(struct ext2_filesystem *fs, struct ramdisk_device *device) {
 
     ext2_write_superblock(fs);
     ext2_write_bitmaps(fs);
-    for (uint32_t i = 0; i < inode_table_blocks; i++) {
-        ext2_write_block(fs, 4 + i, (uint8_t*)fs->inode_table + i * fs->superblock.block_size);
+    {
+        uint32_t bb_blks_f = (fs->superblock.blocks_count + 8u * fs->superblock.block_size - 1u)
+                              / (8u * fs->superblock.block_size);
+        uint32_t it_start_f = 2u + bb_blks_f + 1u;
+        for (uint32_t i = 0; i < inode_table_blocks; i++) {
+            ext2_write_block(fs, it_start_f + i,
+                             (uint8_t*)fs->inode_table + i * fs->superblock.block_size);
+        }
     }
 
     /* Create basic directories */
@@ -348,11 +365,26 @@ int ext2_mount(struct ext2_filesystem *fs, struct ramdisk_device *device) {
         return -1;
     }
 
-    ramdisk_read(device, (2 * fs->superblock.block_size) / device->block_size, block, fs->superblock.block_size);
-    memcpy(fs->block_bitmap, block, block_bitmap_size);
-
-    ramdisk_read(device, (3 * fs->superblock.block_size) / device->block_size, block, fs->superblock.block_size);
-    memcpy(fs->inode_bitmap, block, inode_bitmap_size);
+    /* Block bitmap spans bb_blks consecutive blocks starting at block 2. */
+    {
+        uint32_t bb_blks = (fs->superblock.blocks_count + 8u * fs->superblock.block_size - 1u)
+                           / (8u * fs->superblock.block_size);
+        uint32_t i;
+        for (i = 0; i < bb_blks; ++i) {
+            uint32_t blk = 2u + i;
+            size_t   off = (size_t)i * fs->superblock.block_size;
+            size_t   len = fs->superblock.block_size;
+            if (off + len > block_bitmap_size) len = block_bitmap_size - off;
+            ramdisk_read(device, (blk * fs->superblock.block_size) / device->block_size,
+                         block, fs->superblock.block_size);
+            memcpy(fs->block_bitmap + off, block, len);
+        }
+        /* Inode bitmap follows directly after the block bitmap. */
+        uint32_t ib_blk = 2u + bb_blks;
+        ramdisk_read(device, (ib_blk * fs->superblock.block_size) / device->block_size,
+                     block, fs->superblock.block_size);
+        memcpy(fs->inode_bitmap, block, inode_bitmap_size);
+    }
 
     kfree(block);
 
@@ -382,8 +414,13 @@ int ext2_mount(struct ext2_filesystem *fs, struct ramdisk_device *device) {
     uint8_t *inode_block = (uint8_t *)kmalloc(fs->superblock.block_size);
     if (!inode_block) return -1;
 
+	/* Inode table starts after: boot(1) + sb(1) + block_bitmap(bb_blks) + inode_bitmap(1). */
+	uint32_t bb_blks_mount = (fs->superblock.blocks_count + 8u * fs->superblock.block_size - 1u)
+	                          / (8u * fs->superblock.block_size);
+	uint32_t it_start_mount = 2u + bb_blks_mount + 1u;
+
 	for (uint32_t i = 0; i < max_inodes_to_read; i++) {
-		uint32_t inode_block_num = 4 + (i * sizeof(struct ext2_inode)) / fs->superblock.block_size;
+		uint32_t inode_block_num = it_start_mount + (i * sizeof(struct ext2_inode)) / fs->superblock.block_size;
 		uint32_t inode_offset = (i * sizeof(struct ext2_inode)) % fs->superblock.block_size;
 
 		if (i < 4 || i == 13) {

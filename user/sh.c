@@ -14,6 +14,7 @@
 #define SYS_UNLINK 13
 #define SYS_CREAT 14
 #define SYS_WRITE_FILE 16
+#define SYS_TIMER_SLEEP 20
 #define SYS_WINDOWMGR_START 21
 #define SYS_NET_INFO 22
 #define SYS_NET_PING 23
