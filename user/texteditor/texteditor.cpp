@@ -48,6 +48,7 @@ static void ed_on_mm(vui_window *, int x, int y)            { TextEditor::instan
 static void ed_on_mr(vui_window *, int x, int y)            { TextEditor::instance()->on_mouse_release(x, y); }
 static void ed_on_scroll(vui_window *, int delta)           { TextEditor::instance()->on_scroll(delta);     }
 static void ed_on_resize(vui_window *, int w, int h)         { TextEditor::instance()->on_resize(w, h);       }
+static void ed_on_tick(vui_window *)                         { TextEditor::instance()->on_tick();             }
 
 /* --------------------------------------------------------------------------- */
 /*  Core: text buffer management                                                */
@@ -207,6 +208,8 @@ void TextEditor::ensure_cursor_visible() {
     if (cursor_x_ < scroll_x_) scroll_x_ = cursor_x_;
     if (cursor_x_ >= scroll_x_ + vis_cols) scroll_x_ = cursor_x_ - vis_cols + 1;
     if (scroll_x_ < 0) scroll_x_ = 0;
+    cursor_visible_ = true;
+    cursor_blink_counter_ = 0;
 }
 
 /* --------------------------------------------------------------------------- */
@@ -431,7 +434,7 @@ void TextEditor::render() {
     }
 
     // Cursor
-    if (cursor_y_ >= first_line && cursor_y_ <= last_line) {
+    if (cursor_visible_ && cursor_y_ >= first_line && cursor_y_ <= last_line) {
         int cy = top + (cursor_y_ - first_line) * line_h;
         int cx = ED_GUTTER_WIDTH + 4 + (cursor_x_ - scroll_x_) * char_w;
         if (cx >= ED_GUTTER_WIDTH + 4 && cx < win_w_) {
@@ -450,7 +453,7 @@ void TextEditor::render() {
     draw_text(4, status_y + 2, status, ED_FG_DIM, font_scale_);
 }
 
-void TextEditor::request_repaint() { if (win_) vui_request_repaint(win_); }
+void TextEditor::request_repaint() { render(); if (win_) vui_request_repaint(win_); }
 
 /* --------------------------------------------------------------------------- */
 /*  Geometry helpers                                                            */
@@ -597,7 +600,7 @@ void TextEditor::paste()  { paste_at_cursor(); }
 /* --------------------------------------------------------------------------- */
 
 void TextEditor::on_key(unsigned int key) {
-    if (key < 0x20 && key != 0x08 && key != 0x0D && key != 0x1B) {
+    if (key < 0x20 && key != 0x08 && key != 0x0A && key != 0x0D && key != 0x1B) {
         switch (key) {
             case 0x01: { anchor_x_ = 0; anchor_y_ = 0; cursor_y_ = num_lines_ - 1; cursor_x_ = line_buffer_[cursor_y_].len; request_repaint(); return; }
             case 0x03: copy_selection(); return;
@@ -612,7 +615,7 @@ void TextEditor::on_key(unsigned int key) {
     }
     if (key == 0x1B) { clear_selection(); request_repaint(); return; }
     if (key == 0x08) { delete_backward(); return; }
-    if (key == 0x0D) { insert_newline(); return; }
+    if (key == 0x0A || key == 0x0D) { insert_newline(); return; }
     if (key >= 0x20 && key < 0x7F) { insert_char((char)key); return; }
     if (key == 0x7F) { delete_forward(); return; }
 }
@@ -673,12 +676,33 @@ void TextEditor::on_resize(int w, int h) {
     ensure_cursor_visible(); request_repaint();
 }
 
+void TextEditor::on_tick() {
+    status_update();
+    cursor_blink_counter_++;
+    if (cursor_blink_counter_ >= 25) {
+        cursor_blink_counter_ = 0;
+        cursor_visible_ = !cursor_visible_;
+        request_repaint();
+    }
+}
+
 /* --------------------------------------------------------------------------- */
 /*  Dialogs (stubs)                                                             */
 /* --------------------------------------------------------------------------- */
 
-void TextEditor::show_open_dialog()  { open_file("/tmp/test.txt"); }
-void TextEditor::show_save_dialog()  { if (filename_[0]) save_file(); else save_as("/tmp/untitled.txt"); }
+void TextEditor::show_open_dialog() {
+    char path[256];
+    if (vui_file_dialog("Open File", "/home/user", path, sizeof(path), 0)) {
+        open_file(path);
+    }
+}
+
+void TextEditor::show_save_dialog() {
+    char path[256];
+    if (vui_file_dialog("Save As", "/home/user", path, sizeof(path), 1)) {
+        save_as(path);
+    }
+}
 void TextEditor::show_find_bar()     { find_bar_visible_ = true;  request_repaint(); }
 void TextEditor::show_goto_dialog()  { goto_visible_     = true;  request_repaint(); }
 void TextEditor::do_find_next(const char *) {}
@@ -687,7 +711,14 @@ void TextEditor::do_goto_line(int n) {
     cursor_y_ = n - 1; cursor_x_ = 0; clear_selection();
     ensure_cursor_visible(); request_repaint();
 }
-void TextEditor::status_update() {}
+void TextEditor::status_update() {
+    if (!status_label_) return;
+    char buf[128];
+    const char *fn = filename_[0] ? filename_ : "Untitled";
+    snprintf(buf, sizeof(buf), "%s%s | L: %d, C: %d", 
+             fn, modified_ ? "*" : "", cursor_y_ + 1, cursor_x_ + 1);
+    vui_set_text(status_label_, buf);
+}
 
 /* --------------------------------------------------------------------------- */
 /*  Constructor / main loop                                                     */
@@ -701,6 +732,7 @@ TextEditor::TextEditor() {
     cursor_x_ = 0; cursor_y_ = 0; scroll_x_ = 0; scroll_y_ = 0;
     clear_selection(); filename_[0] = '\0'; modified_ = false;
     font_scale_ = 1; cell_w_ = 9; cell_h_ = 16;
+    cursor_visible_ = true; cursor_blink_counter_ = 0;
 }
 
 TextEditor::~TextEditor() {
@@ -713,12 +745,55 @@ void TextEditor::run() {
     if (!win_) return;
     win_w_ = vui_window_width(win_);
     win_h_ = vui_window_height(win_);
+
+    /* Full-window canvas that presents the pixel buffer */
+    vui_widget *canvas = vui_canvas_ex(win_, 0, 0, win_w_, win_h_,
+                                       canvas_, ED_MAX_W);
+    vui_set_anchor(canvas, VUI_ANCHOR_LEFT | VUI_ANCHOR_RIGHT |
+                            VUI_ANCHOR_TOP | VUI_ANCHOR_BOTTOM);
+
+    /* Menu bar */
+    {
+        vui_widget *mb = vui_menubar(win_);
+        vui_widget *mf = vui_menu(win_, mb, "File");
+        vui_on_click(vui_menuitem(win_, mf, "New"),       [](vui_widget *){ s_instance->action_new(); });
+        vui_on_click(vui_menuitem(win_, mf, "Open..."),   [](vui_widget *){ s_instance->action_open(); });
+        vui_on_click(vui_menuitem(win_, mf, "Save"),      [](vui_widget *){ s_instance->action_save(); });
+        vui_on_click(vui_menuitem(win_, mf, "Save As..."),[](vui_widget *){ s_instance->action_save_as(); });
+        vui_menu_separator(win_, mf);
+        vui_on_click(vui_menuitem(win_, mf, "Quit"),      [](vui_widget *){ exit(0); });
+        
+        vui_widget *me = vui_menu(win_, mb, "Edit");
+        vui_on_click(vui_menuitem(win_, me, "Cut"),       [](vui_widget *){ s_instance->cut(); });
+        vui_on_click(vui_menuitem(win_, me, "Copy"),      [](vui_widget *){ s_instance->copy(); });
+        vui_on_click(vui_menuitem(win_, me, "Paste"),     [](vui_widget *){ s_instance->paste(); });
+        vui_menu_separator(win_, me);
+        vui_on_click(vui_menuitem(win_, me, "Go to Line..."), [](vui_widget *){ s_instance->action_goto_line(); });
+
+        vui_sync_menubar(win_);
+    }
+
+    /* Status bar at the bottom */
+    status_label_ = vui_label(win_, 8, win_h_ - 18, "Ready");
+    vui_set_anchor(status_label_, VUI_ANCHOR_LEFT | VUI_ANCHOR_BOTTOM);
+    vui_set_color(status_label_, ED_FG_DIM);
+
+    /* Dock context menu */
+    vui_add_dock_item(win_, "New Editor", [](vui_window *){
+        vos_spawn("/bin/texteditor");
+    });
+
     vui_on_key(win_, ed_on_key);
     vui_on_mouse_click(win_, ed_on_click);
     vui_on_mouse_move(win_, ed_on_mm);
     vui_on_mouse_release(win_, ed_on_mr);
     vui_on_scroll(win_, ed_on_scroll);
     vui_on_resize(win_, ed_on_resize);
-    ensure_cursor_visible(); request_repaint();
+    vui_on_tick(win_, ed_on_tick);
+
+    update_layout();
+    ensure_cursor_visible();
+    render();
+    vui_request_repaint(win_);
     vui_run(win_);
 }

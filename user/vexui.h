@@ -213,6 +213,19 @@ static inline void vui_add_menu_item(vui_window *w, const char *label,
 }
 void vui_request_repaint(vui_window *w);
 
+/* ---- Standard Dialogs --------------------------------------------------- */
+
+/**
+ * Open a standard file selection dialog (blocks the caller).
+ * @param title The dialog title (e.g. "Open File").
+ * @param initial_path Starting directory (e.g. "/home/user").
+ * @param out_path Buffer to receive the selected path.
+ * @param out_cap Capacity of the output buffer.
+ * @param save_mode 0 = Open mode, 1 = Save mode (allows filename entry).
+ * @return 1 if a file was selected, 0 if cancelled or error.
+ */
+int vui_file_dialog(const char *title, const char *initial_path, char *out_path, int out_cap, int save_mode);
+
 /* ---- Layout containers -------------------------------------------------- */
 
 /* Create a vertical-stack container (children arranged top-to-bottom).

@@ -112,10 +112,12 @@ struct vos_menubar_item {
 };
 
 int vos_window_create(const char *title, int w, int h);   /* >=0 id, <0 = no server */
-#define VOS_WINDOW_FRAMELESS 0x00000001u
-#define VOS_WINDOW_NO_DOCK   0x00000002u
-#define VOS_WINDOW_POSITIONED 0x00000004u
+#define VOS_WINDOW_FRAMELESS     0x00000001u
+#define VOS_WINDOW_NO_DOCK       0x00000002u
+#define VOS_WINDOW_POSITIONED    0x00000004u
 #define VOS_WINDOW_ALWAYS_ON_TOP 0x00000008u
+#define VOS_WINDOW_TRANSLUCENT   0x00000010u  /* window background is transparent */
+#define VOS_WINDOW_NO_SHADOW     0x00000020u  /* suppress drop shadow */
 #define VOS_WINDOW_ASPECT_RATIO  0x00000040u
 struct vos_window_options {
     const char *title;
@@ -128,6 +130,34 @@ struct vos_window_options {
     int32_t shadow_inset_top;
 };
 int vos_window_create_ex(const struct vos_window_options *options);
+
+/* ---- Desktop status (used by the top-bar app) --------------------------- */
+
+/* The pixel value written in transparent areas of a VOS_WINDOW_TRANSLUCENT
+ * window — the compositor treats this colour as fully transparent. */
+#define VOS_TRANSPARENT_KEY 0x00ff00ffu
+
+/* How many menu-bar items a desktop status snapshot can carry. */
+#define VOS_DESKTOP_MENU_MAX 64
+
+/* Snapshot of the desktop state for the top bar:
+ * system load, focused app label and its declared menu bar. */
+struct vos_desktop_status {
+    uint32_t uptime_seconds;
+    uint32_t cpu_pct;
+    uint32_t ui_pct;
+    uint32_t mem_pct;
+    uint32_t net_up;                          /* 1 if network has an IP */
+    char     app_label[20];                   /* focused window title   */
+    uint32_t menu_count;
+    struct vos_menubar_item menu[VOS_DESKTOP_MENU_MAX];
+};
+
+/* Fill *out with the current desktop snapshot. Returns 0 on success. */
+int vos_desktop_status(struct vos_desktop_status *out);
+
+/* Deliver a menu action to the focused window (top-bar use only). */
+void vos_menu_dispatch(uint32_t action_id);
 int vos_window_present(int id, const uint32_t *pixels, int w, int h);
 /* Set the desktop wallpaper from an XRGB buffer (0x00RRGGBB), scaled to screen. */
 int vos_set_wallpaper(const uint32_t *pixels, int w, int h);

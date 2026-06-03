@@ -60,6 +60,7 @@ public:
     void on_mouse_release(int x, int y);
     void on_scroll(int delta);
     void on_resize(int w, int h);
+    void on_tick();
 
     /* File operations */
     void new_file();
@@ -121,6 +122,10 @@ private:
 
     /* --- clipboard --- */
     char clipboard_[8192];         /* large enough for multi-line clip */
+
+    /* --- cursor blink --- */
+    bool cursor_visible_ = true;
+    int  cursor_blink_counter_ = 0;
 
     /* --- program state --- */
     bool modified_  = false;

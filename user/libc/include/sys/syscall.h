@@ -68,7 +68,9 @@ enum {
     SYS_SETUID  = 57,  /* rdi = new uid; root can set any, others only own */
     SYS_CHMOD   = 58,  /* rdi = path, rsi = mode (0–0777) */
     SYS_CHOWN       = 59,  /* rdi = path, rsi = uid, rdx = gid; root only */
-    SYS_AUDIO_IOCTL = 60,  /* rdi = request, rsi = &uint32_t value */
+    SYS_DESKTOP_STATUS = 43,  /* rdi = struct vos_desktop_status* → 0 on success */
+    SYS_MENU_DISPATCH  = 44,  /* rdi = action_id → delivers to focused window */
+    SYS_AUDIO_IOCTL    = 60,  /* rdi = request, rsi = &uint32_t value */
     /* System-wide clipboard.
      * SET: rdi = data ptr, rsi = len   → 0 on success / -EINVAL if too large
      * GET: rdi = buf ptr,  rsi = cap   → bytes copied (buf is NUL-terminated)

@@ -297,6 +297,16 @@ int chown(const char *path, unsigned int uid, unsigned int gid) {
                          (uint64_t)uid, (uint64_t)gid));
 }
 
+/* ---- Desktop status & menu dispatch (top-bar use) ----------------------- */
+
+int vos_desktop_status(struct vos_desktop_status *out) {
+    return (int)ck(__sc1(SYS_DESKTOP_STATUS, (uint64_t)(size_t)out));
+}
+
+void vos_menu_dispatch(uint32_t action_id) {
+    __sc1(SYS_MENU_DISPATCH, (uint64_t)action_id);
+}
+
 /* ---- System-wide clipboard ---------------------------------------------- */
 
 /*

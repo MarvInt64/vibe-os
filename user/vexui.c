@@ -41,14 +41,26 @@ typedef unsigned char uint8_t;
 
 #define SYS_READ 0
 #define SYS_WRITE 1
+#define SYS_IOCTL 2
 #define SYS_YIELD 3
-#define SYS_TIMER_SLEEP 20
 #define SYS_EXIT 4
+#define SYS_PROCESS_SPAWN 5
+#define SYS_WAITPID 6
 #define SYS_OPEN 7
 #define SYS_CLOSE 8
+#define SYS_STAT 9
+#define SYS_READDIR 10
+#define SYS_CHDIR 11
+#define SYS_GETCWD 12
+#define SYS_UNLINK 13
+#define SYS_CREAT 14
+#define SYS_GETARG 15
+#define SYS_WRITE_FILE 16
 #define SYS_WINDOW_CREATE 17
 #define SYS_WINDOW_PRESENT 18
 #define SYS_EVENT_POLL 19
+#define SYS_TIMER_SLEEP 20
+#define SYS_GETPID 53
 #define SYS_PROCESS_SNAPSHOT 28
 #define SYS_PROCESS_KILL 29
 #define SYS_WINDOW_SET_MENU 30
@@ -1863,6 +1875,65 @@ vui_window *vui_window_open(const char *title, int width, int height) {
 
 void vui_quit(vui_window *w){ if(w) w->open=0; }
 int vui_window_id(vui_window *w){ return w ? w->id : -1; }
+
+int vui_file_dialog(const char *title, const char *initial_path, char *out_path, int out_cap, int save_mode) {
+    (void)title;
+    char arg[256];
+    char res_file[64];
+    int pid = (int)sc1(SYS_GETPID, 0);
+    
+    /* Create a unique result file name: /tmp/fdr.PID */
+    scopy(res_file, "/tmp/fdr.", 64);
+    int p = pid, k = 9;
+    if (p == 0) res_file[k++] = '0';
+    else {
+        char t[16]; int ti = 0;
+        while (p > 0) { t[ti++] = (char)('0' + (p % 10)); p /= 10; }
+        while (ti > 0) res_file[k++] = t[--ti];
+    }
+    res_file[k] = '\0';
+
+    /* Build argument: "MODE;PATH;RESULT_FILE" */
+    int ai = 0;
+    if (save_mode) { scopy(arg, "SAVE;", 256); ai = 5; }
+    else { scopy(arg, "OPEN;", 256); ai = 5; }
+    
+    scopy(arg + ai, initial_path ? initial_path : "/", 256 - ai);
+    ai = slen(arg);
+    arg[ai++] = ';';
+    scopy(arg + ai, res_file, 256 - ai);
+
+    /* Remove old result if it exists */
+    sc1(SYS_UNLINK, (uint64_t)(size_t)res_file);
+
+    /* Spawn the dialog app */
+    int child = (int)sc2(SYS_PROCESS_SPAWN, (uint64_t)(size_t)"/bin/filedialog", (uint64_t)(size_t)arg);
+    if (child <= 0) return 0;
+
+    /* Wait for it to finish */
+    int status = 0;
+    while (sc2(SYS_WAITPID, (uint64_t)child, (uint64_t)(size_t)&status) == 0) {
+        do_yield();
+    }
+
+    if (status != 0) return 0; /* Cancelled or error */
+
+    /* Read the result back */
+    int fd = (int)sc1(SYS_OPEN, (uint64_t)(size_t)res_file);
+    if (fd < 0) return 0;
+    
+    int n = (int)sc3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)out_path, (uint64_t)(out_cap - 1));
+    sc1(SYS_CLOSE, (uint64_t)fd);
+    
+    if (n > 0) {
+        out_path[n] = '\0';
+        /* Cleanup */
+        sc1(SYS_UNLINK, (uint64_t)(size_t)res_file);
+        return 1;
+    }
+
+    return 0;
+}
 
 void __attribute__((noreturn)) vui_run(vui_window *w) {
     /* initial paint */

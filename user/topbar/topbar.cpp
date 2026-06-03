@@ -1,581 +1,936 @@
-/* topbar — the VibeOS desktop top bar, as a userspace app.
+/*
+ * topbar - VibeOS desktop top bar userspace app.
  *
- * A full-width, frameless, always-on-top window pinned to y=0 that renders the
- * entire top bar the kernel used to draw: the VibeOS logo (via libsvg), the
- * brand, the focused window's app menus (with dropdowns), the CPU/UI/MEM load
- * indicators with sparklines, the uptime clock and a power glyph.
+ * This process owns a full-width, frameless, always-on-top window pinned to the
+ * top of the screen. The visible bar shows the VibeOS logo, the focused app
+ * label, app menus, status indicators, uptime and a power menu.
  *
- * The window is only the bar height plus room for one dropdown; everything
- * outside the bar/dropdown is painted with the transparent key, so the desktop
- * shows through and clicks fall through to the apps below (the kernel routes
- * input past transparent frameless pixels). Data comes from the kernel via
- * SYS_DESKTOP_STATUS once a frame; menu picks go back to the focused window
- * with SYS_MENU_DISPATCH. */
+ * The window is taller than the bar so dropdowns can be drawn inside the same
+ * surface. Pixels outside the bar/dropdown are painted with TRANSPARENT_KEY so
+ * the desktop remains visible and input can pass through transparent areas.
+ */
+
+/* Standard headers — provide all primitive types and the libc API. */
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <vibeos.h>
+#include <sys/syscall.h>
 
 #include "svg.h"
 
-typedef unsigned long  size_t;
-typedef long           ssize_t;
-typedef unsigned long  uint64_t;
-typedef unsigned int   uint32_t;
-typedef int            int32_t;
-typedef unsigned short uint16_t;
-typedef unsigned char  uint8_t;
+/* ---- Window system constants — use vibeos.h canonical names ------------- */
 
-/* ---- syscalls ---- */
-#define SYS_READ 0
-#define SYS_WRITE 1
-#define SYS_YIELD 3
-#define SYS_PROCESS_SPAWN 5
-#define SYS_OPEN 7
-#define SYS_CLOSE 8
-#define SYS_WINDOW_PRESENT 18
-#define SYS_EVENT_POLL 19
-#define SYS_TIMER_SLEEP 20
-#define SYS_DISPLAY_MODE 27
-#define SYS_WINDOW_CREATE_EX 35
-#define SYS_WINDOW_PRESENT_RECT 38
-#define SYS_TEXT_DRAW 40
-#define SYS_TEXT_METRICS 41
-#define SYS_DESKTOP_STATUS 43
-#define SYS_MENU_DISPATCH 44
-#define SYS_REBOOT 51
-#define SYS_SHUTDOWN 52
+/* Local aliases kept for readability inside this file. */
+#define WIN_FRAMELESS     VOS_WINDOW_FRAMELESS
+#define WIN_NO_DOCK       VOS_WINDOW_NO_DOCK
+#define WIN_POSITIONED    VOS_WINDOW_POSITIONED
+#define WIN_ALWAYS_ON_TOP VOS_WINDOW_ALWAYS_ON_TOP
+#define WIN_TRANSLUCENT   VOS_WINDOW_TRANSLUCENT
+#define WIN_NO_SHADOW     VOS_WINDOW_NO_SHADOW
 
-static inline ssize_t sc1(uint64_t n, uint64_t a0) {
-    ssize_t r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(n), "D"(a0) : "rcx","r11","memory"); return r;
-}
-static inline ssize_t sc2(uint64_t n, uint64_t a0, uint64_t a1) {
-    ssize_t r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(n),"D"(a0),"S"(a1) : "rcx","r11","memory"); return r;
-}
-static inline ssize_t sc3(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2) {
-    ssize_t r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(n),"D"(a0),"S"(a1),"d"(a2) : "rcx","r11","memory"); return r;
-}
-static inline ssize_t sc6(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
-    ssize_t r;
-    register uint64_t r10 __asm__("r10") = a3;
-    register uint64_t r8  __asm__("r8")  = a4;
-    register uint64_t r9  __asm__("r9")  = a5;
-    __asm__ volatile("int $0x80" : "=a"(r)
-        : "a"(n),"D"(a0),"S"(a1),"d"(a2),"r"(r10),"r"(r8),"r"(r9)
-        : "rcx","r11","memory");
-    return r;
-}
-static void nap(uint64_t ticks){ sc1(SYS_TIMER_SLEEP, ticks); }
+#define TRANSPARENT_KEY   VOS_TRANSPARENT_KEY
 
-/* ---- winsys ABI (mirrors kernel/include/winsys.h) ---- */
-#define WIN_FRAMELESS 0x1u
-#define WIN_NO_DOCK 0x2u
-#define WIN_POSITIONED 0x4u
-#define WIN_ALWAYS_ON_TOP 0x8u
-#define WIN_TRANSLUCENT 0x10u
-#define WIN_NO_SHADOW   0x20u
-#define TRANSPARENT_KEY 0x00ff00ffu
-
-struct win_options { const char *title; int32_t width, height; uint32_t flags; int32_t x, y; };
-struct win_event { uint32_t type; int32_t x, y; uint32_t buttons; uint32_t key; };
+/* Event type constants from vibeos.h vos_event.type. */
 #define EV_MOUSE_MOVE 1
 #define EV_MOUSE_DOWN 2
-#define EV_KEY 4
-#define EV_CLOSE 5
+#define EV_KEY        4
+#define EV_CLOSE      5
 
-#define MB_TITLE 1u
-#define MB_DIVIDER 2u
-#define MB_DANGER 4u
-#define MB_LABEL_MAX 28
-#define MB_SHORTCUT_MAX 16
-#define MB_MAX_ITEMS 64
+/* Menu-bar item flag aliases. */
+#define MB_TITLE    VOS_MB_TITLE
+#define MB_DIVIDER  VOS_MB_DIVIDER
+#define MB_DANGER   VOS_MB_DANGER
+#define MB_MAX_ITEMS VOS_DESKTOP_MENU_MAX
 #define APP_LABEL_MAX 20
 
-struct menubar_item { char label[MB_LABEL_MAX]; char shortcut[MB_SHORTCUT_MAX]; uint32_t flags; uint32_t action_id; };
-struct desktop_status {
-    uint32_t uptime_seconds, cpu_pct, ui_pct, mem_pct, net_up;
-    char app_label[APP_LABEL_MAX];
-    uint32_t menu_count;
-    struct menubar_item menu[MB_MAX_ITEMS];
-};
+/* Use the vibeos.h canonical types throughout; local aliases for brevity. */
+typedef struct vos_window_options  win_options;
+typedef struct vos_event           win_event;
+typedef struct vos_menubar_item    menubar_item;
+typedef struct vos_desktop_status  desktop_status;
 
-/* ---- palette (matches the kernel chrome theme) ---- */
-#define COL_BAR     0x001a2c44u
-#define COL_BORDER  0x0039506au
-#define COL_TEXT    0x00eaf2fau
-#define COL_DIM     0x00b7c7d8u
-#define COL_ACCENT  0x004da3ffu
-#define COL_GREEN   0x0063d9a5u
-#define COL_RED     0x00e36c7au
-#define COL_HILITE  0x00233850u
-#define COL_DROP    0x00203549u
+/* Thin helpers that call the vibeos.h / libc API. */
+static void sleep_ticks(uint64_t ticks)        { vos_sleep_ticks(ticks); }
 
-#define BAR_H 54
-#define WIN_H 340         /* bar + room for one dropdown */
-#define ITEM_H 26
+/* ------------------------------------------------------------------------- */
+/* Theme and layout constants                                                */
+/* ------------------------------------------------------------------------- */
 
-static int g_w;                 /* screen / bar width */
-static uint32_t *g_canvas;      /* g_w * WIN_H ARGB */
-static int g_win;               /* window id */
+#define COLOR_BAR       0x001a2c44u
+#define COLOR_BORDER    0x0039506au
+#define COLOR_TEXT      0x00eaf2fau
+#define COLOR_DIM       0x00b7c7d8u
+#define COLOR_ACCENT    0x004da3ffu
+#define COLOR_GREEN     0x0063d9a5u
+#define COLOR_RED       0x00e36c7au
+#define COLOR_HIGHLIGHT 0x00233850u
+#define COLOR_DROPDOWN  0x00203549u
 
-/* ---- drawing primitives ---- */
-static void clear_canvas(void) {
-    int n = g_w * WIN_H, i;
-    for (i = 0; i < n; ++i) g_canvas[i] = TRANSPARENT_KEY;
+#define BAR_HEIGHT             54
+#define WINDOW_HEIGHT          340
+#define MENU_ITEM_HEIGHT       26
+#define MAX_WINDOW_WIDTH       1920
+#define DEFAULT_WINDOW_WIDTH   1024
+#define MAX_TOP_LEVEL_MENUS    16
+#define MENU_TITLE_PADDING_X   8
+#define MENU_TITLE_GAP         22
+#define DROPDOWN_PADDING_TOP   5
+#define DROPDOWN_PADDING_X     14
+#define POWER_MENU_WIDTH       160
+#define POWER_ICON_SIZE        20
+#define POWER_HIT_WIDTH        44
+#define LOGO_BASE_SIZE         44
+#define LOGO_MAX_SIZE          52
+#define LOGO_HOVER_STEPS       10
+#define HISTORY_SIZE           24
+
+/* ------------------------------------------------------------------------- */
+/* Global app state                                                          */
+/* ------------------------------------------------------------------------- */
+
+static int g_screen_width;
+static int g_window_id;
+static uint32_t *g_canvas;
+
+static int g_open_menu_index = -1;
+static int g_power_menu_open = 0;
+static int g_menu_title_x[MAX_TOP_LEVEL_MENUS];
+static int g_menu_title_width[MAX_TOP_LEVEL_MENUS];
+static int g_menu_title_count;
+
+static char g_logo_svg[4096];
+static int g_logo_loaded;
+static int g_logo_hovered;
+static int g_logo_hover_value;
+static uint32_t g_logo_pixels[LOGO_MAX_SIZE * LOGO_MAX_SIZE];
+
+static uint32_t g_power_pixels[POWER_ICON_SIZE * POWER_ICON_SIZE];
+static int g_power_loaded;
+
+static int g_cpu_history[HISTORY_SIZE];
+static int g_ui_history[HISTORY_SIZE];
+static int g_history_pos;
+static int g_history_full;
+static uint32_t g_last_sampled_second = 0xffffffffu;
+
+/* ------------------------------------------------------------------------- */
+/* Small utilities                                                           */
+/* ------------------------------------------------------------------------- */
+
+static int clamp_int(int value, int min_value, int max_value) {
+    if (value < min_value) return min_value;
+    if (value > max_value) return max_value;
+    return value;
 }
-static void fill_rect(int x, int y, int w, int h, uint32_t c) {
-    int yy, xx;
-    for (yy = y; yy < y + h; ++yy) {
-        if (yy < 0 || yy >= WIN_H) continue;
-        for (xx = x; xx < x + w; ++xx) {
-            if (xx < 0 || xx >= g_w) continue;
-            g_canvas[yy * g_w + xx] = c;
+
+static int string_length(const char *text) {
+    int length = 0;
+    while (text[length]) ++length;
+    return length;
+}
+
+static void uint_to_string(unsigned value, char *out) {
+    char reversed[12];
+    int count = 0;
+    int write_index = 0;
+
+    if (value == 0) {
+        out[0] = '0';
+        out[1] = 0;
+        return;
+    }
+
+    while (value) {
+        reversed[count++] = (char)('0' + value % 10);
+        value /= 10;
+    }
+
+    while (count) {
+        out[write_index++] = reversed[--count];
+    }
+    out[write_index] = 0;
+}
+
+static void two_digit_uint_to_string(unsigned value, char *out) {
+    out[0] = (char)('0' + (value / 10) % 10);
+    out[1] = (char)('0' + value % 10);
+    out[2] = 0;
+}
+
+static int read_text_file(const char *path, char *buffer, int capacity) {
+    int fd;
+    int bytes_read;
+
+    if (!buffer || capacity <= 1) return 0;
+
+    fd = (int)open(path, O_RDONLY);
+    if (fd < 0) return 0;
+
+    bytes_read = (int)read(fd, buffer, (size_t)(capacity - 1));
+    close(fd);
+
+    if (bytes_read <= 0) return 0;
+
+    buffer[bytes_read] = 0;
+    return 1;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Drawing                                                                   */
+/* ------------------------------------------------------------------------- */
+
+static void clear_canvas(void) {
+    int pixel_count = g_screen_width * WINDOW_HEIGHT;
+    int i;
+
+    for (i = 0; i < pixel_count; ++i) {
+        g_canvas[i] = TRANSPARENT_KEY;
+    }
+}
+
+static void fill_rect(int x, int y, int width, int height, uint32_t color) {
+    int yy;
+    int xx;
+
+    for (yy = y; yy < y + height; ++yy) {
+        if (yy < 0 || yy >= WINDOW_HEIGHT) continue;
+
+        for (xx = x; xx < x + width; ++xx) {
+            if (xx < 0 || xx >= g_screen_width) continue;
+            g_canvas[yy * g_screen_width + xx] = color;
         }
     }
 }
-static void blend_px(int x, int y, uint32_t c, int a) {
-    uint32_t *d, dr, dg, db, sr, sg, sb;
-    if (a <= 0 || x < 0 || y < 0 || x >= g_w || y >= WIN_H) return;
-    if (a >= 255) { g_canvas[y * g_w + x] = c; return; }
-    d = &g_canvas[y * g_w + x];
-    sr = (c >> 16) & 255; sg = (c >> 8) & 255; sb = c & 255;
-    dr = (*d >> 16) & 255; dg = (*d >> 8) & 255; db = *d & 255;
-    dr = (sr * (uint32_t)a + dr * (255u - a)) / 255u;
-    dg = (sg * (uint32_t)a + dg * (255u - a)) / 255u;
-    db = (sb * (uint32_t)a + db * (255u - a)) / 255u;
-    *d = (dr << 16) | (dg << 8) | db;
-}
-static int text_w(const char *s) {
-    if (!s || !*s) return 0;
-    return (int)sc2(SYS_TEXT_METRICS, (uint64_t)(size_t)s, 1);
-}
-static void draw_text(int x, int y, const char *s, uint32_t c) {
-    if (!s || !*s) return;
-    sc6(SYS_TEXT_DRAW, (uint64_t)(size_t)g_canvas, (uint64_t)(size_t)s,
-        (((uint64_t)(uint32_t)g_w) << 16) | (uint32_t)WIN_H,
-        (((uint64_t)(uint16_t)x) << 16) | (uint16_t)y, (uint64_t)c, 1);
+
+static void draw_rect_border(int x, int y, int width, int height, uint32_t color) {
+    fill_rect(x, y, width, 1, color);
+    fill_rect(x, y + height - 1, width, 1, color);
+    fill_rect(x, y, 1, height, color);
+    fill_rect(x + width - 1, y, 1, height, color);
 }
 
-static int str_len(const char *s) { int n = 0; while (s[n]) ++n; return n; }
-static void utoa2(unsigned v, char *out) { out[0] = (char)('0' + (v / 10) % 10); out[1] = (char)('0' + v % 10); out[2] = 0; }
-static void uitoa(unsigned v, char *out) {
-    char tmp[12]; int n = 0, i = 0;
-    if (v == 0) { out[0] = '0'; out[1] = 0; return; }
-    while (v) { tmp[n++] = (char)('0' + v % 10); v /= 10; }
-    while (n) out[i++] = tmp[--n];
-    out[i] = 0;
+static void blend_pixel(int x, int y, uint32_t color, int alpha) {
+    uint32_t *dst;
+    uint32_t sr;
+    uint32_t sg;
+    uint32_t sb;
+    uint32_t dr;
+    uint32_t dg;
+    uint32_t db;
+
+    if (alpha <= 0) return;
+    if (x < 0 || y < 0 || x >= g_screen_width || y >= WINDOW_HEIGHT) return;
+
+    if (alpha >= 255) {
+        g_canvas[y * g_screen_width + x] = color;
+        return;
+    }
+
+    dst = &g_canvas[y * g_screen_width + x];
+
+    sr = (color >> 16) & 255u;
+    sg = (color >> 8) & 255u;
+    sb = color & 255u;
+
+    dr = (*dst >> 16) & 255u;
+    dg = (*dst >> 8) & 255u;
+    db = *dst & 255u;
+
+    dr = (sr * (uint32_t)alpha + dr * (255u - (uint32_t)alpha)) / 255u;
+    dg = (sg * (uint32_t)alpha + dg * (255u - (uint32_t)alpha)) / 255u;
+    db = (sb * (uint32_t)alpha + db * (255u - (uint32_t)alpha)) / 255u;
+
+    *dst = (dr << 16) | (dg << 8) | db;
 }
 
-/* ---- logo (cached SVG, rendered dynamically for anti-aliasing) ---- */
-#define LOGO_MAX_SZ 52
-static char g_logo_svg_data[4096];
-static int g_logo_ready;
-static int g_logo_hover = 0;
-static int g_logo_hover_val = 0;
-static uint32_t g_logo_anim[LOGO_MAX_SZ * LOGO_MAX_SZ];
+static int measure_text(const char *text) {
+    if (!text || !text[0]) return 0;
+    return (int)__sc2(SYS_TEXT_METRICS, (uint64_t)(size_t)text, 1);
+}
+
+static void draw_text(int x, int y, const char *text, uint32_t color) {
+    uint64_t surface_size;
+    uint64_t position;
+
+    if (!text || !text[0]) return;
+
+    surface_size = (((uint64_t)(uint32_t)g_screen_width) << 16) | (uint32_t)WINDOW_HEIGHT;
+    position = (((uint64_t)(uint16_t)x) << 16) | (uint16_t)y;
+
+    __sc6(SYS_TEXT_DRAW,
+          (uint64_t)(size_t)g_canvas,
+          (uint64_t)(size_t)text,
+          surface_size,
+          position,
+          (uint64_t)color,
+          1);
+}
+
+static void draw_separator(int *x) {
+    fill_rect(*x, 16, 1, 22, COLOR_BORDER);
+    *x += 8;
+}
+
+/* ------------------------------------------------------------------------- */
+/* SVG icons                                                                 */
+/* ------------------------------------------------------------------------- */
 
 static void load_logo(void) {
-    int fd = (int)sc1(SYS_OPEN, (uint64_t)(size_t)"/icons/vibeos-logo.svg");
-    int n;
-    if (fd < 0) return;
-    n = (int)sc3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)g_logo_svg_data, sizeof(g_logo_svg_data) - 1);
-    sc1(SYS_CLOSE, (uint64_t)fd);
-    if (n <= 0) return;
-    g_logo_svg_data[n] = 0;
-    g_logo_ready = 1;
-}
-static void blit_logo(int ox, int oy) {
-    int x, y;
-    if (!g_logo_ready) return;
-
-    int size = 44 + (int)(6.0f * (g_logo_hover_val / 10.0f));
-    if (size > LOGO_MAX_SZ) size = LOGO_MAX_SZ;
-
-    int r1 = 0x4d, g1 = 0xa3, b1 = 0xff; // COL_ACCENT
-    int r2 = 0xd4, g2 = 0x4d, b2 = 0xff; // Neon Purple / Pink
-    int r = r1 + (r2 - r1) * g_logo_hover_val / 10;
-    int g = g1 + (g2 - g1) * g_logo_hover_val / 10;
-    int b = b1 + (b2 - b1) * g_logo_hover_val / 10;
-    uint32_t col = (r << 16) | (g << 8) | b;
-
-    svg_render_rgba(g_logo_svg_data, g_logo_anim, size, col);
-
-    int dox = ox + (44 - size) / 2;
-    int doy = oy + (44 - size) / 2;
-
-    for (y = 0; y < size; ++y) {
-        for (x = 0; x < size; ++x) {
-            uint32_t p = g_logo_anim[y * size + x];
-            int a = (int)((p >> 24) & 255u);
-            if (a > 0) blend_px(dox + x, doy + y, p & 0xFFFFFFu, a);
-        }
-    }
+    g_logo_loaded = read_text_file("/icons/vibeos-logo.svg", g_logo_svg, (int)sizeof(g_logo_svg));
 }
 
-#define POWER_SZ 20
-static uint32_t g_power[POWER_SZ * POWER_SZ];
-static int g_power_ready;
-static void load_power(void) {
-    static char buf[1024];
-    int fd = (int)sc1(SYS_OPEN, (uint64_t)(size_t)"/icons/power.svg");
-    int n;
-    if (fd < 0) return;
-    n = (int)sc3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)buf, sizeof(buf) - 1);
-    sc1(SYS_CLOSE, (uint64_t)fd);
-    if (n <= 0) return;
-    buf[n] = 0;
-    svg_render_rgba(buf, g_power, POWER_SZ, COL_TEXT);
-    g_power_ready = 1;
-}
-static void blit_power(int ox, int oy) {
-    int x, y;
-    if (!g_power_ready) return;
-    for (y = 0; y < POWER_SZ; ++y)
-        for (x = 0; x < POWER_SZ; ++x) {
-            uint32_t p = g_power[y * POWER_SZ + x];
-            int a = (int)((p >> 24) & 255u);
-            if (a > 0) blend_px(ox + x, oy + y, p & 0xFFFFFFu, a);
-        }
+static uint32_t interpolate_color(uint32_t from, uint32_t to, int step, int max_step) {
+    int from_r = (int)((from >> 16) & 255u);
+    int from_g = (int)((from >> 8) & 255u);
+    int from_b = (int)(from & 255u);
+
+    int to_r = (int)((to >> 16) & 255u);
+    int to_g = (int)((to >> 8) & 255u);
+    int to_b = (int)(to & 255u);
+
+    int r = from_r + (to_r - from_r) * step / max_step;
+    int g = from_g + (to_g - from_g) * step / max_step;
+    int b = from_b + (to_b - from_b) * step / max_step;
+
+    return (uint32_t)((r << 16) | (g << 8) | b);
 }
 
-/* ---- sparklines (app keeps its own per-second history) ---- */
-#define HIST 24
-static int g_cpu_hist[HIST], g_ui_hist[HIST];
-static int g_hist_pos, g_hist_ready;
-static uint32_t g_last_sec = 0xffffffffu;
+static void draw_svg_pixels(const uint32_t *pixels, int size, int x, int y) {
+    int px;
+    int py;
 
-static void sample_history(const struct desktop_status *st) {
-    if (st->uptime_seconds == g_last_sec) return;
-    g_last_sec = st->uptime_seconds;
-    g_cpu_hist[g_hist_pos] = (int)st->cpu_pct;
-    g_ui_hist[g_hist_pos] = (int)st->ui_pct;
-    g_hist_pos = (g_hist_pos + 1) % HIST;
-    if (g_hist_pos == 0) g_hist_ready = 1;
-}
-static void draw_sparkline(int x, int y, int w, int h, const int *hist, uint32_t c) {
-    int count = g_hist_ready ? HIST : g_hist_pos;
-    int i, prev_px = -1, prev_py = -1;
-    if (count < 2) { fill_rect(x, y + h - 1, w, 1, COL_BORDER); return; }
-    for (i = 0; i < count; ++i) {
-        int idx = (g_hist_pos - count + i + HIST * 2) % HIST;
-        int v = hist[idx]; if (v < 0) v = 0; if (v > 100) v = 100;
-        int px = x + (w - 1) * i / (count - 1);
-        int py = y + h - 1 - (h - 1) * v / 100;
-        if (prev_px >= 0) {
-            int dx = px - prev_px, dy = py - prev_py, steps, s;
-            int adx = dx < 0 ? -dx : dx, ady = dy < 0 ? -dy : dy;
-            steps = adx > ady ? adx : ady; if (steps < 1) steps = 1;
-            for (s = 0; s <= steps; ++s) {
-                int lx = prev_px + dx * s / steps;
-                int ly = prev_py + dy * s / steps;
-                blend_px(lx, ly, c, 255);
-                blend_px(lx, ly + 1, c, 90);
+    for (py = 0; py < size; ++py) {
+        for (px = 0; px < size; ++px) {
+            uint32_t pixel = pixels[py * size + px];
+            int alpha = (int)((pixel >> 24) & 255u);
+
+            if (alpha > 0) {
+                blend_pixel(x + px, y + py, pixel & 0x00ffffffu, alpha);
             }
         }
-        prev_px = px; prev_py = py;
     }
 }
 
-/* ---- menu layout / hit testing ---- */
-static int g_menu_open = -1;     /* index of open top-level title, -1 = none */
-static int g_power_menu_open = 0; /* 1 = power menu dropdown is open, 0 = closed */
-static int g_menu_x[16];         /* x of each title */
-static int g_menu_w[16];         /* pixel width of each title label */
-static int g_menu_n;             /* number of titles */
+static void draw_logo(int x, int y) {
+    int size;
+    int offset_x;
+    int offset_y;
+    uint32_t color;
 
-static int title_index(const struct desktop_status *st, int m) {
-    int i, c = 0;
-    for (i = 0; i < (int)st->menu_count; ++i)
-        if (st->menu[i].flags & MB_TITLE) { if (c == m) return i; ++c; }
+    if (!g_logo_loaded) return;
+
+    size = LOGO_BASE_SIZE + (6 * g_logo_hover_value) / LOGO_HOVER_STEPS;
+    size = clamp_int(size, LOGO_BASE_SIZE, LOGO_MAX_SIZE);
+
+    color = interpolate_color(COLOR_ACCENT, 0x00d44dffu, g_logo_hover_value, LOGO_HOVER_STEPS);
+    svg_render_rgba(g_logo_svg, g_logo_pixels, size, color);
+
+    offset_x = x + (LOGO_BASE_SIZE - size) / 2;
+    offset_y = y + (LOGO_BASE_SIZE - size) / 2;
+
+    draw_svg_pixels(g_logo_pixels, size, offset_x, offset_y);
+}
+
+static void load_power_icon(void) {
+    static char svg_buffer[1024];
+
+    if (!read_text_file("/icons/power.svg", svg_buffer, (int)sizeof(svg_buffer))) return;
+
+    svg_render_rgba(svg_buffer, g_power_pixels, POWER_ICON_SIZE, COLOR_TEXT);
+    g_power_loaded = 1;
+}
+
+static void draw_power_icon(int x, int y) {
+    if (!g_power_loaded) return;
+    draw_svg_pixels(g_power_pixels, POWER_ICON_SIZE, x, y);
+}
+
+/* ------------------------------------------------------------------------- */
+/* History and sparklines                                                    */
+/* ------------------------------------------------------------------------- */
+
+static void sample_status_history(const desktop_status *status) {
+    if (status->uptime_seconds == g_last_sampled_second) return;
+
+    g_last_sampled_second = status->uptime_seconds;
+    g_cpu_history[g_history_pos] = (int)status->cpu_pct;
+    g_ui_history[g_history_pos] = (int)status->ui_pct;
+
+    g_history_pos = (g_history_pos + 1) % HISTORY_SIZE;
+    if (g_history_pos == 0) g_history_full = 1;
+}
+
+static void draw_line(int x0, int y0, int x1, int y1, uint32_t color) {
+    int dx = x1 - x0;
+    int dy = y1 - y0;
+    int adx = dx < 0 ? -dx : dx;
+    int ady = dy < 0 ? -dy : dy;
+    int steps = adx > ady ? adx : ady;
+    int i;
+
+    if (steps < 1) steps = 1;
+
+    for (i = 0; i <= steps; ++i) {
+        int x = x0 + dx * i / steps;
+        int y = y0 + dy * i / steps;
+
+        blend_pixel(x, y, color, 255);
+        blend_pixel(x, y + 1, color, 90);
+    }
+}
+
+static void draw_sparkline(int x, int y, int width, int height, const int *history, uint32_t color) {
+    int count = g_history_full ? HISTORY_SIZE : g_history_pos;
+    int previous_x = -1;
+    int previous_y = -1;
+    int i;
+
+    if (count < 2) {
+        fill_rect(x, y + height - 1, width, 1, COLOR_BORDER);
+        return;
+    }
+
+    for (i = 0; i < count; ++i) {
+        int history_index = (g_history_pos - count + i + HISTORY_SIZE * 2) % HISTORY_SIZE;
+        int value = clamp_int(history[history_index], 0, 100);
+        int point_x = x + (width - 1) * i / (count - 1);
+        int point_y = y + height - 1 - (height - 1) * value / 100;
+
+        if (previous_x >= 0) {
+            draw_line(previous_x, previous_y, point_x, point_y, color);
+        }
+
+        previous_x = point_x;
+        previous_y = point_y;
+    }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Menu layout                                                               */
+/* ------------------------------------------------------------------------- */
+
+static int first_menu_x(const desktop_status *status) {
+    return 122 + measure_text(status->app_label) + 24;
+}
+
+static int title_item_index(const desktop_status *status, int title_index) {
+    int i;
+    int title_count = 0;
+
+    for (i = 0; i < (int)status->menu_count; ++i) {
+        if (!(status->menu[i].flags & MB_TITLE)) continue;
+
+        if (title_count == title_index) return i;
+        ++title_count;
+    }
+
     return -1;
 }
-static int menu_start_x(const struct desktop_status *st) {
-    return 122 + text_w(st->app_label) + 24;
-}
-static void layout_menus(const struct desktop_status *st) {
-    int i, x = menu_start_x(st);
-    g_menu_n = 0;
-    for (i = 0; i < (int)st->menu_count && g_menu_n < 16; ++i) {
-        if (!(st->menu[i].flags & MB_TITLE)) continue;
-        g_menu_x[g_menu_n] = x;
-        g_menu_w[g_menu_n] = text_w(st->menu[i].label);
-        x += g_menu_w[g_menu_n] + 22;
-        ++g_menu_n;
+
+static void layout_menus(const desktop_status *status) {
+    int i;
+    int x = first_menu_x(status);
+
+    g_menu_title_count = 0;
+
+    for (i = 0; i < (int)status->menu_count && g_menu_title_count < MAX_TOP_LEVEL_MENUS; ++i) {
+        if (!(status->menu[i].flags & MB_TITLE)) continue;
+
+        g_menu_title_x[g_menu_title_count] = x;
+        g_menu_title_width[g_menu_title_count] = measure_text(status->menu[i].label);
+
+        x += g_menu_title_width[g_menu_title_count] + MENU_TITLE_GAP;
+        ++g_menu_title_count;
     }
 }
-/* Dropdown geometry for the m-th menu (rows = number of entries). */
-static void dropdown_rect(const struct desktop_status *st, int m, int *rx, int *ry, int *rw, int *rh, int *rows_out) {
-    int ti = title_index(st, m), i, rows = 0, maxw = 90;
-    for (i = ti + 1; i < (int)st->menu_count && !(st->menu[i].flags & MB_TITLE); ++i) {
-        int lw = text_w(st->menu[i].label) + text_w(st->menu[i].shortcut) + 56;
-        if (lw > maxw) maxw = lw;
-        ++rows;
+
+static void get_dropdown_rect(
+    const desktop_status *status,
+    int menu_index,
+    int *x,
+    int *y,
+    int *width,
+    int *height,
+    int *rows
+) {
+    int title_item = title_item_index(status, menu_index);
+    int item_index;
+    int row_count = 0;
+    int max_width = 90;
+
+    for (item_index = title_item + 1;
+         item_index < (int)status->menu_count && !(status->menu[item_index].flags & MB_TITLE);
+         ++item_index) {
+        int item_width = measure_text(status->menu[item_index].label)
+                       + measure_text(status->menu[item_index].shortcut)
+                       + 56;
+
+        if (item_width > max_width) max_width = item_width;
+        ++row_count;
     }
-    *rx = (m >= 0 && m < g_menu_n) ? g_menu_x[m] - 8 : 0;
-    *ry = BAR_H;
-    *rw = maxw;
-    *rh = rows * ITEM_H + 10;
-    if (rows_out) *rows_out = rows;
+
+    *x = (menu_index >= 0 && menu_index < g_menu_title_count)
+       ? g_menu_title_x[menu_index] - MENU_TITLE_PADDING_X
+       : 0;
+    *y = BAR_HEIGHT;
+    *width = max_width;
+    *height = row_count * MENU_ITEM_HEIGHT + 10;
+
+    if (rows) *rows = row_count;
 }
 
-/* ---- rendering ---- */
-static void render(const struct desktop_status *st) {
-    int i, sx;
-    char buf[16];
+static void get_power_menu_rect(int *x, int *y, int *width, int *height) {
+    *width = POWER_MENU_WIDTH;
+    *height = 2 * MENU_ITEM_HEIGHT + 10;
+    *x = g_screen_width - *width - 6;
+    *y = BAR_HEIGHT;
+}
 
+/* ------------------------------------------------------------------------- */
+/* Rendering                                                                 */
+/* ------------------------------------------------------------------------- */
+
+static void draw_top_bar_background(void) {
+    fill_rect(0, 0, g_screen_width, BAR_HEIGHT, COLOR_BAR);
+    fill_rect(0, BAR_HEIGHT - 1, g_screen_width, 1, COLOR_BORDER);
+}
+
+static void draw_app_identity(const desktop_status *status) {
+    draw_logo(6, 5);
+
+    if (status->app_label[0]) {
+        draw_text(58, 19, status->app_label, COLOR_DIM);
+    }
+}
+
+static void draw_menu_titles(const desktop_status *status) {
+    int i;
+
+    layout_menus(status);
+
+    for (i = 0; i < g_menu_title_count; ++i) {
+        int title_item = title_item_index(status, i);
+        uint32_t color = (i == g_open_menu_index) ? COLOR_ACCENT : COLOR_TEXT;
+
+        if (i == g_open_menu_index) {
+            fill_rect(
+                g_menu_title_x[i] - MENU_TITLE_PADDING_X,
+                6,
+                g_menu_title_width[i] + MENU_TITLE_PADDING_X * 2,
+                42,
+                COLOR_HIGHLIGHT);
+        }
+
+        if (title_item >= 0) {
+            draw_text(g_menu_title_x[i], 19, status->menu[title_item].label, color);
+        }
+    }
+}
+
+static void draw_percent_text(int *x, unsigned value) {
+    char buffer[16];
+
+    uint_to_string(value, buffer);
+    draw_text(*x, 19, buffer, COLOR_TEXT);
+    draw_text(*x + string_length(buffer) * 8, 19, "%", COLOR_TEXT);
+    *x += 30;
+}
+
+static void draw_uptime(int *x, uint32_t uptime_seconds) {
+    char time_text[9];
+
+    two_digit_uint_to_string((uptime_seconds / 3600) % 24, &time_text[0]);
+    time_text[2] = ':';
+    two_digit_uint_to_string((uptime_seconds / 60) % 60, &time_text[3]);
+    time_text[5] = ':';
+    two_digit_uint_to_string(uptime_seconds % 60, &time_text[6]);
+    time_text[8] = 0;
+
+    draw_text(*x, 19, time_text, COLOR_TEXT);
+    *x += 8 * 8 + 10;
+}
+
+static void draw_status_area(const desktop_status *status) {
+    int x = g_screen_width - 470;
+    int min_x = first_menu_x(status) + 40;
+
+    if (x < min_x) x = min_x;
+
+    draw_text(x, 19, "NET", status->net_up ? COLOR_GREEN : COLOR_DIM);
+    x += 34;
+
+    draw_separator(&x);
+
+    draw_text(x, 19, "CPU", COLOR_TEXT);
+    x += 30;
+    draw_sparkline(x, 18, 42, 14, g_cpu_history, COLOR_ACCENT);
+    x += 48;
+    draw_percent_text(&x, status->cpu_pct);
+
+    draw_separator(&x);
+
+    draw_text(x, 19, "UI", COLOR_DIM);
+    x += 22;
+    draw_sparkline(x, 18, 30, 14, g_ui_history, COLOR_GREEN);
+    x += 36;
+
+    draw_separator(&x);
+
+    draw_text(x, 19, "MEM", COLOR_TEXT);
+    x += 34;
+    fill_rect(x, 22, 30, 8, COLOR_HIGHLIGHT);
+    fill_rect(x, 22, 30 * clamp_int((int)status->mem_pct, 0, 100) / 100, 8, COLOR_ACCENT);
+    x += 36;
+    draw_percent_text(&x, status->mem_pct);
+
+    draw_separator(&x);
+    draw_uptime(&x, status->uptime_seconds);
+
+    fill_rect(x, 16, 1, 22, COLOR_BORDER);
+    draw_power_icon(g_screen_width - 36, 17);
+}
+
+static void draw_menu_dropdown(const desktop_status *status) {
+    int x;
+    int y;
+    int width;
+    int height;
+    int title_item;
+    int item_index;
+    int row = 0;
+
+    if (g_open_menu_index < 0 || g_open_menu_index >= g_menu_title_count) return;
+
+    get_dropdown_rect(status, g_open_menu_index, &x, &y, &width, &height, 0);
+    fill_rect(x, y, width, height, COLOR_DROPDOWN);
+    draw_rect_border(x, y, width, height, COLOR_BORDER);
+
+    title_item = title_item_index(status, g_open_menu_index);
+
+    for (item_index = title_item + 1;
+         item_index < (int)status->menu_count && !(status->menu[item_index].flags & MB_TITLE);
+         ++item_index, ++row) {
+        int item_y = y + DROPDOWN_PADDING_TOP + row * MENU_ITEM_HEIGHT;
+        const menubar_item *item = &status->menu[item_index];
+
+        if (item->flags & MB_DIVIDER) {
+            fill_rect(x + 8, item_y + MENU_ITEM_HEIGHT / 2, width - 16, 1, COLOR_BORDER);
+            continue;
+        }
+
+        draw_text(
+            x + DROPDOWN_PADDING_X,
+            item_y + 5,
+            item->label,
+            (item->flags & MB_DANGER) ? COLOR_RED : COLOR_TEXT);
+
+        if (item->shortcut[0]) {
+            draw_text(
+                x + width - DROPDOWN_PADDING_X - measure_text(item->shortcut),
+                item_y + 5,
+                item->shortcut,
+                COLOR_DIM);
+        }
+    }
+}
+
+static void draw_power_menu(void) {
+    int x;
+    int y;
+    int width;
+    int height;
+    int first_item_y;
+    int second_item_y;
+
+    if (!g_power_menu_open) return;
+
+    get_power_menu_rect(&x, &y, &width, &height);
+    fill_rect(x, y, width, height, COLOR_DROPDOWN);
+    draw_rect_border(x, y, width, height, COLOR_BORDER);
+
+    first_item_y = y + DROPDOWN_PADDING_TOP;
+    second_item_y = first_item_y + MENU_ITEM_HEIGHT;
+
+    draw_text(x + DROPDOWN_PADDING_X, first_item_y + 5, "Reboot System", COLOR_TEXT);
+    draw_text(x + DROPDOWN_PADDING_X, second_item_y + 5, "Shutdown System", COLOR_RED);
+}
+
+static void render(const desktop_status *status) {
     clear_canvas();
 
-    /* bar background + bottom hairline */
-    fill_rect(0, 0, g_w, BAR_H, COL_BAR);
-    fill_rect(0, BAR_H - 1, g_w, 1, COL_BORDER);
+    draw_top_bar_background();
+    draw_app_identity(status);
+    draw_menu_titles(status);
+    draw_status_area(status);
 
-    /* logo + brand + focused app label */
-    blit_logo(6, 5);
-    //draw_text(58, 19, "VibeOS", COL_TEXT);
-
-    if (st->app_label[0]) {
-        draw_text(58, 19, st->app_label, COL_DIM);
-    }
-
-    /* app menu titles */
-    layout_menus(st);
-    for (i = 0; i < g_menu_n; ++i) {
-        int ti = title_index(st, i);
-        if (i == g_menu_open) fill_rect(g_menu_x[i] - 8, 6, g_menu_w[i] + 16, 42, COL_HILITE);
-        if (ti >= 0) draw_text(g_menu_x[i], 19, st->menu[ti].label,
-                               (i == g_menu_open) ? COL_ACCENT : COL_TEXT);
-    }
-
-    /* ---- right side: NET | CPU spark % | UI spark | MEM bar % | clock | power ---- */
-    sx = g_w - 470;
-    {
-        int min_sx = menu_start_x(st) + 40;
-        if (sx < min_sx) sx = min_sx;
-    }
-    draw_text(sx, 19, "NET", st->net_up ? COL_GREEN : COL_DIM); sx += 34;
-    fill_rect(sx, 16, 1, 22, COL_BORDER); sx += 8;
-    draw_text(sx, 19, "CPU", COL_TEXT); sx += 30;
-    draw_sparkline(sx, 18, 42, 14, g_cpu_hist, COL_ACCENT); sx += 48;
-    uitoa(st->cpu_pct, buf); draw_text(sx, 19, buf, COL_TEXT);
-    draw_text(sx + str_len(buf) * 8, 19, "%", COL_TEXT); sx += 30;
-    fill_rect(sx, 16, 1, 22, COL_BORDER); sx += 8;
-    draw_text(sx, 19, "UI", COL_DIM); sx += 22;
-    draw_sparkline(sx, 18, 30, 14, g_ui_hist, COL_GREEN); sx += 36;
-    fill_rect(sx, 16, 1, 22, COL_BORDER); sx += 8;
-    draw_text(sx, 19, "MEM", COL_TEXT); sx += 34;
-    {
-        int pct = (int)st->mem_pct; if (pct > 100) pct = 100;
-        fill_rect(sx, 22, 30, 8, COL_HILITE);
-        fill_rect(sx, 22, 30 * pct / 100, 8, COL_ACCENT);
-        sx += 36;
-    }
-    uitoa(st->mem_pct, buf); draw_text(sx, 19, buf, COL_TEXT);
-    draw_text(sx + str_len(buf) * 8, 19, "%", COL_TEXT); sx += 30;
-    fill_rect(sx, 16, 1, 22, COL_BORDER); sx += 8;
-    {
-        uint32_t s = st->uptime_seconds;
-        char t[9];
-        utoa2((s / 3600) % 24, &t[0]); t[2] = ':';
-        utoa2((s / 60) % 60, &t[3]);   t[5] = ':';
-        utoa2(s % 60, &t[6]);          t[8] = 0;
-        draw_text(sx, 19, t, COL_TEXT);
-        sx += 8 * 8 + 10;
-    }
-    fill_rect(sx, 16, 1, 22, COL_BORDER);
-    blit_power(g_w - 36, 17);
-
-    /* ---- open dropdown ---- */
-    if (g_menu_open >= 0 && g_menu_open < g_menu_n) {
-        int rx, ry, rw, rh, ti, row = 0, k;
-        dropdown_rect(st, g_menu_open, &rx, &ry, &rw, &rh, 0);
-        fill_rect(rx, ry, rw, rh, COL_DROP);
-        fill_rect(rx, ry, rw, 1, COL_BORDER);
-        fill_rect(rx, ry + rh - 1, rw, 1, COL_BORDER);
-        fill_rect(rx, ry, 1, rh, COL_BORDER);
-        fill_rect(rx + rw - 1, ry, 1, rh, COL_BORDER);
-        ti = title_index(st, g_menu_open);
-        for (k = ti + 1; k < (int)st->menu_count && !(st->menu[k].flags & MB_TITLE); ++k, ++row) {
-            int iy = ry + 5 + row * ITEM_H;
-            if (st->menu[k].flags & MB_DIVIDER) {
-                fill_rect(rx + 8, iy + ITEM_H / 2, rw - 16, 1, COL_BORDER);
-                continue;
-            }
-            draw_text(rx + 14, iy + 5, st->menu[k].label,
-                      (st->menu[k].flags & MB_DANGER) ? COL_RED : COL_TEXT);
-            if (st->menu[k].shortcut[0])
-                draw_text(rx + rw - 14 - text_w(st->menu[k].shortcut), iy + 5,
-                          st->menu[k].shortcut, COL_DIM);
-        }
-    } else if (g_power_menu_open) {
-        int rw = 160;
-        int rh = 2 * ITEM_H + 10;
-        int rx = g_w - rw - 6;
-        int ry = BAR_H;
-        fill_rect(rx, ry, rw, rh, COL_DROP);
-        fill_rect(rx, ry, rw, 1, COL_BORDER);
-        fill_rect(rx, ry + rh - 1, rw, 1, COL_BORDER);
-        fill_rect(rx, ry, 1, rh, COL_BORDER);
-        fill_rect(rx + rw - 1, ry, 1, rh, COL_BORDER);
-
-        int iy0 = ry + 5;
-        draw_text(rx + 14, iy0 + 5, "Reboot System", COL_TEXT);
-
-        int iy1 = ry + 5 + ITEM_H;
-        draw_text(rx + 14, iy1 + 5, "Shutdown System", COL_RED);
+    if (g_open_menu_index >= 0) {
+        draw_menu_dropdown(status);
+    } else {
+        draw_power_menu();
     }
 }
 
-/* ---- input ---- */
-static void handle_click(const struct desktop_status *st, int mx, int my) {
-    int i;
-    if (g_power_menu_open) {
-        int rw = 160;
-        int rh = 2 * ITEM_H + 10;
-        int rx = g_w - rw - 6;
-        int ry = BAR_H;
-        if (mx >= rx && mx < rx + rw && my >= ry && my < ry + rh) {
-            int row = (my - ry - 5) / ITEM_H;
-            if (row == 0) {
-                sc1(SYS_REBOOT, 0);
-            } else if (row == 1) {
-                sc1(SYS_SHUTDOWN, 0);
-            }
-            g_power_menu_open = 0;
-            return;
-        }
+/* ------------------------------------------------------------------------- */
+/* Input                                                                     */
+/* ------------------------------------------------------------------------- */
+
+static int point_in_rect(int px, int py, int x, int y, int width, int height) {
+    return px >= x && px < x + width && py >= y && py < y + height;
+}
+
+static void close_menus(void) {
+    g_open_menu_index = -1;
+    g_power_menu_open = 0;
+}
+
+static int handle_power_menu_click(int mouse_x, int mouse_y) {
+    int x;
+    int y;
+    int width;
+    int height;
+    int row;
+
+    if (!g_power_menu_open) return 0;
+
+    get_power_menu_rect(&x, &y, &width, &height);
+    if (!point_in_rect(mouse_x, mouse_y, x, y, width, height)) return 0;
+
+    row = (mouse_y - y - DROPDOWN_PADDING_TOP) / MENU_ITEM_HEIGHT;
+
+    if (row == 0) {
+        __sc1(SYS_REBOOT, 0);
+    } else if (row == 1) {
+        __sc1(SYS_SHUTDOWN, 0);
     }
 
     g_power_menu_open = 0;
-
-    if (g_menu_open >= 0) {       /* a dropdown is showing */
-        int rx, ry, rw, rh, rows;
-        dropdown_rect(st, g_menu_open, &rx, &ry, &rw, &rh, &rows);
-        if (mx >= rx && mx < rx + rw && my >= ry && my < ry + rh) {
-            int row = (my - ry - 5) / ITEM_H, ti = title_index(st, g_menu_open), c = 0, k;
-            for (k = ti + 1; k < (int)st->menu_count && !(st->menu[k].flags & MB_TITLE); ++k, ++c) {
-                if (c == row) {
-                    if (!(st->menu[k].flags & MB_DIVIDER))
-                        sc1(SYS_MENU_DISPATCH, (uint64_t)st->menu[k].action_id);
-                    break;
-                }
-            }
-            g_menu_open = -1;
-            return;
-        }
-    }
-
-    if (my < BAR_H && mx >= g_w - 44) {
-        g_power_menu_open = 1;
-        g_menu_open = -1;
-        return;
-    }
-
-    if (my < BAR_H && mx >= 4 && mx < 116) {        /* logo / brand → System Info */
-        sc1(SYS_PROCESS_SPAWN, (uint64_t)(size_t)"/bin/sysinfo");
-        g_menu_open = -1;
-        return;
-    }
-    for (i = 0; i < g_menu_n; ++i) {                /* a top-level title? */
-        if (my < BAR_H && mx >= g_menu_x[i] - 8 && mx < g_menu_x[i] + g_menu_w[i] + 8) {
-            g_menu_open = (g_menu_open == i) ? -1 : i;
-            return;
-        }
-    }
-    g_menu_open = -1;
+    return 1;
 }
 
-/* Present only the bar strip, growing to include a dropdown while one is open
- * (and once more to erase it when it closes). */
+static int handle_open_menu_click(const desktop_status *status, int mouse_x, int mouse_y) {
+    int x;
+    int y;
+    int width;
+    int height;
+    int rows;
+    int row;
+    int title_item;
+    int item_index;
+    int current_row = 0;
+
+    if (g_open_menu_index < 0) return 0;
+
+    get_dropdown_rect(status, g_open_menu_index, &x, &y, &width, &height, &rows);
+    if (!point_in_rect(mouse_x, mouse_y, x, y, width, height)) return 0;
+
+    row = (mouse_y - y - DROPDOWN_PADDING_TOP) / MENU_ITEM_HEIGHT;
+    title_item = title_item_index(status, g_open_menu_index);
+
+    for (item_index = title_item + 1;
+         item_index < (int)status->menu_count && !(status->menu[item_index].flags & MB_TITLE);
+         ++item_index, ++current_row) {
+        if (current_row != row) continue;
+
+        if (!(status->menu[item_index].flags & MB_DIVIDER)) {
+            vos_menu_dispatch(status->menu[item_index].action_id);
+        }
+        break;
+    }
+
+    g_open_menu_index = -1;
+    return 1;
+}
+
+static int handle_power_button_click(int mouse_x, int mouse_y) {
+    if (!point_in_rect(mouse_x, mouse_y, g_screen_width - POWER_HIT_WIDTH, 0, POWER_HIT_WIDTH, BAR_HEIGHT)) {
+        return 0;
+    }
+
+    g_power_menu_open = 1;
+    g_open_menu_index = -1;
+    return 1;
+}
+
+static int handle_logo_click(int mouse_x, int mouse_y) {
+    if (!point_in_rect(mouse_x, mouse_y, 4, 0, 112, BAR_HEIGHT)) {
+        return 0;
+    }
+
+    vos_spawn("/bin/sysinfo");
+    g_open_menu_index = -1;
+    return 1;
+}
+
+static int handle_menu_title_click(int mouse_x, int mouse_y) {
+    int i;
+
+    if (mouse_y >= BAR_HEIGHT) return 0;
+
+    for (i = 0; i < g_menu_title_count; ++i) {
+        int x = g_menu_title_x[i] - MENU_TITLE_PADDING_X;
+        int width = g_menu_title_width[i] + MENU_TITLE_PADDING_X * 2;
+
+        if (!point_in_rect(mouse_x, mouse_y, x, 0, width, BAR_HEIGHT)) continue;
+
+        g_open_menu_index = (g_open_menu_index == i) ? -1 : i;
+        return 1;
+    }
+
+    return 0;
+}
+
+static void handle_click(const desktop_status *status, int mouse_x, int mouse_y) {
+    if (handle_power_menu_click(mouse_x, mouse_y)) return;
+
+    g_power_menu_open = 0;
+
+    if (handle_open_menu_click(status, mouse_x, mouse_y)) return;
+    if (handle_power_button_click(mouse_x, mouse_y)) return;
+    if (handle_logo_click(mouse_x, mouse_y)) return;
+    if (handle_menu_title_click(mouse_x, mouse_y)) return;
+
+    g_open_menu_index = -1;
+}
+
+static void update_logo_hover_state(const win_event *event) {
+    g_logo_hovered = point_in_rect(event->x, event->y, 6, 5, LOGO_BASE_SIZE, LOGO_BASE_SIZE);
+}
+
+static int update_logo_animation(void) {
+    if (g_logo_hovered && g_logo_hover_value < LOGO_HOVER_STEPS) {
+        ++g_logo_hover_value;
+        return 1;
+    }
+
+    if (!g_logo_hovered && g_logo_hover_value > 0) {
+        --g_logo_hover_value;
+        return 1;
+    }
+
+    return 0;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Presentation and main loop                                                */
+/* ------------------------------------------------------------------------- */
+
 static void present(void) {
-    /* Start at WIN_H so the very first present pushes the whole buffer — that
-     * stamps the transparent key into the rows below the bar (otherwise they
-     * stay black and cover the desktop). Afterwards only the bar strip is
-     * presented, growing to include a dropdown while one is open. */
-    static int prev_h = WIN_H;
-    int h = (g_menu_open >= 0 || g_power_menu_open) ? WIN_H : BAR_H;
-    int ph = h > prev_h ? h : prev_h;
-    prev_h = h;
-    sc6(SYS_WINDOW_PRESENT_RECT, (uint64_t)g_win, (uint64_t)(size_t)g_canvas,
-        (uint64_t)g_w, (uint64_t)WIN_H,
-        0u, (((uint64_t)(uint32_t)g_w) << 16) | (uint32_t)ph);
+    static int previous_present_height = WINDOW_HEIGHT;
+    int current_height = (g_open_menu_index >= 0 || g_power_menu_open) ? WINDOW_HEIGHT : BAR_HEIGHT;
+    int present_height = current_height > previous_present_height ? current_height : previous_present_height;
+    uint64_t rect_size;
+
+    /*
+     * The first present uses the full window height to push TRANSPARENT_KEY into
+     * the dropdown area. Later presents can update only the visible strip unless
+     * a dropdown is open or has just closed.
+     */
+    previous_present_height = current_height;
+    rect_size = (((uint64_t)(uint32_t)g_screen_width) << 16) | (uint32_t)present_height;
+
+    __sc6(SYS_WINDOW_PRESENT_RECT,
+          (uint64_t)g_window_id,
+          (uint64_t)(size_t)g_canvas,
+          (uint64_t)g_screen_width,
+          (uint64_t)WINDOW_HEIGHT,
+          0u,
+          rect_size);
 }
 
-int main() {
-    uint32_t mode = (uint32_t)sc2(SYS_DISPLAY_MODE, 0, 0);
-    static uint32_t canvas_storage[1920 * WIN_H];
-    struct win_options opt;
-    struct desktop_status st;
-    uint32_t sig_prev = 0;
+static uint32_t make_render_signature(const desktop_status *status) {
+    return status->uptime_seconds
+         ^ (status->cpu_pct << 8)
+         ^ (status->ui_pct << 14)
+         ^ (status->mem_pct << 20)
+         ^ ((uint32_t)(g_open_menu_index + 1) << 26)
+         ^ ((uint32_t)g_power_menu_open << 30)
+         ^ (uint32_t)status->app_label[0]
+         ^ status->menu_count;
+}
 
-    g_w = (int)((mode >> 16) & 0xffffu);
-    if (g_w <= 0 || g_w > 1920) g_w = 1024;
+static int create_topbar_window(void) {
+    win_options options;
+
+    options.title = "Top Bar";
+    options.width = g_screen_width;
+    options.height = WINDOW_HEIGHT;
+    options.flags = WIN_FRAMELESS
+                  | WIN_NO_DOCK
+                  | WIN_POSITIONED
+                  | WIN_ALWAYS_ON_TOP
+                  | WIN_TRANSLUCENT
+                  | WIN_NO_SHADOW;
+    options.x = 0;
+    options.y = 0;
+
+    return (int)vos_window_create_ex(&options);
+}
+
+static void update_screen_width(void) {
+    uint32_t mode = (uint32_t)__sc2(SYS_DISPLAY_MODE, 0, 0);
+
+    g_screen_width = (int)((mode >> 16) & 0xffffu);
+    if (g_screen_width <= 0 || g_screen_width > MAX_WINDOW_WIDTH) {
+        g_screen_width = DEFAULT_WINDOW_WIDTH;
+    }
+}
+
+int main(void) {
+    static uint32_t canvas_storage[MAX_WINDOW_WIDTH * WINDOW_HEIGHT];
+    desktop_status status;
+    uint32_t previous_signature = 0;
+
+    update_screen_width();
     g_canvas = canvas_storage;
 
     load_logo();
-    load_power();
+    load_power_icon();
 
-    opt.title = "Top Bar";
-    opt.width = g_w; opt.height = WIN_H;
-    opt.flags = WIN_FRAMELESS | WIN_NO_DOCK | WIN_POSITIONED | WIN_ALWAYS_ON_TOP | WIN_TRANSLUCENT | WIN_NO_SHADOW;
-    opt.x = 0; opt.y = 0;
-    g_win = (int)sc1(SYS_WINDOW_CREATE_EX, (uint64_t)(size_t)&opt);
-    if (g_win < 0) return 1;
+    g_window_id = create_topbar_window();
+    if (g_window_id < 0) return 1;
 
     for (;;) {
-        struct win_event ev;
+        win_event event;
         int redraw = 0;
-        uint32_t sig;
+        uint32_t signature;
 
-        while ((int)sc2(SYS_EVENT_POLL, (uint64_t)g_win, (uint64_t)(size_t)&ev) == 1) {
-            if (ev.type == EV_MOUSE_DOWN) {
-                sc1(SYS_DESKTOP_STATUS, (uint64_t)(size_t)&st);
-                layout_menus(&st);
-                handle_click(&st, ev.x, ev.y);
+        while ((int)vos_event_poll(g_window_id, &event) == 1) {
+            if (event.type == EV_MOUSE_DOWN) {
+                vos_desktop_status(&status);
+                layout_menus(&status);
+                handle_click(&status, event.x, event.y);
                 redraw = 1;
-            } else if (ev.type == EV_MOUSE_MOVE) {
-                int hover = (ev.x >= 6 && ev.x < 50 && ev.y >= 5 && ev.y < 49);
-                if (hover != g_logo_hover) {
-                    g_logo_hover = hover;
-                }
-            } else if (ev.type == EV_KEY && ev.key == 0x1b) {
-                if (g_menu_open >= 0) { g_menu_open = -1; redraw = 1; }
-                if (g_power_menu_open) { g_power_menu_open = 0; redraw = 1; }
-            } else if (ev.type == EV_CLOSE) {
+            } else if (event.type == EV_MOUSE_MOVE) {
+                update_logo_hover_state(&event);
+            } else if (event.type == EV_KEY && event.key == 0x1b) {
+                close_menus();
+                redraw = 1;
+            } else if (event.type == EV_CLOSE) {
                 return 0;
             }
         }
 
-        int anim_changed = 0;
-        if (g_logo_hover) {
-            if (g_logo_hover_val < 10) {
-                g_logo_hover_val++;
-                anim_changed = 1;
-            }
-        } else {
-            if (g_logo_hover_val > 0) {
-                g_logo_hover_val--;
-                anim_changed = 1;
-            }
-        }
-        if (anim_changed) {
+        if (update_logo_animation()) {
             redraw = 1;
         }
 
-        sc1(SYS_DESKTOP_STATUS, (uint64_t)(size_t)&st);
-        sample_history(&st);
+        vos_desktop_status(&status);
+        sample_status_history(&status);
 
-        /* Only repaint when something visible changed (clock ticks, load moves,
-         * focus/menu changes) so we don't blit the bar every frame. */
-        sig = st.uptime_seconds ^ (st.cpu_pct << 8) ^ (st.ui_pct << 14)
-            ^ (st.mem_pct << 20) ^ ((uint32_t)(g_menu_open + 1) << 26)
-            ^ ((uint32_t)g_power_menu_open << 30)
-            ^ (uint32_t)st.app_label[0] ^ st.menu_count;
-        if (sig != sig_prev) { redraw = 1; sig_prev = sig; }
+        signature = make_render_signature(&status);
+        if (signature != previous_signature) {
+            previous_signature = signature;
+            redraw = 1;
+        }
 
         if (redraw) {
-            render(&st);
+            render(&status);
             present();
         }
-        if (g_logo_hover_val > 0 && g_logo_hover_val < 10) {
-            nap(2);
-        } else {
-            nap(6);
-        }
+
+        sleep_ticks((g_logo_hover_value > 0 && g_logo_hover_value < LOGO_HOVER_STEPS) ? 2 : 6);
     }
 }

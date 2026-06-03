@@ -7,13 +7,21 @@
 #define O_TRUNC   01000
 #define O_APPEND  02000
 #define O_NONBLOCK 04000
-/* open() maps to SYS_OPEN (read) or SYS_CREAT (write). */
+/* Declare the underlying C helpers with C linkage so this header can be
+ * safely included from both C and C++ translation units. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+int vos_open_path(const char *path);
+int vos_creat_path(const char *path);
+#ifdef __cplusplus
+}
+#endif
+
+/* open() dispatches to read-open or create-open depending on flags. */
 static inline int open(const char *path, int flags, ...) {
-    extern int vos_open_path(const char *);
-    extern int vos_creat_path(const char *);
-    if ((flags & O_CREAT) || (flags & O_WRONLY) || (flags & O_RDWR)) {
+    if ((flags & O_CREAT) || (flags & O_WRONLY) || (flags & O_RDWR))
         return vos_creat_path(path);
-    }
     return vos_open_path(path);
 }
 #endif

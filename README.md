@@ -171,6 +171,34 @@ hello                  minimal hello-world app
 cpptest / c++test      C++20 runtime smoke test
 ```
 
+### Desktop Shortcuts
+
+Desktop shortcuts are managed as small text files with a `.desktop` extension located in `/home/user/Desktop/`.
+
+**Creating a shortcut manually:**
+
+You can create a shortcut using the terminal:
+
+1.  **Ensure the directory exists:**
+    ```bash
+    mkdir -p /home/user/Desktop
+    ```
+
+2.  **Create the shortcut file:**
+    ```bash
+    echo "Name=Terminal" > /home/user/Desktop/Terminal.desktop
+    echo "Exec=/bin/terminal" >> /home/user/Desktop/Terminal.desktop
+    echo "IconColor=#64f2cc" >> /home/user/Desktop/Terminal.desktop
+    ```
+
+3.  **Refresh:**
+    Shortcuts are currently loaded during the startup of the window manager. You may need to restart the system or the window manager to see the changes.
+
+**File format:**
+- `Name`: The label displayed below the icon.
+- `Exec`: Absolute path to the executable (usually in `/bin/`).
+- `IconColor`: Hex code for the icon's background tile.
+
 ---
 
 ## Project Layout
@@ -354,6 +382,9 @@ VexUI provides a comprehensive set of Retained-Mode UI controls. Here is a list 
 * **`vui_vbox(w, x, y, width, height)`**: Invisible vertical packing box arranging children top-to-bottom.
 * **`vui_hbox(w, x, y, width, height)`**: Invisible horizontal packing box arranging children left-to-right.
 
+
+#### Standard Dialogs
+* **`vui_file_dialog(title, path, out_path, cap, mode)`**: Opens a standard file selection dialog (blocking). `mode=0` for Open, `mode=1` for Save As. Returns 1 if a file was selected.
 
 #### Window Configuration & Options (Flags)
 

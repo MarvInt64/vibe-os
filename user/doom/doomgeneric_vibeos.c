@@ -75,22 +75,16 @@
 #define EV_MENU_ACTION  7
 #define EV_SCROLL      8
 
-struct winsys_event {
-    unsigned int type;
-    int          x, y;
-    unsigned int buttons;
-    unsigned int key;
-};
+/* vos_event is already defined in <vibeos.h> — no need to redefine it.
+ * Use a local alias so the rest of the file is unchanged. */
+typedef struct vos_event winsys_event;
 
-/* SYS_WINDOW_PRESENT wrapper. */
+/* Window present and event poll via the vibeos.h wrappers. */
 static inline void win_present(int id, const unsigned int *px, int w, int h) {
-    __sc6(SYS_WINDOW_PRESENT, (unsigned long)id,
-          (unsigned long)(size_t)px,
-          (unsigned long)w, (unsigned long)h, 0, 0);
+    vos_window_present(id, (const uint32_t *)px, w, h);
 }
 
-/* SYS_EVENT_POLL wrapper. */
-static inline int event_poll(int id, struct winsys_event *ev) {
+static inline int event_poll(int id, struct vos_event *ev) {
     return (int)__sc2(SYS_EVENT_POLL, (unsigned long)id,
                       (unsigned long)(size_t)ev);
 }
@@ -194,7 +188,7 @@ void DG_Init(void) {
     s_content_w = DOOM_BUF_W;
     s_content_h = DOOM_BUF_H;
     {
-        struct winsys_event ev;
+        winsys_event ev;
         int tries = 0;
         while (tries++ < 16 && event_poll(s_win_id, &ev) > 0) {
             if (ev.type == EV_RESIZE && ev.x > 0 && ev.y > 0) {
@@ -272,7 +266,7 @@ unsigned int DG_GetTicksMs(void) {
 }
 
 int DG_GetKey(int *pressed, unsigned char *doom_key) {
-    struct winsys_event ev;
+    winsys_event ev;
 
     /* Synthetic key-up for held keys (arrow keys etc.). */
     if (s_held_life > 0 && --s_held_life == 0 && s_held_key) {
