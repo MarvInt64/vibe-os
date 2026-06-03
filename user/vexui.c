@@ -165,6 +165,7 @@ struct vui_widget {
     uint8_t hover;
     uint8_t pressed;
     uint8_t visible;
+    uint8_t running;
 };
 
 #define VUI_MAX_WIDGETS 128
@@ -639,7 +640,7 @@ static struct vui_widget *new_widget(struct vui_window *w, int type) {
     wd->margin_l=wd->margin_t=wd->margin_r=wd->margin_b=0;
     wd->parent_idx=-1; wd->gap=4; wd->padding=0;
     wd->fill=0; wd->expand=0; wd->separator=0;
-    wd->hover=0; wd->pressed=0; wd->visible=1;
+    wd->hover=0; wd->pressed=0; wd->visible=1; wd->running=0;
     return wd;
 }
 
@@ -887,6 +888,7 @@ void vui_set_user(vui_widget *wd, void *u){ if(wd) wd->user=u; }
 void *vui_get_user(vui_widget *wd){ return wd?wd->user:0; }
 const char *vui_input_text(vui_widget *wd){ return wd ? wd->text : ""; }
 void vui_set_visible(vui_widget *wd, int visible){ uint8_t v=(uint8_t)(visible?1:0); if(!wd||wd->visible==v)return; wd->visible=v; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
+void vui_set_running(vui_widget *wd, int running){ uint8_t r=(uint8_t)(running?1:0); if(!wd||wd->running==r)return; wd->running=r; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
 void vui_set_bounds(vui_widget *wd, int x, int y, int width, int height){
     if(!wd)return;
     wd->x=x; wd->y=y; wd->w=width; wd->h=height;
@@ -1490,6 +1492,7 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         rect(w, wd->x + wd->w + 10, wd->y + 10, 1, wd->h - 20,
              argb(mix(g_theme.surface, 0x00cfe2f5u, 1u, 4u), 130u));
         if (active) fill_round_rect(w, cx - 9, ty + th + 4, 18, 3, 2, accent, accent);
+        else if (wd->running) fill_round_rect(w, cx - 3, ty + th + 4, 6, 3, 1, accent, accent);
         break; }
     case W_ICON: {
         /* Bare SVG icon/logo: no background, no border — just the artwork,

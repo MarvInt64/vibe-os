@@ -187,6 +187,7 @@ void vui_on_key(vui_window *w, vui_key_callback cb);
 /* Set a tooltip text shown as a bubble above the widget after a short hover.
  * Pass NULL or "" to remove. Works on buttons, tile-buttons, and pill-buttons. */
 void vui_set_tooltip(vui_widget *wgt, const char *tip);
+void vui_set_running(vui_widget *wd, int running);
 /* Register a mouse-wheel handler for this window. */
 void vui_on_scroll(vui_window *w, vui_scroll_callback cb);
 /* Register mouse move, click, and release handlers for this window. */

@@ -1499,10 +1499,12 @@ enum ctx_entry_kind {
     CTX_HIDE = 1,
     CTX_QUIT_APP = 2,
     CTX_APP_KERNEL = 3,
-    CTX_APP_USER = 4
+    CTX_APP_USER = 4,
+    CTX_SWITCH_WINDOW = 5,
+    CTX_SEPARATOR = 6
 };
 
-#define CTX_MAX_ENTRIES (3 + WINSYS_MAX_MENU_ITEMS)
+#define CTX_MAX_ENTRIES (3 + WINSYS_MAX_MENU_ITEMS + 1 + WINDOW_COUNT)
 
 struct ctx_entry {
     char label[WINSYS_MENU_LABEL_MAX];
@@ -1516,6 +1518,111 @@ static void ctx_set_label(struct ctx_entry *e, const char *s) {
         e->label[i] = s[i];
     }
     e->label[i] = '\0';
+}
+
+static int string_contains(const char *haystack, const char *needle);
+
+static int is_same_app(struct desktop_state *desktop, int win1, int win2) {
+    if (win1 == win2) return 1;
+    if (win1 < 0 || win1 >= WINDOW_COUNT || win2 < 0 || win2 >= WINDOW_COUNT) return 0;
+
+    const char *t1 = desktop->windows[win1].title;
+    const char *t2 = desktop->windows[win2].title;
+
+    if (!t1 || !t2) return 0;
+
+    if ((strcmp(t1, "TERMINAL") == 0 || string_contains(t1, "Terminal") || string_contains(t1, "terminal")) &&
+        (strcmp(t2, "TERMINAL") == 0 || string_contains(t2, "Terminal") || string_contains(t2, "terminal"))) {
+        return 1;
+    }
+    if ((string_contains(t1, "DOOM") || string_contains(t1, "doom")) &&
+        (string_contains(t2, "DOOM") || string_contains(t2, "doom"))) {
+        return 1;
+    }
+    if ((string_contains(t1, "Browser") || string_contains(t1, "browser")) &&
+        (string_contains(t2, "Browser") || string_contains(t2, "browser"))) {
+        return 1;
+    }
+    if ((strcmp(t1, "TASK MANAGER") == 0 || string_contains(t1, "Tasks") || string_contains(t1, "taskmgr")) &&
+        (strcmp(t2, "TASK MANAGER") == 0 || string_contains(t2, "Tasks") || string_contains(t2, "taskmgr"))) {
+        return 1;
+    }
+    if ((string_contains(t1, "Demo") || string_contains(t1, "demo")) &&
+        (string_contains(t2, "Demo") || string_contains(t2, "demo"))) {
+        return 1;
+    }
+    if ((string_contains(t1, "C++") || string_contains(t1, "cpp")) &&
+        (string_contains(t2, "C++") || string_contains(t2, "cpp"))) {
+        return 1;
+    }
+    if ((strcmp(t1, "INFO") == 0 || string_contains(t1, "Info") || string_contains(t1, "sysinfo")) &&
+        (strcmp(t2, "INFO") == 0 || string_contains(t2, "Info") || string_contains(t2, "sysinfo"))) {
+        return 1;
+    }
+
+    if (strcmp(t1, t2) == 0) return 1;
+
+    return 0;
+}
+
+static void format_instance_name(struct desktop_state *desktop, int win, char *dst, size_t cap) {
+    const char *title = desktop->windows[win].title;
+    if (!title) title = "App";
+
+    size_t i = 0;
+    size_t max_title_len = (cap > 11) ? (cap - 11) : 5;
+
+    while (i < max_title_len && title[i] != '\0') {
+        dst[i] = title[i];
+        i++;
+    }
+    dst[i] = '\0';
+
+    if (is_user_app_slot(win)) {
+        int slot = slot_index(win);
+        uint32_t pid = desktop->user_apps[slot].pid;
+        const char *suffix1 = " (";
+        size_t j = 0;
+        while (i + 1 < cap && suffix1[j]) {
+            dst[i++] = suffix1[j++];
+        }
+        dst[i] = '\0';
+
+        char pid_str[16];
+        int len = 0;
+        uint32_t temp = pid;
+        if (temp == 0) {
+            pid_str[len++] = '0';
+        } else {
+            while (temp > 0 && len < 15) {
+                pid_str[len++] = '0' + (temp % 10);
+                temp /= 10;
+            }
+        }
+        for (int k = 0; k < len / 2; ++k) {
+            char t = pid_str[k];
+            pid_str[k] = pid_str[len - 1 - k];
+            pid_str[len - 1 - k] = t;
+        }
+        pid_str[len] = '\0';
+
+        j = 0;
+        while (i + 1 < cap && pid_str[j]) {
+            dst[i++] = pid_str[j++];
+        }
+
+        if (i + 1 < cap) {
+            dst[i++] = ')';
+        }
+        dst[i] = '\0';
+    } else {
+        const char *suffix2 = " (Kernel)";
+        size_t j = 0;
+        while (i + 1 < cap && suffix2[j]) {
+            dst[i++] = suffix2[j++];
+        }
+        dst[i] = '\0';
+    }
 }
 
 static int build_context_entries(struct desktop_state *desktop, int win, struct ctx_entry *out) {
@@ -1550,6 +1657,48 @@ static int build_context_entries(struct desktop_state *desktop, int win, struct 
         }
     }
 
+    /* List multiple running instances macOS-style at the bottom of the context menu */
+    {
+        int count = 0;
+        int idxs[WINDOW_COUNT];
+        int j;
+        for (j = 0; j < WINDOW_COUNT; ++j) {
+            int active = 0;
+            if (is_user_app_slot(j)) {
+                if (desktop->user_apps[slot_index(j)].created) {
+                    active = 1;
+                }
+            } else {
+                if (desktop->windows[j].title && desktop->windows[j].title[0]) {
+                    active = 1;
+                }
+            }
+
+            if (active && is_same_app(desktop, win, j)) {
+                idxs[count++] = j;
+            }
+        }
+
+        if (count > 1) {
+            if (n < CTX_MAX_ENTRIES) {
+                ctx_set_label(&out[n], "");
+                out[n].kind = CTX_SEPARATOR;
+                out[n].action = 0;
+                ++n;
+            }
+            for (j = 0; j < count; ++j) {
+                if (n < CTX_MAX_ENTRIES) {
+                    char label[64];
+                    format_instance_name(desktop, idxs[j], label, sizeof(label));
+                    ctx_set_label(&out[n], label);
+                    out[n].kind = CTX_SWITCH_WINDOW;
+                    out[n].action = (uint32_t)idxs[j];
+                    ++n;
+                }
+            }
+        }
+    }
+
     return n;
 }
 
@@ -1567,8 +1716,10 @@ static struct rect context_menu_rect(struct desktop_state *desktop) {
         count = 1;
     }
     for (i = 0; i < count; ++i) {
+        if (entries[i].kind == CTX_SEPARATOR) continue;
         int len = 0;
         while (entries[i].label[len]) ++len;
+        if (entries[i].kind == CTX_SWITCH_WINDOW) len += 2;
         if (len > longest) longest = len;
     }
 
@@ -1605,13 +1756,45 @@ static void draw_context_menu(struct desktop_state *desktop, struct framebuffer 
         for (i = 0; i < count; ++i) {
             int ry = r.y + 8 + i * 22;
             int hov = (i == desktop->context_menu_hover);
+
+            if (entries[i].kind == CTX_SEPARATOR) {
+                fb_fill_rect(fb, r.x + 8, ry + 10, r.width - 16, 1, g_chrome_theme.border);
+                continue;
+            }
+
             uint32_t color;
             if (entries[i].kind == CTX_QUIT_APP) color = g_chrome_theme.danger;
             else if (entries[i].kind == CTX_APP_KERNEL || entries[i].kind == CTX_APP_USER) color = g_chrome_theme.accent;
+            else if (entries[i].kind == CTX_SWITCH_WINDOW) {
+                int target_win = (int)entries[i].action;
+                int is_focused = (desktop->focused_window == target_win);
+                int is_visible = (target_win >= 0 && target_win < WINDOW_COUNT && desktop->windows[target_win].visible);
+                if (is_focused && is_visible) {
+                    color = g_chrome_theme.accent;
+                } else if (hov) {
+                    color = g_chrome_theme.text;
+                } else {
+                    color = item_text;
+                }
+            }
             else color = hov ? g_chrome_theme.text : item_text;
+
             if (hov) fb_fill_rect(fb, r.x + 4, ry - 1, r.width - 8, 20,
                                   mix_color(g_chrome_theme.accent, dbg, 1u, 6u));
-            draw_text(fb, r.x + 14, ry + 2, entries[i].label, color, 1);
+
+            if (entries[i].kind == CTX_SWITCH_WINDOW) {
+                int target_win = (int)entries[i].action;
+                int is_focused = (desktop->focused_window == target_win);
+                int is_visible = (target_win >= 0 && target_win < WINDOW_COUNT && desktop->windows[target_win].visible);
+                if (is_focused && is_visible) {
+                    fb_fill_rect(fb, r.x + 10, ry + 8, 4, 4, g_chrome_theme.accent);
+                    draw_text(fb, r.x + 20, ry + 2, entries[i].label, color, 1);
+                } else {
+                    draw_text(fb, r.x + 20, ry + 2, entries[i].label, color, 1);
+                }
+            } else {
+                draw_text(fb, r.x + 14, ry + 2, entries[i].label, color, 1);
+            }
         }
     }
     (void)y;
@@ -1699,6 +1882,7 @@ static int context_menu_item_at(struct desktop_state *desktop, int x, int y) {
     row = (y - r.y - 8) / 22;
     if (row < 0) row = 0;
     if (row >= count) return -1;
+    if (entries[row].kind == CTX_SEPARATOR) return -1;
     return row;
 }
 
@@ -2155,6 +2339,46 @@ static void apply_window_resize(struct desktop_state *desktop, int index, int mo
     mark_dirty_rect(desktop, window_rect(window));
 }
 
+static int string_contains(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return 0;
+    int i = 0;
+    while (haystack[i]) {
+        int j = 0;
+        while (needle[j] && haystack[i + j] == needle[j]) {
+            j++;
+        }
+        if (!needle[j]) return 1;
+        i++;
+    }
+    return 0;
+}
+
+static int find_window_for_dock_icon(struct desktop_state *desktop, int icon_idx) {
+    if (icon_idx == 0) return WINDOW_TERMINAL;
+    if (icon_idx == 3) return WINDOW_TASK_MANAGER;
+    if (icon_idx == 6) return WINDOW_INFO;
+
+    int slot;
+    for (slot = 0; slot < MAX_USER_APPS; ++slot) {
+        if (desktop->user_apps[slot].created) {
+            const char *title = desktop->user_apps[slot].title;
+            if (icon_idx == 1 && (string_contains(title, "DOOM") || string_contains(title, "doom"))) {
+                return WINDOW_APP_FIRST + slot;
+            }
+            if (icon_idx == 2 && (string_contains(title, "Browser") || string_contains(title, "browser"))) {
+                return WINDOW_APP_FIRST + slot;
+            }
+            if (icon_idx == 4 && (string_contains(title, "Demo") || string_contains(title, "demo") || string_contains(title, "UI Demo"))) {
+                return WINDOW_APP_FIRST + slot;
+            }
+            if (icon_idx == 5 && (string_contains(title, "C++") || string_contains(title, "cpp"))) {
+                return WINDOW_APP_FIRST + slot;
+            }
+        }
+    }
+    return -1;
+}
+
 void desktop_handle_input(struct desktop_state *desktop, const struct mouse_state *mouse, const struct keyboard_state *keyboard) {
     size_t i;
     int index;
@@ -2184,6 +2408,60 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
             mark_dirty_rect(desktop, rect_from_bounds(r.x - 16, r.y - 16, r.width + 32, r.height + 32));
         }
         return;
+    }
+
+    if (desktop->context_menu_open && mouse->moved) {
+        int item = context_menu_item_at(desktop, mouse->x, mouse->y);
+        if (item != desktop->context_menu_hover) {
+            desktop->context_menu_hover = item;
+            mark_dirty_rect(desktop, context_menu_rect(desktop));
+        }
+    }
+
+    if (mouse->right_pressed) {
+        if (desktop->context_menu_open) {
+            struct rect menu_rect = context_menu_rect(desktop);
+            desktop->context_menu_open = 0;
+            desktop->context_menu_hover = -1;
+            mark_dirty_rect(desktop, menu_rect);
+        }
+
+        index = topmost_window_at(desktop, mouse->x, mouse->y);
+        if (index >= 0) {
+            struct window_state *window = &desktop->windows[index];
+            if (is_user_app_slot(index) && strcmp(desktop->user_apps[slot_index(index)].title, "Dock") == 0) {
+                int rx = mouse->x - window->x;
+                int ry = mouse->y - window->y;
+                if (ry >= 40 && ry <= 98) {
+                    int idx;
+                    for (idx = 0; idx < 7; ++idx) {
+                        int x_start = 32 + idx * 76;
+                        if (rx >= x_start && rx <= x_start + 58) {
+                            int target_win = find_window_for_dock_icon(desktop, idx);
+                            if (target_win >= 0) {
+                                desktop->context_menu_open = 1;
+                                desktop->context_menu_window = target_win;
+                                desktop->context_menu_x = mouse->x;
+                                desktop->context_menu_y = mouse->y;
+                                desktop->context_menu_hover = -1;
+                                mark_dirty_rect(desktop, context_menu_rect(desktop));
+                                return;
+                            }
+                        }
+                    }
+                }
+            } else if (titlebar_hit(desktop, window, mouse->x, mouse->y)) {
+                desktop->context_menu_open = 1;
+                desktop->context_menu_window = index;
+                desktop->context_menu_x = mouse->x;
+                desktop->context_menu_y = mouse->y;
+                desktop->context_menu_hover = -1;
+                mark_dirty_rect(desktop, context_menu_rect(desktop));
+                return;
+            } else {
+                focus_window(desktop, index);
+            }
+        }
     }
 
     if (desktop->resizing_window >= 0 && (mouse->buttons & 0x01u) != 0u) {
@@ -2265,6 +2543,14 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
                 } else if (e->kind == CTX_APP_USER) {
                     if (is_user_app_slot(menu_window)) {
                         app_enqueue_event_slot(desktop, slot_index(menu_window), WINSYS_EVENT_MENU_ACTION, 0, 0, 0, e->action);
+                    }
+                } else if (e->kind == CTX_SWITCH_WINDOW) {
+                    int target_win = (int)e->action;
+                    if (target_win >= 0 && target_win < WINDOW_COUNT) {
+                        struct window_state *t_win = &desktop->windows[target_win];
+                        t_win->visible = 1;
+                        mark_window_dirty(desktop, target_win);
+                        focus_window(desktop, target_win);
                     }
                 }
                 

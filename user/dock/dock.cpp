@@ -1,6 +1,10 @@
 #include "vexui.h"
 #include <sys/syscall.h>
 #include <vibeos.h>
+#include <string.h>
+
+#define PROCESS_STATE_EMPTY 0
+#define PROCESS_STATE_EXITED 5
 
 struct DockEntry {
     const char *label;
@@ -19,6 +23,32 @@ static const DockEntry kEntries[] = {
     {"C++", 4, 0x008f7bf0u, "/bin/cpptest", "/icons/dock/terminal.svg"},
     {"Info", 2, 0x00a8c7ffu, "/bin/sysinfo", 0},
 };
+
+static vui_widget *sButtons[7];
+
+static void dock_on_tick(vui_window *win) {
+    (void)win;
+    for (unsigned i = 0; i < sizeof(kEntries) / sizeof(kEntries[0]); ++i) {
+        bool running = false;
+        const char *path = kEntries[i].path;
+        const char *name = path;
+        for (const char *p = path; *p; ++p) {
+            if (*p == '/') {
+                name = p + 1;
+            }
+        }
+        for (unsigned int slot = 0; slot < VUI_PROCESS_MAX; ++slot) {
+            vui_process_info p;
+            if (vui_process_snapshot(slot, &p) > 0 && p.loaded && p.state != PROCESS_STATE_EMPTY && p.state != PROCESS_STATE_EXITED) {
+                if (strcmp(p.name, name) == 0 || strcmp(p.name, path) == 0) {
+                    running = true;
+                    break;
+                }
+            }
+        }
+        vui_set_running(sButtons[i], running ? 1 : 0);
+    }
+}
 
 static void append_str(char *buf, int *pos, int cap, const char *s) {
     while (s && *s && *pos + 1 < cap) {
@@ -112,6 +142,7 @@ int main() {
 
     for (unsigned i = 0; i < sizeof(kEntries) / sizeof(kEntries[0]); ++i) {
         vui_widget *button = vui_tile_button(win, 0, 0, "");
+        sButtons[i] = button;
         vui_set_color(button, kEntries[i].color);
         vui_set_value(button, kEntries[i].icon);
         if (kEntries[i].icon_path) {
@@ -122,6 +153,8 @@ int main() {
         vui_on_click(button, launch_app);
         vui_box_add(row, button);
     }
+
+    vui_on_tick(win, dock_on_tick);
 
     vui_run(win);
 }
