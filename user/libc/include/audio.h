@@ -3,8 +3,15 @@
 
 #include <stdint.h>
 
-#define SYS_AUDIO_WRITE 49
-#define SYS_AUDIO_INFO  50
+#define SYS_AUDIO_WRITE  49
+#define SYS_AUDIO_INFO   50
+#define SYS_AUDIO_IOCTL  60
+
+/* Request codes for audio_ioctl() — match kernel AUDIO_IOCTL_* constants. */
+#define AUDIO_IOCTL_SET_RATE         0  /* change sample rate (Hz) */
+#define AUDIO_IOCTL_SET_BUFFER_SIZE  1  /* change DMA buffer size (bytes) */
+#define AUDIO_IOCTL_SET_BUFFER_COUNT 2  /* change number of DMA buffers */
+#define AUDIO_IOCTL_SET_VOLUME       3  /* master volume 0–100 */
 
 /* Mirrors struct audio_info in kernel/include/audio.h. */
 struct audio_info {
@@ -43,6 +50,18 @@ static inline int audio_info(struct audio_info *out) {
     __asm__ volatile("int $0x80"
         : "=a"(ret)
         : "a"((long)SYS_AUDIO_INFO), "D"((long)out)
+        : "rcx", "r11", "memory");
+    return ret;
+}
+
+/* Send an ioctl to the AC97 driver.  'request' is one of AUDIO_IOCTL_*;
+ * 'value' is written to the kernel's audio settings and takes effect
+ * immediately (the DMA engine is restarted as needed). */
+static inline int audio_ioctl(int request, unsigned int value) {
+    int ret;
+    __asm__ volatile("int $0x80"
+        : "=a"(ret)
+        : "a"((long)SYS_AUDIO_IOCTL), "D"((long)request), "S"((long)&value)
         : "rcx", "r11", "memory");
     return ret;
 }

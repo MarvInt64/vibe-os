@@ -67,7 +67,8 @@ enum {
     SYS_GETGID  = 56,  /* returns effective gid of caller */
     SYS_SETUID  = 57,  /* rdi = new uid; root can set any, others only own */
     SYS_CHMOD   = 58,  /* rdi = path, rsi = mode (0–0777) */
-    SYS_CHOWN   = 59   /* rdi = path, rsi = uid, rdx = gid; root only */
+    SYS_CHOWN       = 59,  /* rdi = path, rsi = uid, rdx = gid; root only */
+    SYS_AUDIO_IOCTL = 60   /* rdi = request, rsi = &uint32_t value */
 };
 
 /* Unused argument registers are explicitly zeroed: the kernel inspects rdi/rsi/

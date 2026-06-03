@@ -111,7 +111,10 @@ enum syscall_number {
 	SYS_GETGID = 56,
 	SYS_SETUID = 57,
 	SYS_CHMOD  = 58,
-	SYS_CHOWN  = 59
+	SYS_CHOWN  = 59,
+	/* AC97 audio device control (rate/volume/buffer).
+	 * rdi = request code (AUDIO_IOCTL_*), rsi = user ptr to uint32_t value. */
+	SYS_AUDIO_IOCTL = 60
 };
 
 struct system_info_snapshot {

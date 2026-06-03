@@ -2575,6 +2575,21 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 		return 0;
 	}
 
+	if (number == SYS_AUDIO_IOCTL) {
+		/* rdi = request code (AUDIO_IOCTL_SET_RATE / _VOLUME / etc.)
+		 * rsi = user pointer to uint32_t value.
+		 * The calling process's address space is active, so the pointer
+		 * is readable directly without a copy. */
+		int request = (int)frame->rdi;
+		void *arg = (void *)(uintptr_t)frame->rsi;
+		if (arg == 0) {
+			frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+			return 0;
+		}
+		frame->rax = (uint64_t)audio_ioctl(request, arg);
+		return 0;
+	}
+
 	if (number == SYS_REBOOT) {
 		// Try PS/2 keyboard controller pulse reset line
 		outb(0x64, 0xFE);

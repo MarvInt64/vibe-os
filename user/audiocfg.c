@@ -22,44 +22,76 @@
  * THE SOFTWARE.
  */
 
+/*
+ * audiocfg — configure the AC97 audio driver at runtime
+ *
+ * Usage: audiocfg <command> <value>
+ *
+ * Commands:
+ *   set_rate   <hz>      Change playback sample rate (e.g. 48000, 44100)
+ *   set_volume <0-100>   Set master volume (0 = mute, 100 = max)
+ *   info                 Print current driver state
+ *
+ * Uses the audio_ioctl() and audio_info() helpers from <audio.h> — no raw
+ * syscall numbers or inline assembly needed in user-space code.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../kernel/include/syscall.h"
+#include <audio.h>
 
-/* Syscall wrapper */
-static int64_t syscall(uint64_t number, uint64_t arg0, uint64_t arg1, uint64_t arg2) {
-    int64_t ret;
-    __asm__ volatile("int $0x80" : "=a"(ret) : "a"(number), "D"(arg0), "S"(arg1), "d"(arg2) : "memory");
-    return ret;
+static void print_info(void) {
+    struct audio_info ai;
+    if (audio_info(&ai) != 0) {
+        fputs("audiocfg: audio_info failed\n", stderr);
+        return;
+    }
+    if (!ai.present) {
+        puts("Audio device: not present");
+        return;
+    }
+    printf("Audio device : present (%04x:%04x)\n", ai.vendor_id, ai.device_id);
+    printf("Sample rate  : %u Hz\n",  ai.sample_rate);
+    printf("DMA ring     : %u buffers x %u bytes\n", ai.bd_count, ai.bd_bytes);
+    printf("Ring usage   : %u / %u bytes\n", ai.ring_used, ai.ring_size);
+    printf("Underruns    : %u\n", ai.underruns);
+    printf("Engine       : CIV=%u  LVI=%u  SR=0x%x\n", ai.civ, ai.lvi, ai.sr);
 }
 
 int main(int argc, char *argv[]) {
-    // Basic debugging
+    if (argc < 2) {
+        fputs("Usage: audiocfg <command> [value]\n"
+              "Commands: info, set_rate <hz>, set_volume <0-100>\n", stderr);
+        return 1;
+    }
+
+    if (strcmp(argv[1], "info") == 0) {
+        print_info();
+        return 0;
+    }
+
+    /* All remaining commands need a numeric value. */
     if (argc < 3) {
-        printf("Audiocfg: argc=%d\n", argc);
-        printf("Usage: audiocfg <command> <value>\n");
-        printf("Commands: set_rate, set_buffer_size, set_buffer_count, set_volume\n");
+        fprintf(stderr, "audiocfg: '%s' requires a value\n", argv[1]);
         return 1;
     }
 
-    int request = -1;
-    if (strcmp(argv[1], "set_rate") == 0) request = 0;
-    else if (strcmp(argv[1], "set_buffer_size") == 0) request = 1;
-    else if (strcmp(argv[1], "set_buffer_count") == 0) request = 2;
-    else if (strcmp(argv[1], "set_volume") == 0) request = 3;
+    unsigned int val = (unsigned int)atoi(argv[2]);
+    int request;
 
-    if (request == -1) {
-        printf("Unknown command: %s\n", argv[1]);
+    if      (strcmp(argv[1], "set_rate")   == 0) request = AUDIO_IOCTL_SET_RATE;
+    else if (strcmp(argv[1], "set_volume") == 0) request = AUDIO_IOCTL_SET_VOLUME;
+    else {
+        fprintf(stderr, "audiocfg: unknown command '%s'\n", argv[1]);
         return 1;
     }
 
-    uint32_t val = (uint32_t)atoi(argv[2]);
-    printf("Audiocfg: calling syscall 51, request=%d, val=%d\n", request, val);
-    if (syscall(51, request, (uint64_t)&val, 0) == 0) {
-        printf("Set %s to %d\n", argv[1], val);
+    if (audio_ioctl(request, val) == 0) {
+        printf("audiocfg: %s set to %u\n", argv[1], val);
     } else {
-        printf("Failed to set %s\n", argv[1]);
+        fprintf(stderr, "audiocfg: %s failed\n", argv[1]);
+        return 1;
     }
     return 0;
 }
