@@ -252,21 +252,8 @@ static int measure_text(const char *text) {
 }
 
 static void draw_text(int x, int y, const char *text, uint32_t color) {
-    uint64_t surface_size;
-    uint64_t position;
-
     if (!text || !text[0]) return;
-
-    surface_size = (((uint64_t)(uint32_t)g_screen_width) << 16) | (uint32_t)WINDOW_HEIGHT;
-    position = (((uint64_t)(uint16_t)x) << 16) | (uint16_t)y;
-
-    __sc6(SYS_TEXT_DRAW,
-          (uint64_t)(size_t)g_canvas,
-          (uint64_t)(size_t)text,
-          surface_size,
-          position,
-          (uint64_t)color,
-          1);
+    vos_text_draw(g_canvas, g_screen_width, WINDOW_HEIGHT, x, y, text, color, 1);
 }
 
 static void draw_separator(int *x) {
@@ -831,13 +818,9 @@ static void present(void) {
     previous_present_height = current_height;
     rect_size = (((uint64_t)(uint32_t)g_screen_width) << 16) | (uint32_t)present_height;
 
-    __sc6(SYS_WINDOW_PRESENT_RECT,
-          (uint64_t)g_window_id,
-          (uint64_t)(size_t)g_canvas,
-          (uint64_t)g_screen_width,
-          (uint64_t)WINDOW_HEIGHT,
-          0u,
-          rect_size);
+    vos_window_present_rect(g_window_id, g_canvas,
+        g_screen_width, WINDOW_HEIGHT,
+        0, 0, g_screen_width, (int)(rect_size & 0xffffu));
 }
 
 static uint32_t make_render_signature(const desktop_status *status) {
@@ -870,7 +853,7 @@ static int create_topbar_window(void) {
 }
 
 static void update_screen_width(void) {
-    uint32_t mode = (uint32_t)__sc2(SYS_DISPLAY_MODE, 0, 0);
+    uint32_t mode = vos_display_mode_get();
 
     g_screen_width = (int)((mode >> 16) & 0xffffu);
     if (g_screen_width <= 0 || g_screen_width > MAX_WINDOW_WIDTH) {
@@ -931,6 +914,7 @@ int main(void) {
             present();
         }
 
-        sleep_ticks((g_logo_hover_value > 0 && g_logo_hover_value < LOGO_HOVER_STEPS) ? 2 : 6);
+        // The hover animation updates faster than the status changes, so use a shorter sleep when the logo is animating.
+        sleep_ticks((g_logo_hover_value > 0 && g_logo_hover_value < LOGO_HOVER_STEPS) ? 2 : 100);
     }
 }

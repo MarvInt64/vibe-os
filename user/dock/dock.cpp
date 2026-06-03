@@ -103,7 +103,7 @@ static void launch_app(vui_widget *self) {
 }
 
 int main() {
-    uint32_t mode = (uint32_t)__sc2(SYS_DISPLAY_MODE, 0, 0);
+    uint32_t mode = vos_display_mode_get();
     int screen_w = (int)((mode >> 16) & 0xffffu);
     int screen_h = (int)(mode & 0xffffu);
     int width      = 560;

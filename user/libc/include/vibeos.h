@@ -5,6 +5,9 @@
 #define VIBEOS_VIBEOS_H
 #include <stdint.h>
 #include <stddef.h>
+/* Pull in __sc0/__sc2/__sc6 and SYS_* numbers so the inline helpers below
+ * can call them directly without callers needing an extra include. */
+#include <sys/syscall.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -110,6 +113,76 @@ struct vos_menubar_item {
     uint32_t flags;
     uint32_t action_id;
 };
+
+/* ---- Text rendering ----------------------------------------------------- */
+
+/*
+ * vos_text_draw — rasterise 'text' into an ARGB pixel buffer using the
+ * kernel's anti-aliased TrueType atlas.
+ *
+ *   buf          destination ARGB pixel buffer (0x00RRGGBB format)
+ *   buf_w/buf_h  full buffer dimensions (stride = buf_w)
+ *   x, y         top-left draw position inside the buffer (may be negative)
+ *   text         NUL-terminated string to render
+ *   color        foreground colour (0x00RRGGBB)
+ *   scale        font scale: 1 (small), 2 (medium), 3 (large)
+ *
+ * Returns the pixel advance width of the rendered string.
+ */
+static inline int vos_text_draw(uint32_t *buf, int buf_w, int buf_h,
+                                 int x, int y,
+                                 const char *text, uint32_t color, int scale) {
+    return (int)__sc6(SYS_TEXT_DRAW,
+        (uint64_t)(size_t)buf,
+        (uint64_t)(size_t)text,
+        /* packed buffer dimensions: high16 = width, low16 = height */
+        (uint64_t)(((unsigned)(buf_w & 0xffffu) << 16) | (unsigned)(buf_h & 0xffffu)),
+        /* packed position: high16 = x, low16 = y (both signed 16-bit) */
+        (uint64_t)(((unsigned)(x & 0xffffu) << 16) | (unsigned)(y & 0xffffu)),
+        (uint64_t)color,
+        (uint64_t)scale);
+}
+
+/*
+ * vos_text_metrics — return the pixel advance width of 'text' at 'scale'.
+ * Use this to measure text before drawing so you can lay out UI correctly.
+ */
+static inline int vos_text_metrics(const char *text, int scale) {
+    return (int)__sc2(SYS_TEXT_METRICS, (uint64_t)(size_t)text, (uint64_t)scale);
+}
+
+/*
+ * vos_font_metrics — return packed font metrics for the given scale.
+ * Bit layout of the returned uint32_t:
+ *   bits  0- 7  line height in pixels
+ *   bits  8-15  ascent in pixels
+ *   bits 16-23  average cell width in pixels
+ *   bits 24-31  space character width in pixels
+ */
+static inline uint32_t vos_font_metrics(int scale) {
+    return (uint32_t)__sc2(SYS_TEXT_METRICS, 0, (uint64_t)scale);
+}
+
+/* ---- Display mode ------------------------------------------------------- */
+
+/*
+ * vos_display_mode_get — return the current display resolution packed as
+ * (width << 16) | height.  Use (mode >> 16) & 0xffff for width, mode &
+ * 0xffff for height.
+ */
+static inline uint32_t vos_display_mode_get(void) {
+    return (uint32_t)__sc2(SYS_DISPLAY_MODE, 0, 0);
+}
+
+/*
+ * vos_display_mode_set — change the display resolution.  Takes effect
+ * immediately if the desktop compositor is running.
+ */
+static inline void vos_display_mode_set(int w, int h) {
+    __sc2(SYS_DISPLAY_MODE, (uint64_t)w, (uint64_t)h);
+}
+
+/* ---- Window management -------------------------------------------------- */
 
 int vos_window_create(const char *title, int w, int h);   /* >=0 id, <0 = no server */
 #define VOS_WINDOW_FRAMELESS     0x00000001u

@@ -1,6 +1,7 @@
 /* text_grid.cpp — see text_grid.h. */
 #include "text_grid.h"
 
+#include <vibeos.h>
 #include <sys/syscall.h>
 
 namespace {
@@ -21,8 +22,7 @@ void atlas_glyph(uint32_t *buf, int stride, int buf_h, int x, int y,
     char s[2] = { ch, 0 };
     uint64_t dims = ((uint64_t)(stride & 0xffff) << 16) | (uint64_t)(buf_h & 0xffff);
     uint64_t pos  = ((uint64_t)(x & 0xffff) << 16) | (uint64_t)(y & 0xffff);
-    __sc6(SYS_TEXT_DRAW, (uint64_t)(uintptr_t)buf, (uint64_t)(uintptr_t)s,
-          dims, pos, (uint64_t)color, (uint64_t)scale);
+    vos_text_draw(buf, stride, buf_h, x, y, s, color, scale);
 }
 
 void fill_rect(uint32_t *buf, int stride, int buf_h, int x, int y, int w, int h, uint32_t c) {
@@ -53,7 +53,7 @@ int TextGrid::max_view_off() const {
 void TextGrid::load_metrics(int scale) {
     scale_ = scale < 1 ? 1 : scale;
     /* SYS_TEXT_METRICS(text=0) packs: lineh | ascent<<8 | cellw<<16 | space<<24. */
-    uint32_t m = (uint32_t)__sc2(SYS_TEXT_METRICS, 0, (uint64_t)scale_);
+    uint32_t m = vos_font_metrics(scale_);
     int lineh = (int)(m & 0xffu);
     int cellw = (int)((m >> 16) & 0xffu);
     cell_h_ = lineh > 0 ? lineh : 16;

@@ -47,7 +47,7 @@ static int get_text_width(const char *s, int scale = 1) {
     if (!s || !*s) return 0;
     if (scale < 1) scale = 1;
     if (scale > 3) scale = 3;
-    return (int)__sc2(SYS_TEXT_METRICS, (uint64_t)(size_t)s, (uint64_t)scale);
+    return vos_text_metrics(s, scale);
 }
 
 // Helper to truncate text to fit a max width in pixels
@@ -456,13 +456,7 @@ void FileBrowser::draw_text(int x, int y, const char *text, uint32_t color, int 
     // writing glyphs. Our framebuffer is allocated at BROWSER_MAX_W, NOT win_w_,
     // so we MUST pass the real stride here — otherwise text shears diagonally
     // relative to the rest of the canvas (which is blitted at BROWSER_MAX_W).
-    __sc6(SYS_TEXT_DRAW,
-        (uint64_t)(size_t)canvas_pixels_,
-        (uint64_t)(size_t)text,
-        (((uint64_t)(uint32_t)BROWSER_MAX_W)<<16)|(uint32_t)win_h_,
-        (((uint64_t)(uint16_t)x)<<16)|(uint16_t)y,
-        (uint64_t)color,
-        (uint64_t)scale);
+    vos_text_draw(canvas_pixels_, BROWSER_MAX_W, win_h_, x, y, text, color, scale);
 }
 
 void FileBrowser::draw_svg(int x, int y, int size, const char *svg, uint32_t color) {

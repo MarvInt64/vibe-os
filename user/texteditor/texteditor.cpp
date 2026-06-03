@@ -36,7 +36,7 @@ static int get_text_width(const char *s, int scale) {
     if (!s || !*s) return 0;
     if (scale < 1) scale = 1;
     if (scale > 3) scale = 3;
-    return (int)__sc2(SYS_TEXT_METRICS, (uint64_t)(size_t)s, (uint64_t)scale);
+    return vos_text_metrics(s, scale);
 }
 
 /* --------------------------------------------------------------------------- */
@@ -360,11 +360,7 @@ void TextEditor::draw_text(int x, int y, const char *s, uint32_t color, int scal
     if (!s || !*s) return;
     if (scale < 1) scale = 1;
     if (scale > 3) scale = 3;
-    __sc6(SYS_TEXT_DRAW,
-        (uint64_t)(size_t)canvas_, (uint64_t)(size_t)s,
-        (((uint64_t)(uint32_t)ED_MAX_W) << 16) | (uint32_t)win_h_,
-        (((uint64_t)(uint16_t)x) << 16) | (uint16_t)y,
-        (uint64_t)color, (uint64_t)scale);
+    vos_text_draw(canvas_, ED_MAX_W, win_h_, x, y, s, color, scale);
 }
 
 int TextEditor::text_width(const char *s, int scale) { return get_text_width(s, scale); }
@@ -539,7 +535,7 @@ bool TextEditor::save_as(const char *path) { snprintf(filename_, sizeof(filename
 
 void TextEditor::update_layout() {
     // re-read font metrics from the kernel
-    uint32_t m = (uint32_t)__sc2(SYS_TEXT_METRICS, 0, (uint64_t)font_scale_);
+    uint32_t m = vos_font_metrics(font_scale_);
     int lineh = (int)(m & 0xffu);
     int cellw = (int)((m >> 16) & 0xffu);
     cell_h_ = lineh > 0 ? lineh : 16;

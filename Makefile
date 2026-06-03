@@ -156,6 +156,13 @@ apps: $(DISK_IMG) $(LIBC_A)
 		build/user/vexui.o build/user/svg.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/filedialog.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/filedialog.elf /bin/filedialog
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/texteditor/texteditor.cpp -o build/user/texteditor.o
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/texteditor/main.cpp -o build/user/texteditor_main.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/texteditor.elf \
+		$(LIBC_CRT0) build/user/texteditor.o build/user/texteditor_main.o \
+		build/user/vexui.o build/user/svg.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/texteditor.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/texteditor.elf /bin/texteditor
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Ilib/svg -c user/filebrowser/filebrowser.cpp -o build/user/filebrowser.o
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Ilib/svg -c user/filebrowser/main.cpp        -o build/user/filebrowser_main.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/filebrowser.elf \
