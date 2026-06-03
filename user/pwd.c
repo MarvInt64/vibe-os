@@ -1,3 +1,12 @@
+/*
+ * pwd — print the current working directory
+ *
+ * Usage: pwd
+ *
+ * Calls getcwd() and prints the result followed by a newline.
+ * Exits 1 if the kernel cannot determine the working directory.
+ */
+
 #include <stdio.h>
 #include <unistd.h>
 
@@ -7,6 +16,6 @@ int main(void) {
         puts(buf);
         return 0;
     }
-    fputs("pwd: error\n", stderr);
+    fputs("pwd: cannot get working directory\n", stderr);
     return 1;
 }

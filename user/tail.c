@@ -1,54 +1,53 @@
+/*
+ * tail — output the last N lines of a file
+ *
+ * Usage: tail [-n<count>] [file ...]
+ *
+ * Default line count is 10.  Uses a circular buffer of 512 lines
+ * (256 chars each, 128 KB total) — large enough for practical use
+ * without exhausting the userspace heap.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <fcntl.h>
 
-#define MAX_LINES 10000
-#define LINE_MAX  512
+#define MAX_LINES 512
+#define LINE_MAX  256
 
 static void tail_fd(int fd, int n) {
-    /* Circular buffer of line pointers */
-    static char pool[MAX_LINES * LINE_MAX];
-    static int  offsets[MAX_LINES];
-    int head = 0, count = 0;
+    /* Ring buffer: each slot holds one line (possibly truncated). */
+    static char pool[MAX_LINES][LINE_MAX];
     char linebuf[LINE_MAX];
     int lpos = 0;
+    int head = 0, total = 0;
     char c;
 
     while (read(fd, &c, 1) == 1) {
         if (lpos < LINE_MAX - 1) linebuf[lpos++] = c;
         if (c == '\n' || lpos == LINE_MAX - 1) {
             linebuf[lpos] = '\0';
-            int slot = head % MAX_LINES;
-            int off  = slot * LINE_MAX;
-            int k = 0;
-            while (k < lpos) { pool[off + k] = linebuf[k]; k++; }
-            pool[off + k] = '\0';
-            offsets[slot] = off;
+            memcpy(pool[head % MAX_LINES], linebuf, (size_t)lpos + 1);
             head++;
-            if (count < MAX_LINES) count++;
+            if (total < MAX_LINES) total++;
             lpos = 0;
         }
     }
-    if (lpos > 0) { /* last partial line without newline */
+
+    /* Handle a final partial line that had no trailing newline. */
+    if (lpos > 0) {
         linebuf[lpos] = '\0';
-        int slot = head % MAX_LINES;
-        int off  = slot * LINE_MAX;
-        int k = 0;
-        while (k < lpos) { pool[off + k] = linebuf[k]; k++; }
-        pool[off + k] = '\0';
-        offsets[slot] = off;
+        memcpy(pool[head % MAX_LINES], linebuf, (size_t)lpos + 1);
         head++;
-        if (count < MAX_LINES) count++;
+        if (total < MAX_LINES) total++;
     }
 
-    int start = (count < n) ? 0 : count - n;
-    int base  = head - count;
-    for (int i = start; i < count; i++) {
-        int slot = (base + i) % MAX_LINES;
-        fputs(pool + offsets[slot], stdout);
-    }
+    int start = (total < n) ? 0 : total - n;
+    int base  = head - total;
+    for (int i = start; i < total; i++)
+        fputs(pool[(base + i) % MAX_LINES], stdout);
 }
 
 int main(int argc, char *argv[]) {
@@ -65,11 +64,16 @@ int main(int argc, char *argv[]) {
         tail_fd(STDIN_FILENO, n);
         return 0;
     }
+
+    int multi = (argc - first_file > 1);
     for (int i = first_file; i < argc; i++) {
-        if (argc - first_file > 1)
-            printf("==> %s <==\n", argv[i]);
+        if (multi) printf("==> %s <==\n", argv[i]);
+
         int fd = open(argv[i], O_RDONLY);
-        if (fd < 0) { fprintf(stderr, "tail: %s: cannot open\n", argv[i]); continue; }
+        if (fd < 0) {
+            fprintf(stderr, "tail: %s: cannot open\n", argv[i]);
+            continue;
+        }
         tail_fd(fd, n);
         close(fd);
     }

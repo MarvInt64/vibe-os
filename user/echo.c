@@ -1,53 +1,57 @@
+/*
+ * echo — print arguments to stdout, with optional file redirection
+ *
+ * Usage: echo [args...] [> file | >> file]
+ *
+ * Supports shell-style redirection tokens '>' (truncate) and '>>' (append)
+ * as part of the argument list, since the VibeOS shell passes them as argv.
+ */
+
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
-#include <unistd.h>
-#include <fcntl.h>
 
 int main(int argc, char *argv[]) {
-    int i;
-    int redir = 0;        /* 0: none, 1: truncate (>), 2: append (>>) */
+    /* Scan for a redirection token; record its position. */
+    int redir = 0;       /* 1 = truncate, 2 = append */
     int redir_idx = -1;
     int last_word = argc;
 
-    for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], ">") == 0) { redir = 1; redir_idx = i; last_word = i; break; }
-        if (strcmp(argv[i], ">>") == 0) { redir = 2; redir_idx = i; last_word = i; break; }
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], ">") == 0) {
+            redir = 1; redir_idx = i; last_word = i; break;
+        }
+        if (strcmp(argv[i], ">>") == 0) {
+            redir = 2; redir_idx = i; last_word = i; break;
+        }
     }
 
     if (!redir) {
-        for (i = 1; i < argc; i++) {
-            if (i > 1) printf(" ");
-            printf("%s", argv[i]);
+        /* Plain echo: print all args separated by spaces. */
+        for (int i = 1; i < argc; i++) {
+            if (i > 1) putchar(' ');
+            fputs(argv[i], stdout);
         }
-        printf("\n");
+        putchar('\n');
         return 0;
     }
 
     if (redir_idx + 1 >= argc) {
-        fprintf(stderr, "echo: missing filename after redirection\n");
+        fputs("echo: missing filename after redirection\n", stderr);
         return 1;
     }
 
     const char *filename = argv[redir_idx + 1];
-    
-    FILE *fp = NULL;
-    if (redir == 1) {
-        fp = fopen(filename, "w");
-    } else {
-        fp = fopen(filename, "a");
-    }
-
+    FILE *fp = fopen(filename, (redir == 1) ? "w" : "a");
     if (!fp) {
-        fprintf(stderr, "echo: could not open %s\n", filename);
+        fprintf(stderr, "echo: %s: cannot open\n", filename);
         return 1;
     }
 
-    for (i = 1; i < last_word; i++) {
-        if (i > 1) fprintf(fp, " ");
-        fprintf(fp, "%s", argv[i]);
+    for (int i = 1; i < last_word; i++) {
+        if (i > 1) fputc(' ', fp);
+        fputs(argv[i], fp);
     }
-    fprintf(fp, "\n");
+    fputc('\n', fp);
     fclose(fp);
 
     return 0;
