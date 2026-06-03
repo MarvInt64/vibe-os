@@ -370,12 +370,15 @@ static void blend_put(struct vui_window *w,int x,int y,vui_u32 c,int a){
             *d = argb(c, (unsigned)a);
             return;
         }
-        vui_u32 sr=(c>>16)&255u, sg=(c>>8)&255u, sb=c&255u;
-        vui_u32 dr=(*d>>16)&255u, dg=(*d>>8)&255u, db=*d&255u;
-        vui_u32 rr=(sr*(vui_u32)a+dr*(255u-(vui_u32)a))/255u;
-        vui_u32 gg=(sg*(vui_u32)a+dg*(255u-(vui_u32)a))/255u;
-        vui_u32 bb=(sb*(vui_u32)a+db*(255u-(vui_u32)a))/255u;
-        *d=(rr<<16)|(gg<<8)|bb;
+        vui_u32 src_rb = c & 0x00ff00ffu;
+        vui_u32 dest_rb = *d & 0x00ff00ffu;
+        vui_u32 rb = ((src_rb * (vui_u32)a + dest_rb * (256u - (vui_u32)a)) >> 8) & 0x00ff00ffu;
+
+        vui_u32 src_g = c & 0x0000ff00u;
+        vui_u32 dest_g = *d & 0x0000ff00u;
+        vui_u32 g = ((src_g * (vui_u32)a + dest_g * (256u - (vui_u32)a)) >> 8) & 0x0000ff00u;
+
+        *d = rb | g;
     }
 }
 /* Is a fixed-point sub-pixel inside the rounded rect? Coordinates are scaled
@@ -515,19 +518,60 @@ static void line_diag(struct vui_window *w,int x,int y,int len,int dx,int dy,vui
  * onto the window canvas at (x,y) with per-pixel alpha. `color` serves as the
  * SVG `currentColor`. The raster work lives in lib/svg so other tools can
  * reuse it. */
-static unsigned int g_icon_buf[SVG_MAX_DIM * SVG_MAX_DIM];
+#define VUI_ICON_SLOT_SZ 4096
+struct svg_cache_entry {
+    char svg_content[VUI_ICON_SLOT_SZ];
+    int size;
+    vui_u32 color;
+    unsigned int buffer[SVG_MAX_DIM * SVG_MAX_DIM];
+    int valid;
+};
+static struct svg_cache_entry g_svg_cache[4];
+static int g_svg_cache_next = 0;
+
 static void draw_svg_icon(struct vui_window *w, int x, int y, int size,
                           const char *svg, vui_u32 color) {
     int px, py;
     if (!svg || size <= 0) return;
     if (size > SVG_MAX_DIM) size = SVG_MAX_DIM;
-    svg_render_rgba(svg, g_icon_buf, size, (unsigned int)color);
-    for (py = 0; py < size; ++py)
+
+    unsigned int *cached_buf = 0;
+    int i;
+    for (i = 0; i < 4; ++i) {
+        if (g_svg_cache[i].valid && g_svg_cache[i].size == size && g_svg_cache[i].color == color) {
+            if (sequal(g_svg_cache[i].svg_content, svg)) {
+                cached_buf = g_svg_cache[i].buffer;
+                break;
+            }
+        }
+    }
+
+    if (!cached_buf) {
+        int slot = g_svg_cache_next;
+        g_svg_cache_next = (g_svg_cache_next + 1) % 4;
+
+        int len = 0;
+        while (svg[len] && len < VUI_ICON_SLOT_SZ - 1) {
+            g_svg_cache[slot].svg_content[len] = svg[len];
+            ++len;
+        }
+        g_svg_cache[slot].svg_content[len] = '\0';
+
+        g_svg_cache[slot].size = size;
+        g_svg_cache[slot].color = color;
+        svg_render_rgba(svg, g_svg_cache[slot].buffer, size, (unsigned int)color);
+        g_svg_cache[slot].valid = 1;
+
+        cached_buf = g_svg_cache[slot].buffer;
+    }
+
+    for (py = 0; py < size; ++py) {
         for (px = 0; px < size; ++px) {
-            unsigned int p = g_icon_buf[py * size + px];
+            unsigned int p = cached_buf[py * size + px];
             int a = (int)((p >> 24) & 255u);
             if (a > 0) blend_put(w, x + px, y + py, p & 0xFFFFFFu, a);
         }
+    }
 }
 
 /* Large monochrome outline icons (2px stroke) for the dock, matching the
@@ -777,7 +821,6 @@ void vui_set_color(vui_widget *wd, vui_u32 c){ if(!wd||wd->color==c)return; wd->
 /* Shared SVG icon storage. Widgets reference a slot by index instead of each
  * carrying a large inline buffer (logos can be a couple of KB). */
 #define VUI_ICON_SLOTS   8
-#define VUI_ICON_SLOT_SZ 4096
 static char g_icon_store[VUI_ICON_SLOTS][VUI_ICON_SLOT_SZ];
 static unsigned char g_icon_used[VUI_ICON_SLOTS];
 
