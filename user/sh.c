@@ -760,25 +760,118 @@ static void cmd_cd(const char *path) {
     }
 }
 
-static void cmd_ls(const char *path) {
-    char name[64];
-    uint32_t index;
-    int result;
+/* Call SYS_STAT and return kind (1=file, 2=dir), filling *size and *mode.
+ * Returns -1 if the path does not exist. */
+static int ls_stat(const char *path, uint64_t *size, uint16_t *mode) {
+    long ret, kind;
+    register long r8 __asm__("r8") = 0;
+    register long r9 __asm__("r9") = 0;
+    __asm__ volatile(
+        "int $0x80"
+        : "=a"(ret), "=d"(kind), "+r"(r8), "+r"(r9)
+        : "a"((uint64_t)SYS_STAT), "D"((uint64_t)(size_t)path)
+        : "rcx", "r11", "memory"
+    );
+    if (ret < 0) return -1;
+    if (size) *size = (uint64_t)r8;
+    if (mode) *mode = (uint16_t)(r9 & 0xFFFFu);
+    return (int)kind;
+}
 
+/* Format permission bits as "drwxr-xr-x" (10 chars + NUL). */
+static void ls_mode_str(uint32_t kind, uint16_t mode, char out[11]) {
+    out[0] = (kind == 2) ? 'd' : '-';
+    out[1] = (mode & 0400u) ? 'r' : '-';
+    out[2] = (mode & 0200u) ? 'w' : '-';
+    out[3] = (mode & 0100u) ? 'x' : '-';
+    out[4] = (mode & 0040u) ? 'r' : '-';
+    out[5] = (mode & 0020u) ? 'w' : '-';
+    out[6] = (mode & 0010u) ? 'x' : '-';
+    out[7] = (mode & 0004u) ? 'r' : '-';
+    out[8] = (mode & 0002u) ? 'w' : '-';
+    out[9] = (mode & 0001u) ? 'x' : '-';
+    out[10] = '\0';
+}
+
+/* Right-align a decimal number in a field of 'width' characters. */
+static void write_dec_w(uint64_t n, int width) {
+    char buf[20];
+    int i = 0;
+    if (n == 0) { buf[i++] = '0'; }
+    else { while (n) { buf[i++] = (char)('0' + n % 10); n /= 10; } }
+    for (int pad = i; pad < width; pad++) write_char(' ');
+    for (int j = i - 1; j >= 0; j--) write_char(buf[j]);
+}
+
+static void cmd_ls(void) {
+    /* Parse flags and optional path from g_args. */
+    int flag_l = 0, flag_a = 0;
+    const char *path = g_cwd;
+
+    for (int i = 1; i < g_argc; i++) {
+        if (g_args[i][0] == '-' && g_args[i][1]) {
+            for (int j = 1; g_args[i][j]; j++) {
+                if (g_args[i][j] == 'l') flag_l = 1;
+                else if (g_args[i][j] == 'a') flag_a = 1;
+                /* other flags silently ignored */
+            }
+        } else {
+            path = g_args[i];
+        }
+    }
     if (!path || !path[0]) path = g_cwd;
 
-    for (index = 0; ; index++) {
+    char name[64];
+    char full[MAX_PATH];
+
+    for (uint32_t index = 0; ; index++) {
         name[0] = 0;
-        result = readdir_entry(path, index, name, sizeof(name));
+        int result = readdir_entry(path, index, name, sizeof(name));
         if (result < 0) {
-            write_str("ls: ");
-            write_str(path);
-            write_str(": ");
+            write_str("ls: "); write_str(path); write_str(": ");
             write_line(strerror(result));
             break;
         }
         if (result == 0) break;
-        if (name[0]) write_line(name);
+        if (!name[0]) continue;
+
+        /* -a: show hidden (dot) files; without -a skip them. */
+        if (!flag_a && name[0] == '.') continue;
+
+        if (flag_l) {
+            /* Build full path to stat the entry. */
+            size_t plen = strlen(path);
+            size_t nlen = strlen(name);
+            if (plen + nlen + 2 < (size_t)MAX_PATH) {
+                size_t k = 0;
+                while (path[k]) full[k++] = path[k];
+                if (k > 0 && full[k-1] != '/') full[k++] = '/';
+                size_t m = 0;
+                while (name[m]) full[k++] = name[m++];
+                full[k] = '\0';
+            } else {
+                full[0] = '\0';
+            }
+
+            uint64_t size = 0;
+            uint16_t mode = 0644;
+            int kind = ls_stat(full, &size, &mode);
+            if (kind < 0) kind = 1;
+
+            /* If mode is 0 (kernel didn't fill it), use a default. */
+            if (!mode) mode = (kind == 2) ? 0755u : 0644u;
+
+            char mstr[11];
+            ls_mode_str((uint32_t)kind, mode, mstr);
+
+            write_str(mstr);
+            write_char(' ');
+            write_dec_w(size, 8);
+            write_char(' ');
+            write_line(name);
+        } else {
+            write_line(name);
+        }
     }
 }
 
@@ -1228,7 +1321,7 @@ static void execute_command(void) {
     } else if (strcmp(cmd, "cd") == 0) {
         cmd_cd(g_argc > 1 ? g_args[1] : "");
     } else if (strcmp(cmd, "ls") == 0) {
-        cmd_ls(g_argc > 1 ? g_args[1] : "");
+        cmd_ls();
     } else if (strcmp(cmd, "ifconfig") == 0 || strcmp(cmd, "ip") == 0) {
         cmd_ifconfig();
     } else if (strcmp(cmd, "ping") == 0) {
