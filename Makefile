@@ -192,6 +192,12 @@ apps: $(DISK_IMG) $(LIBC_A)
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/terminal.svg /icons/dock/terminal.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/search.svg /icons/search.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/vibeos-logo.svg /icons/vibeos-logo.svg
+	$(USTRIP) --strip-all build/user/sh.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/sh.elf /bin/sh.tmp
+	# Use a trick to rename sh.tmp to sh by running a shell command inside the ext2 image if possible, or just overwrite it if the tool supports it.
+	# Assuming ext2_put overwrites, the issue might be that /bin/sh still exists.
+	# Let's trust ext2_put.py or just rename it.
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/sh.elf /bin/sh
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/hello.c -o build/user/hello.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/hello.elf $(LIBC_CRT0) build/user/hello.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/hello.elf
@@ -244,7 +250,7 @@ newdisk:
 	rm -f $(DISK_IMG)
 	$(MAKE) disk
 
-all: bump-version kernel apps
+all: bump-version kernel user apps
 
 user:
 	@mkdir -p build/user

@@ -179,13 +179,18 @@ static void show_help(void) {
 	write_line("Commands: help, about, clear, ls, cd, pwd, cat, edit, stat, echo, touch, mkdir, rm, cp, mv, ifconfig, ping, curl, display, gui, uidemo, taskmgr, browser, exit");
 }
 
+static void write_dec(uint64_t n);   /* defined later */
+
 static void show_about(void) {
     struct system_info_snapshot info;
-    if (syscall1(SYS_SYSTEM_INFO, (uint64_t)(size_t)&info) == 0) {
+    int res = (int)syscall1(SYS_SYSTEM_INFO, (uint64_t)(size_t)&info);
+    if (res == 0) {
         write_str("VibeOS Kernel v");
         write_line(info.version);
     } else {
-        write_line("VibeOS Kernel version unavailable");
+        write_str("Kernel version fetch failed. Res: ");
+        write_dec((uint64_t)-res);
+        write_line("");
     }
 }
 
@@ -1165,11 +1170,17 @@ static void execute_command(void) {
 
 void _start(void) {
     ssize_t len;
+    struct system_info_snapshot info;
     
     getcwd(g_cwd, sizeof(g_cwd));
     
     write_line("");
-    write_line("VibeOS Shell v2.0 - Type 'help' for commands");
+    if (syscall1(SYS_SYSTEM_INFO, (uint64_t)(size_t)&info) == 0) {
+        write_str("VibeOS Shell | Kernel v");
+        write_line(info.version);
+    } else {
+        write_line("VibeOS Shell v2.0 (fallback)");
+    }
     write_line("");
     
     while (1) {
