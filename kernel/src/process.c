@@ -24,6 +24,7 @@
 
 #include "alloc.h"
 #include "audio.h"
+#include "clipboard.h"
 #include "string.h"
 #include "elf.h"
 #include "ext2_fs.h"
@@ -2587,6 +2588,37 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 			return 0;
 		}
 		frame->rax = (uint64_t)audio_ioctl(request, arg);
+		return 0;
+	}
+
+	/* ---- System-wide clipboard ------------------------------------------ */
+
+	if (number == SYS_CLIPBOARD_SET) {
+		/* rdi = user data pointer, rsi = byte count.
+		 * The process address space is active so we can read data directly.
+		 * Reject NULL pointers and oversized payloads before calling into
+		 * the clipboard layer. */
+		const char *data = (const char *)(uintptr_t)frame->rdi;
+		uint32_t   len   = (uint32_t)frame->rsi;
+		if (!data || len > CLIPBOARD_MAX_BYTES) {
+			frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+			return 0;
+		}
+		frame->rax = (uint64_t)clipboard_set(data, len);
+		return 0;
+	}
+
+	if (number == SYS_CLIPBOARD_GET) {
+		/* rdi = user buffer pointer, rsi = buffer capacity.
+		 * clipboard_get always NUL-terminates when cap > 0. */
+		char    *buf = (char *)(uintptr_t)frame->rdi;
+		uint32_t cap = (uint32_t)frame->rsi;
+		frame->rax = (uint64_t)clipboard_get(buf, cap);
+		return 0;
+	}
+
+	if (number == SYS_CLIPBOARD_LEN) {
+		frame->rax = (uint64_t)clipboard_len();
 		return 0;
 	}
 

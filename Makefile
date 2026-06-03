@@ -67,7 +67,7 @@ KCXXFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pi
 ASFLAGS := -target x86_64-none-elf -ffreestanding -D__ASSEMBLER__
 LDFLAGS := -nostdlib -static -T linker.ld
 
-KERNEL_SOURCES := kernel/src/alloc.c kernel/src/ramdisk.c kernel/src/ramdisk_demo.c kernel/src/app_builtin.c kernel/src/app_terminal.c kernel/src/app_task_manager.c kernel/src/audio.c kernel/src/bga.c kernel/src/e1000.c kernel/src/elf.c kernel/src/ext2_fs.c kernel/src/fd.c kernel/src/ide.c kernel/src/interrupts.c kernel/src/kernel.c kernel/src/input.c kernel/src/multiboot2.c kernel/src/net.c kernel/src/paging.c kernel/src/process.c kernel/src/pty.c kernel/src/render.c kernel/src/serial.c kernel/src/settings.c kernel/src/string.c kernel/src/syscall.c kernel/src/timer.c kernel/src/tty.c kernel/src/ui.c kernel/src/vfs.c kernel/src/vga_text.c kernel/src/window.c kernel/src/net_tls.c kernel/src/journal.c kernel/src/font_atlas.c
+KERNEL_SOURCES := kernel/src/alloc.c kernel/src/clipboard.c kernel/src/ramdisk.c kernel/src/ramdisk_demo.c kernel/src/app_builtin.c kernel/src/app_terminal.c kernel/src/app_task_manager.c kernel/src/audio.c kernel/src/bga.c kernel/src/e1000.c kernel/src/elf.c kernel/src/ext2_fs.c kernel/src/fd.c kernel/src/ide.c kernel/src/interrupts.c kernel/src/kernel.c kernel/src/input.c kernel/src/multiboot2.c kernel/src/net.c kernel/src/paging.c kernel/src/process.c kernel/src/pty.c kernel/src/render.c kernel/src/serial.c kernel/src/settings.c kernel/src/string.c kernel/src/syscall.c kernel/src/timer.c kernel/src/tty.c kernel/src/ui.c kernel/src/vfs.c kernel/src/vga_text.c kernel/src/window.c kernel/src/net_tls.c kernel/src/journal.c kernel/src/font_atlas.c
 KERNEL_CXX_SOURCES := kernel/src/cxx_runtime.cpp kernel/src/cxx_smoke.cpp
 KERNEL_ASM := kernel/src/boot.S kernel/src/interrupt_stubs.S kernel/src/user_init_blob.S kernel/src/user_hello_blob.S kernel/src/user_windowmgr_blob.S kernel/src/user_sh_blob.S kernel/src/user_edit_blob.S
 KERNEL_OBJECTS := $(patsubst kernel/src/%.c,$(OUT_DIR)/kernel/%.o,$(KERNEL_SOURCES)) $(patsubst kernel/src/%.cpp,$(OUT_DIR)/kernel/%.o,$(KERNEL_CXX_SOURCES)) $(patsubst kernel/src/%.S,$(OUT_DIR)/kernel/%.o,$(KERNEL_ASM))
@@ -149,6 +149,13 @@ apps: $(DISK_IMG) $(LIBC_A)
 		$(LIBC_CRT0) build/user/sysinfo.o build/user/vexui.o build/user/svg.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/sysinfo.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/sysinfo.elf /bin/sysinfo
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/filedialog/filedialog.cpp -o build/user/filedialog.o
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/filedialog/main.cpp -o build/user/filedialog_main.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/filedialog.elf \
+		$(LIBC_CRT0) build/user/filedialog.o build/user/filedialog_main.o \
+		build/user/vexui.o build/user/svg.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/filedialog.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/filedialog.elf /bin/filedialog
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Ilib/svg -c user/filebrowser/filebrowser.cpp -o build/user/filebrowser.o
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Ilib/svg -c user/filebrowser/main.cpp        -o build/user/filebrowser_main.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/filebrowser.elf \
@@ -277,6 +284,10 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/wc.elf    $(LIBC_CRT0) build/user/wc.o    $(LIBC_A)
 	$(USTRIP) --strip-all build/user/wc.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/wc.elf /bin/wc
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/clipboard.c -o build/user/clipboard.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/clipboard.elf $(LIBC_CRT0) build/user/clipboard.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/clipboard.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/clipboard.elf /bin/clipboard
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/head.c  -o build/user/head.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/head.elf  $(LIBC_CRT0) build/user/head.o  $(LIBC_A)
 	$(USTRIP) --strip-all build/user/head.elf

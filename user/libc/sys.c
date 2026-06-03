@@ -296,3 +296,35 @@ int chown(const char *path, unsigned int uid, unsigned int gid) {
     return (int)ck(__sc3(SYS_CHOWN, (uint64_t)(size_t)path,
                          (uint64_t)uid, (uint64_t)gid));
 }
+
+/* ---- System-wide clipboard ---------------------------------------------- */
+
+/*
+ * clipboard_set — write data[0..len) to the shared kernel clipboard.
+ *
+ * The kernel stores a verbatim copy; no encoding conversion is performed.
+ * Returns 0 on success, -1 if len exceeds CLIPBOARD_MAX (64 KB).
+ */
+int clipboard_set(const char *data, size_t len) {
+    if (!data) return -1;
+    return (int)ck(__sc2(SYS_CLIPBOARD_SET,
+                         (uint64_t)(size_t)data, (uint64_t)len));
+}
+
+/*
+ * clipboard_get — copy the clipboard into buf[0..cap-1].
+ *
+ * Always NUL-terminates when cap > 0.  Returns the byte count copied
+ * (not counting the NUL), so the caller can detect truncation by
+ * comparing the return value against clipboard_len().
+ */
+size_t clipboard_get(char *buf, size_t cap) {
+    if (!buf || cap == 0) return 0;
+    return (size_t)__sc2(SYS_CLIPBOARD_GET,
+                         (uint64_t)(size_t)buf, (uint64_t)cap);
+}
+
+/* clipboard_len — return the current clipboard length in bytes. */
+size_t clipboard_len(void) {
+    return (size_t)__sc0(SYS_CLIPBOARD_LEN);
+}

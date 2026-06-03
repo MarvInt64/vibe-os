@@ -114,7 +114,14 @@ enum syscall_number {
 	SYS_CHOWN  = 59,
 	/* AC97 audio device control (rate/volume/buffer).
 	 * rdi = request code (AUDIO_IOCTL_*), rsi = user ptr to uint32_t value. */
-	SYS_AUDIO_IOCTL = 60
+	SYS_AUDIO_IOCTL = 60,
+	/* System-wide text clipboard accessible from any process.
+	 * SET: rdi = data ptr (user), rsi = byte count.  Returns 0 or -EINVAL.
+	 * GET: rdi = buf ptr (user),  rsi = buf capacity.  Returns bytes copied.
+	 * LEN: no args.  Returns current clipboard length in bytes. */
+	SYS_CLIPBOARD_SET = 61,
+	SYS_CLIPBOARD_GET = 62,
+	SYS_CLIPBOARD_LEN = 63
 };
 
 struct system_info_snapshot {

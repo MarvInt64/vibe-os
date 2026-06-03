@@ -68,7 +68,14 @@ enum {
     SYS_SETUID  = 57,  /* rdi = new uid; root can set any, others only own */
     SYS_CHMOD   = 58,  /* rdi = path, rsi = mode (0–0777) */
     SYS_CHOWN       = 59,  /* rdi = path, rsi = uid, rdx = gid; root only */
-    SYS_AUDIO_IOCTL = 60   /* rdi = request, rsi = &uint32_t value */
+    SYS_AUDIO_IOCTL = 60,  /* rdi = request, rsi = &uint32_t value */
+    /* System-wide clipboard.
+     * SET: rdi = data ptr, rsi = len   → 0 on success / -EINVAL if too large
+     * GET: rdi = buf ptr,  rsi = cap   → bytes copied (buf is NUL-terminated)
+     * LEN: (no args)                   → current clipboard length */
+    SYS_CLIPBOARD_SET = 61,
+    SYS_CLIPBOARD_GET = 62,
+    SYS_CLIPBOARD_LEN = 63
 };
 
 /* Unused argument registers are explicitly zeroed: the kernel inspects rdi/rsi/
