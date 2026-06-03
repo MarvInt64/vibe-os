@@ -248,6 +248,30 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/stat.elf $(LIBC_CRT0) build/user/stat.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/stat.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/stat.elf /bin/stat
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/wc.c    -o build/user/wc.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/wc.elf    $(LIBC_CRT0) build/user/wc.o    $(LIBC_A)
+	$(USTRIP) --strip-all build/user/wc.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/wc.elf /bin/wc
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/head.c  -o build/user/head.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/head.elf  $(LIBC_CRT0) build/user/head.o  $(LIBC_A)
+	$(USTRIP) --strip-all build/user/head.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/head.elf /bin/head
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/tail.c  -o build/user/tail.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/tail.elf  $(LIBC_CRT0) build/user/tail.o  $(LIBC_A)
+	$(USTRIP) --strip-all build/user/tail.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/tail.elf /bin/tail
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/grep.c  -o build/user/grep.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/grep.elf  $(LIBC_CRT0) build/user/grep.o  $(LIBC_A)
+	$(USTRIP) --strip-all build/user/grep.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/grep.elf /bin/grep
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/find.c  -o build/user/find.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/find.elf  $(LIBC_CRT0) build/user/find.o  $(LIBC_A)
+	$(USTRIP) --strip-all build/user/find.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/find.elf /bin/find
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/pwd.c   -o build/user/pwd.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/pwd.elf   $(LIBC_CRT0) build/user/pwd.o   $(LIBC_A)
+	$(USTRIP) --strip-all build/user/pwd.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/pwd.elf /bin/pwd
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/audiotest.c -o build/user/audiotest.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/audiotest.elf \
 		$(LIBC_CRT0) build/user/audiotest.o $(LIBC_A)

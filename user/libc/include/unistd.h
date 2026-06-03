@@ -32,6 +32,11 @@ int          chdir(const char *path);
 /* Cooperative scheduler yield (VibeOS apps must yield to share the CPU). */
 void    sched_yield_(void);
 
+/* Read one directory entry at index `idx` from directory `path`.
+ * Returns 1 if an entry was found and name_out filled, 0 if end of dir,
+ * <0 on error.  *type_out is set to 1=file, 2=directory. */
+int readdir_at(const char *path, int idx, char *name_out, int cap, int *type_out);
+
 #ifdef __cplusplus
 }
 #endif

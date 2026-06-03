@@ -192,6 +192,22 @@ time_t time(time_t *tloc) {
     return sec;
 }
 
+int readdir_at(const char *path, int idx, char *name_out, int cap, int *type_out) {
+    /* rdi=path, rsi=index, rdx=name_buf, r10=capacity → rax=result, rdx=kind */
+    long ret, kind;
+    register long r10 __asm__("r10") = (long)cap;
+    __asm__ volatile(
+        "int $0x80"
+        : "=a"(ret), "=d"(kind)
+        : "a"((long)SYS_READDIR), "D"((long)path),
+          "S"((long)idx), "d"((long)name_out), "r"(r10)
+        : "rcx", "r11", "r8", "memory"
+    );
+    if (ret <= 0) return (int)ret;
+    if (type_out) *type_out = (kind == 2) ? 2 : 1;
+    return 1;
+}
+
 int stat(const char *path, struct stat *s) {
     long ret, kind;
     register long sz __asm__("r8") = 0;
