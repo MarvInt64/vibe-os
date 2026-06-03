@@ -45,10 +45,19 @@ static int format(struct sink *s, const char *fmt, va_list ap) {
             for (;; ++fmt) {
                 if (*fmt == '-') left = 1;
                 else if (*fmt == '0') zero = 1;
+                else if (*fmt == '+' || *fmt == ' ') ; /* ignore */
                 else break;
             }
             /* width */
             while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); ++fmt; }
+            /* .precision — for integers: minimum digits (zero-pad); for strings: max chars */
+            int prec = -1;
+            if (*fmt == '.') {
+                ++fmt; prec = 0;
+                while (*fmt >= '0' && *fmt <= '9') { prec = prec * 10 + (*fmt - '0'); ++fmt; }
+                /* %.Nd on integers: treat as zero-filled width if wider than current */
+                if (prec > width) { width = prec; zero = 1; }
+            }
             /* length modifiers (all 64-bit on LP64) */
             if (*fmt == 'l') { size64 = 1; ++fmt; if (*fmt == 'l') ++fmt; }
             else if (*fmt == 'z') { size64 = 1; ++fmt; }
@@ -88,8 +97,9 @@ static int format(struct sink *s, const char *fmt, va_list ap) {
                     const char *str = va_arg(ap, const char *);
                     int len = 0; if (!str) str = "(null)";
                     { const char *q = str; while (*q) { ++len; ++q; } }
+                    if (prec >= 0 && len > prec) len = prec;
                     if (!left) { int pad = width - len; while (pad-- > 0) emit(s, ' '); }
-                    emit_str(s, str);
+                    { int k; for (k = 0; k < len; ++k) emit(s, str[k]); }
                     if (left) { int pad = width - len; while (pad-- > 0) emit(s, ' '); }
                     continue;
                 }
