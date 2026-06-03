@@ -170,6 +170,22 @@ static char g_ping_arg_buf[256];
 static char g_cd_path[MAX_PATH];
 static char g_cd_buf[MAX_PATH];
 
+static int spawn_with_arguments(const char *path) {
+    char full_args[256];
+    full_args[0] = '\0';
+    for (int i = 1; i < g_argc && i < MAX_ARGS; ++i) {
+        if (i > 1) {
+            strcat(full_args, " ");
+        }
+        strcat(full_args, g_args[i]);
+    }
+    if (full_args[0] != '\0') {
+        return spawn_with_arg(path, full_args);
+    } else {
+        return spawn(path);
+    }
+}
+
 static void prompt(void) {
     write_str(g_cwd);
     write_str("$ ");
@@ -1113,21 +1129,21 @@ static void execute_command(void) {
 	} else if (strcmp(cmd, "dmesg") == 0 || strcmp(cmd, "journal") == 0) {
 		cmd_dmesg();
 	} else if (strcmp(cmd, "hello") == 0) {
-		int pid = spawn("/bin/hello");
+		int pid = spawn_with_arguments("/bin/hello");
 		if (pid <= 0) {
 			write_str("hello: "); write_line(strerror(pid));
 		} else {
 			waitpid(pid);
 		}
 	} else if (strcmp(cmd, "cpptest") == 0 || strcmp(cmd, "c++test") == 0) {
-		int pid = spawn("/bin/cpptest");
+		int pid = spawn_with_arguments("/bin/cpptest");
 		if (pid <= 0) {
 			write_str("cpptest: "); write_line(strerror(pid));
 		} else {
 			waitpid(pid);
 		}
 	} else if (strcmp(cmd, "threadtest") == 0) {
-		int pid = spawn("/bin/threadtest");
+		int pid = spawn_with_arguments("/bin/threadtest");
 		if (pid <= 0) {
 			write_str("threadtest: "); write_line(strerror(pid));
 		} else {
@@ -1152,7 +1168,7 @@ static void execute_command(void) {
         }
         spawn_path[i] = 0;
         
-        int pid = spawn(spawn_path);
+        int pid = spawn_with_arguments(spawn_path);
         if (pid <= 0) {
             write_str("spawn: ");
             write_str(spawn_path);
@@ -1163,7 +1179,7 @@ static void execute_command(void) {
             write_line(spawn_path);
         }
     } else if (cmd[0] == '/') {
-        int pid = spawn(cmd);
+        int pid = spawn_with_arguments(cmd);
         if (pid <= 0) {
             write_str("spawn: ");
             write_str(cmd);

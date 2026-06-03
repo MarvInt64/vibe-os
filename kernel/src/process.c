@@ -1,5 +1,6 @@
 #include "alloc.h"
 #include "audio.h"
+#include "string.h"
 #include "elf.h"
 #include "ext2_fs.h"
 #include "net.h"
@@ -2482,7 +2483,7 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 		if (buf != 0 && cap > 0) {
 			process_write_user_string(buf, cap, process->spawn_arg);
 		}
-		frame->rax = 0;
+		frame->rax = (uint64_t)strlen(process->spawn_arg);
 		return 0;
 	}
 
