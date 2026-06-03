@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 #include "window.h"
 #include "alloc.h"
 #include "journal.h"

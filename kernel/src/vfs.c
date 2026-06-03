@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 #include "vfs.h"
 #include "ext2_fs.h"
 #include "string.h"

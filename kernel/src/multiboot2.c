@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 #include "multiboot2.h"
 
 int multiboot2_find_framebuffer(uintptr_t mbi_addr, struct boot_framebuffer *out_fb) {

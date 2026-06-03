@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* doomgeneric_vibeos.c — VibeOS platform layer for doomgeneric.
  *
  * Implements the six DG_ callbacks:

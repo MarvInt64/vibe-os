@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* layout_engine.cpp — improved HTML flow-layout engine.
  *
  * All internal state lives in the file-local `State` struct that is passed

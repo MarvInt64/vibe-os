@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* net_tls.c — HTTPS via BearSSL, driven over the raw TCP stream in net.c.
  *
  * The whole TLS client lives in the kernel (mirroring net_http_get): BearSSL's

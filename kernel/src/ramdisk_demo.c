@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* 
  * Static RAM Disk demo for filesystem testing
  * This uses static memory instead of heap for testing purposes

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* Kernel event journal — ring buffer + serial mirror. See journal.h. */
 #include "journal.h"
 #include "serial.h"

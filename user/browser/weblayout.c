@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* weblayout — HTML flow-layout engine. See weblayout.h. Syscall-free; uses the
  * umalloc heap. Font metrics: 8x16 base glyph, scaled by run->scale. */
 #include "weblayout.h"

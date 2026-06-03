@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* i_sound.c — AC97 PCM sound for VibeOS DOOM port.
  *
  * Converts DOOM's 8-bit unsigned mono WAD sound lumps to 16-bit signed stereo

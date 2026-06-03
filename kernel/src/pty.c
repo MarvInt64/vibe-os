@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* pty.c — pseudo-terminal transport (see pty.h). */
 #include "pty.h"
 #include "syscall.h"

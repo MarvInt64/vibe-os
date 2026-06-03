@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* audiotest — emit a clean 440 Hz sine at 48000 Hz / 16-bit / stereo and
  * print a diagnostic dump of the AC97 device + driver state. */
 #include <stdio.h>

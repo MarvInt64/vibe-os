@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* crt0 — C/C++ runtime entry. The kernel jumps to _start with rsp = top of the
  * user stack and no return address; returning from _start would `ret` into
  * garbage. So _start runs static constructors, calls main(), runs registered

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* css — stylesheet parsing + selector matching + cascade. See css.h. */
 
 #include "css.h"

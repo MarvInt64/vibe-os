@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* dom — HTML parser + document tree. See dom.h. Syscall-free (umalloc only). */
 #include "dom.h"
 #include "umalloc.h"

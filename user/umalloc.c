@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* umalloc — first-fit free-list allocator over SYS_SBRK heap pages. */
 #include "umalloc.h"
 #include <sys/syscall.h>

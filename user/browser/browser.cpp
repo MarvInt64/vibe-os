@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: MIT
+ * Copyright (c) 2026 Marvin Kicha <https://github.com/MarvInt64/> */
+
 /* browser.cpp — VibeOS web browser (C++20 rewrite).
  *
  * Architecture
