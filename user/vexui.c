@@ -1551,7 +1551,7 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
     }
 }
 
-#define TOOLTIP_DELAY  18   /* ticks of hover before the bubble appears (~1 s at 16 Hz) */
+#define TOOLTIP_DELAY   6   /* loop iterations of hover before bubble appears (~0.4 s) */
 #define TOOLTIP_PAD     6   /* horizontal padding inside the bubble */
 #define TOOLTIP_VPAD    4   /* vertical padding inside the bubble */
 
@@ -1859,6 +1859,17 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
                 if (wd->on_click) wd->on_click(wd);
             }
         }
+        /* If the tooltip widget is no longer hovered (mouse moved to a widget
+         * without a tooltip, or off all widgets), dismiss the bubble. */
+        if (w->tooltip_widget >= 0) {
+            struct vui_widget *tw = &w->widgets[w->tooltip_widget];
+            if (!tw->hover) {
+                if (w->tooltip_ticks >= TOOLTIP_DELAY) { w->dirty = 1; dmg_full(); }
+                w->tooltip_widget = -1;
+                w->tooltip_ticks  = 0;
+            }
+        }
+
         /* Click outside any input drops keyboard focus. */
         if (click_x >= 0 && !input_clicked && w->active_input >= 0) {
             w->active_input = -1; w->dirty = 1;
