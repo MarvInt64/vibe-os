@@ -66,7 +66,7 @@ KCXXFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pi
 ASFLAGS := -target x86_64-none-elf -ffreestanding -D__ASSEMBLER__
 LDFLAGS := -nostdlib -static -T linker.ld
 
-KERNEL_SOURCES := kernel/src/alloc.c kernel/src/ramdisk.c kernel/src/ramdisk_demo.c kernel/src/app_builtin.c kernel/src/app_terminal.c kernel/src/app_task_manager.c kernel/src/bga.c kernel/src/e1000.c kernel/src/elf.c kernel/src/ext2_fs.c kernel/src/fd.c kernel/src/ide.c kernel/src/interrupts.c kernel/src/kernel.c kernel/src/input.c kernel/src/multiboot2.c kernel/src/net.c kernel/src/paging.c kernel/src/process.c kernel/src/render.c kernel/src/serial.c kernel/src/string.c kernel/src/syscall.c kernel/src/timer.c kernel/src/tty.c kernel/src/ui.c kernel/src/vfs.c kernel/src/vga_text.c kernel/src/window.c kernel/src/net_tls.c kernel/src/journal.c kernel/src/font_atlas.c
+KERNEL_SOURCES := kernel/src/alloc.c kernel/src/ramdisk.c kernel/src/ramdisk_demo.c kernel/src/app_builtin.c kernel/src/app_terminal.c kernel/src/app_task_manager.c kernel/src/bga.c kernel/src/e1000.c kernel/src/elf.c kernel/src/ext2_fs.c kernel/src/fd.c kernel/src/ide.c kernel/src/interrupts.c kernel/src/kernel.c kernel/src/input.c kernel/src/multiboot2.c kernel/src/net.c kernel/src/paging.c kernel/src/process.c kernel/src/pty.c kernel/src/render.c kernel/src/serial.c kernel/src/string.c kernel/src/syscall.c kernel/src/timer.c kernel/src/tty.c kernel/src/ui.c kernel/src/vfs.c kernel/src/vga_text.c kernel/src/window.c kernel/src/net_tls.c kernel/src/journal.c kernel/src/font_atlas.c
 KERNEL_CXX_SOURCES := kernel/src/cxx_runtime.cpp kernel/src/cxx_smoke.cpp
 KERNEL_ASM := kernel/src/boot.S kernel/src/interrupt_stubs.S kernel/src/user_init_blob.S kernel/src/user_hello_blob.S kernel/src/user_windowmgr_blob.S kernel/src/user_sh_blob.S kernel/src/user_edit_blob.S
 KERNEL_OBJECTS := $(patsubst kernel/src/%.c,$(OUT_DIR)/kernel/%.o,$(KERNEL_SOURCES)) $(patsubst kernel/src/%.cpp,$(OUT_DIR)/kernel/%.o,$(KERNEL_CXX_SOURCES)) $(patsubst kernel/src/%.S,$(OUT_DIR)/kernel/%.o,$(KERNEL_ASM))
@@ -150,6 +150,12 @@ apps: $(DISK_IMG) $(LIBC_A)
 		$(LIBC_CRT0) build/user/dock.o build/user/vexui.o build/user/svg.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/dock.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/dock.elf /bin/dock
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/terminal/terminal.cpp  -o build/user/terminal.o
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/terminal/text_grid.cpp -o build/user/terminal_text_grid.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/terminal.elf \
+		$(LIBC_CRT0) build/user/terminal.o build/user/terminal_text_grid.o build/user/vexui.o build/user/svg.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/terminal.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/terminal.elf /bin/terminal
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Ilib/svg -c user/topbar/topbar.cpp -o build/user/topbar.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/topbar.elf \
 		$(LIBC_CRT0) build/user/topbar.o build/user/svg.o $(LIBC_A)
@@ -162,11 +168,12 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/libimage -Ithird_party/stb -c user/libimage/image.c  -o build/user/image.o
 	$(CC)  $(ASFLAGS)                             -c user/browser/font_data.S  -o build/user/font_data.o
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -c user/browser/layout_engine.cpp -o build/user/browser_layout_engine.o
-	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -Iuser/libimage -c user/browser/browser.cpp       -o build/user/browser_main.o
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -Iuser/libimage -Ilib/svg -c user/browser/browser.cpp       -o build/user/browser_main.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/browser.elf \
 		$(LIBC_CRT0) build/user/browser_main.o build/user/browser_layout_engine.o \
 		build/user/weblayout.o build/user/dom.o build/user/css.o \
-		build/user/appfont.o build/user/image.o build/user/font_data.o $(LIBC_A)
+		build/user/appfont.o build/user/image.o build/user/font_data.o \
+		build/user/vexui.o build/user/svg.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/browser.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/browser.elf /bin/browser
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/libimage -c user/wallpaper/wallpaper.c -o build/user/wallpaper.o

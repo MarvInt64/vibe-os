@@ -78,7 +78,15 @@ enum syscall_number {
 	SYS_DESKTOP_STATUS = 43,
 	/* Deliver a menu action (rdi = action_id) to the focused window as a
 	 * WINSYS_EVENT_MENU_ACTION, exactly as the old kernel top bar did. */
-	SYS_MENU_DISPATCH = 44
+	SYS_MENU_DISPATCH = 44,
+	/* Allocate a pseudo-terminal and bind its master endpoint to a fresh fd in
+	 * the caller's fd table. Returns the master fd (>=0) or <0 on failure. */
+	SYS_PTY_OPEN = 45,
+	/* Spawn a program (rdi = path) with its stdin/stdout/stderr bound to the
+	 * slave end of the pty whose master fd is in rsi. Returns child pid. */
+	SYS_SPAWN_PTY = 46,
+	/* Ctrl+C: interrupt the foreground job of the pty whose master fd is rdi. */
+	SYS_PTY_INTERRUPT = 47
 };
 
 struct system_info_snapshot {

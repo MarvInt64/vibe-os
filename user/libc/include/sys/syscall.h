@@ -52,7 +52,10 @@ enum {
     SYS_SYSTEM_INFO = 39,
     SYS_TEXT_DRAW = 40,
     SYS_TEXT_METRICS = 41,
-    SYS_SBRK = 42
+    SYS_SBRK = 42,
+    SYS_PTY_OPEN = 45,
+    SYS_SPAWN_PTY = 46,
+    SYS_PTY_INTERRUPT = 47
 };
 
 /* Unused argument registers are explicitly zeroed: the kernel inspects rdi/rsi/

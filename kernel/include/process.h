@@ -157,6 +157,9 @@ uint32_t process_sleeping_count(void);
 uint32_t process_snapshot_count(void);
 int process_get_snapshot(uint32_t slot, struct process_snapshot *snapshot);
 int process_kill(uint32_t pid);
+/* Ctrl+C: kill the foreground job of the terminal whose stdin is stdin_object
+ * (a struct tty * or struct pty *). Returns the number of children killed. */
+int process_interrupt_terminal(const void *stdin_object);
 int process_pid_alive(uint32_t pid);
 /* PID of the process currently running (inside a syscall), or 0 if none. */
 uint32_t process_current_pid(void);

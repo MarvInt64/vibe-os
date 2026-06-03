@@ -24,6 +24,9 @@ void vos_sleep_ticks(unsigned long ticks) { __sc1(SYS_TIMER_SLEEP, (uint64_t)tic
 int vos_system_info(struct vos_system_info *out) { return (int)ck(__sc1(SYS_SYSTEM_INFO, (uint64_t)(size_t)out)); }
 int  vos_spawn(const char *path) { return (int)__sc1(SYS_PROCESS_SPAWN, (uint64_t)(size_t)path); }
 int  vos_spawn_arg(const char *path, const char *arg) { return (int)__sc2(SYS_PROCESS_SPAWN, (uint64_t)(size_t)path, (uint64_t)(size_t)arg); }
+int  vos_pty_open(void) { return (int)__sc1(SYS_PTY_OPEN, 0); }
+int  vos_spawn_pty(const char *path, int master_fd) { return (int)__sc2(SYS_SPAWN_PTY, (uint64_t)(size_t)path, (uint64_t)master_fd); }
+int  vos_pty_interrupt(int master_fd) { return (int)__sc1(SYS_PTY_INTERRUPT, (uint64_t)master_fd); }
 
 int vos_resolve(const char *host, uint32_t *ip_out) {
     return (int)__sc2(SYS_NET_RESOLVE, (uint64_t)(size_t)host, (uint64_t)(size_t)ip_out);

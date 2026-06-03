@@ -4,6 +4,7 @@
 #include "net.h"
 #include "paging.h"
 #include "process.h"
+#include "pty.h"
 #include "render.h"
 #include "serial.h"
 #include "syscall.h"
@@ -1702,6 +1703,77 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         return 0;
     }
 
+    if (number == SYS_PTY_OPEN) {
+        /* Reserve a pty and hand its master endpoint back as a fresh fd. */
+        struct pty *pty = pty_alloc();
+        int fd;
+
+        if (pty == 0) {
+            frame->rax = (uint64_t)(-SYSCALL_ENOMEM);
+            return 0;
+        }
+        fd = fd_alloc(&process->fd_table, &PTY_MASTER_FD_OPS, pty, 3);
+        if (fd < 0) {
+            pty_release(pty);
+            frame->rax = (uint64_t)(int64_t)fd;
+            return 0;
+        }
+        frame->rax = (uint64_t)(int64_t)fd;
+        return 0;
+    }
+
+    if (number == SYS_SPAWN_PTY) {
+        /* rdi = path, rsi = master fd of a pty opened by this process. The child
+         * is spawned with stdin/stdout/stderr bound to that pty's slave end. */
+        char path[64];
+        int master_fd = (int)frame->rsi;
+        struct fd_entry *entry;
+        struct pty *pty;
+        int child_pid;
+
+        if (!process_copy_user_string(path, sizeof(path), (const char *)(uintptr_t)frame->rdi)) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+            return 0;
+        }
+        if (master_fd < 0 || master_fd >= FD_TABLE_CAPACITY) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+            return 0;
+        }
+        entry = &process->fd_table.entries[master_fd];
+        if (!entry->used || entry->ops != &PTY_MASTER_FD_OPS || entry->object == 0) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+            return 0;
+        }
+        pty = (struct pty *)entry->object;
+        child_pid = process_spawn_path(path, &PTY_SLAVE_FD_OPS, pty);
+        if (child_pid > 0) {
+            struct process *child = process_find_by_pid((uint32_t)child_pid);
+            if (child != 0) {
+                child->parent_pid = process->pid;
+            }
+        }
+        frame->rax = (uint64_t)(int64_t)child_pid;
+        return 0;
+    }
+
+    if (number == SYS_PTY_INTERRUPT) {
+        /* rdi = master fd: kill the foreground job on that pty (Ctrl+C). */
+        int master_fd = (int)frame->rdi;
+        struct fd_entry *entry;
+
+        if (master_fd < 0 || master_fd >= FD_TABLE_CAPACITY) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+            return 0;
+        }
+        entry = &process->fd_table.entries[master_fd];
+        if (!entry->used || entry->ops != &PTY_MASTER_FD_OPS || entry->object == 0) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+            return 0;
+        }
+        frame->rax = (uint64_t)(int64_t)process_interrupt_terminal(entry->object);
+        return 0;
+    }
+
     if (number == SYS_THREAD_CREATE) {
         /* rdi = entry fn (user ptr), rsi = stack top (user ptr), rdx = arg. */
         int tid = process_create_thread(process, (uintptr_t)frame->rdi,
@@ -1873,7 +1945,7 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         out->app_window_max = MAX_USER_APPS;
         out->heap_used_bytes = kmalloc_get_used();
         out->heap_total_bytes = kmalloc_get_total();
-        process_write_user_string(out->version, sizeof(out->version), "2.0");
+        process_write_user_string(out->version, sizeof(out->version), "0.2");
         process_write_user_string(out->build, sizeof(out->build), __DATE__ " " __TIME__);
         frame->rax = 0;
         return 0;
@@ -2638,6 +2710,32 @@ int process_kill(uint32_t pid) {
         g_current_process = 0;
     }
     return 0;
+}
+
+/* Ctrl+C semantics: interrupt the foreground job of the terminal whose stdin is
+ * `stdin_object` (a tty or pty). The shell attached to that terminal blocks in
+ * waitpid() while a command runs, so we find that waiting shell and kill the
+ * child it is waiting on. Nothing happens at an idle prompt (no foreground job).
+ * Returns the number of foreground children killed. */
+int process_interrupt_terminal(const void *stdin_object) {
+    int killed = 0;
+    size_t i;
+
+    if (stdin_object == 0) {
+        return 0;
+    }
+    for (i = 0; i < PROCESS_MAX_COUNT; ++i) {
+        struct process *p = &g_processes[i];
+        struct fd_entry *e;
+
+        if (!p->loaded || p->is_thread) continue;
+        if (p->state != PROCESS_STATE_WAITING || p->wait_target_pid == 0) continue;
+        e = &p->fd_table.entries[0];
+        if (!e->used || e->object != stdin_object) continue;
+        process_kill(p->wait_target_pid);
+        ++killed;
+    }
+    return killed;
 }
 
 int process_pid_alive(uint32_t pid) {

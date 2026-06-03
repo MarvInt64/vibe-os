@@ -54,6 +54,10 @@ typedef void (*vui_callback)(vui_widget *self);
 typedef void (*vui_tick_callback)(vui_window *window);
 typedef void (*vui_resize_callback)(vui_window *window, int width, int height);
 typedef void (*vui_context_callback)(vui_window *window, int x, int y);
+/* Raw keystroke delivered to the app when no input widget is focused. */
+typedef void (*vui_key_callback)(vui_window *window, unsigned int key);
+/* Mouse-wheel scroll; delta is the signed notch count (positive = away/up). */
+typedef void (*vui_scroll_callback)(vui_window *window, int delta);
 typedef void (*vui_menu_callback)(vui_window *window);
 
 typedef struct vui_theme {
@@ -170,6 +174,10 @@ int vui_window_height(vui_window *w);
 void vui_on_tick(vui_window *w, vui_tick_callback cb);
 void vui_on_resize(vui_window *w, vui_resize_callback cb);
 void vui_on_context_menu(vui_window *w, vui_context_callback cb);
+/* Register a raw-key handler; fired for keystrokes when no input is focused. */
+void vui_on_key(vui_window *w, vui_key_callback cb);
+/* Register a mouse-wheel handler for this window. */
+void vui_on_scroll(vui_window *w, vui_scroll_callback cb);
 /* Declare an entry for this window's dock-icon context menu. The window server
  * shows it (below the standard Show/Hide) and invokes `cb` when picked. Up to
  * 6 entries; extra calls are ignored. */

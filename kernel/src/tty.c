@@ -569,6 +569,14 @@ int tty_handle_keyboard(struct tty *tty, const struct keyboard_state *keyboard) 
  size_t i;
  int dirty = 0;
 
+ /* Ctrl+C (0x03): interrupt this terminal's foreground job and drop the byte. */
+ for (i = 0; i < keyboard->count; ++i) {
+ if (keyboard->chars[i] == 0x03) {
+ process_interrupt_terminal(tty);
+ return 0;
+ }
+ }
+
  if (tty->ansi_mode) {
  char raw_bytes[32];
  size_t raw_count = 0;

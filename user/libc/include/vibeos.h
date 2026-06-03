@@ -13,6 +13,14 @@ extern "C" {
 /* ---- process ---- */
 int  vos_spawn(const char *path);
 int  vos_spawn_arg(const char *path, const char *arg);
+/* Open a pseudo-terminal; returns the master fd (>=0) or <0 on failure. Read
+ * the master for child output, write it to send child input. */
+int  vos_pty_open(void);
+/* Spawn `path` with its stdio bound to the slave of the pty whose master fd is
+ * `master_fd`. Returns the child pid (>0) or <0 on failure. */
+int  vos_spawn_pty(const char *path, int master_fd);
+/* Ctrl+C: interrupt (kill) the foreground job running on the given pty master. */
+int  vos_pty_interrupt(int master_fd);
 void vos_yield(void);
 void vos_sleep_ticks(unsigned long ticks);
 

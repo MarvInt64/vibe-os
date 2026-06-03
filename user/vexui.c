@@ -179,6 +179,8 @@ struct vui_window {
     vui_tick_callback on_tick;
     vui_resize_callback on_resize;
     vui_context_callback on_context_menu;
+    vui_key_callback on_key;
+    vui_scroll_callback on_scroll;
     vui_menu_callback menu_cbs[WINSYS_MAX_MENU_ITEMS];
     char menu_labels[WINSYS_MAX_MENU_ITEMS][WINSYS_MENU_LABEL_MAX];
     int menu_count;
@@ -856,6 +858,8 @@ int vui_window_height(vui_window *w){ return w?w->height:0; }
 void vui_on_tick(vui_window *w, vui_tick_callback cb){ if(w) w->on_tick=cb; }
 void vui_on_resize(vui_window *w, vui_resize_callback cb){ if(w) w->on_resize=cb; }
 void vui_on_context_menu(vui_window *w, vui_context_callback cb){ if(w) w->on_context_menu=cb; }
+void vui_on_key(vui_window *w, vui_key_callback cb){ if(w) w->on_key=cb; }
+void vui_on_scroll(vui_window *w, vui_scroll_callback cb){ if(w) w->on_scroll=cb; }
 void vui_request_repaint(vui_window *w){ if(w) w->dirty=1; }
 
 /* =========================================================================
@@ -1607,7 +1611,7 @@ vui_window *vui_window_open_ex(const char *title, int width, int height,
     g_win.id=id; g_win.width=width; g_win.height=height; g_win.open=1;
     g_win.mouse_x=-1; g_win.mouse_y=-1; g_win.mouse_down=0;
     g_win.clear_color=g_theme.bg;
-    g_win.widget_count=0; g_win.dirty=1; g_win.on_tick=0; g_win.on_resize=0; g_win.on_context_menu=0;
+    g_win.widget_count=0; g_win.dirty=1; g_win.on_tick=0; g_win.on_resize=0; g_win.on_context_menu=0; g_win.on_key=0; g_win.on_scroll=0;
     g_win.menu_count=0; g_win.active_menu_idx=-1; g_win.active_input=-1;
     return &g_win;
 }
@@ -1640,6 +1644,15 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
             else if (ev.type == EV_CLOSE) { w->open=0; }
             else if (ev.type == EV_CONTEXT_MENU) { w->mouse_x=ev.x; w->mouse_y=ev.y; if(w->on_context_menu) w->on_context_menu(w, ev.x, ev.y); }
             else if (ev.type == EV_MENU_ACTION) { if (ev.key < (uint32_t)w->menu_count && w->menu_cbs[ev.key]) w->menu_cbs[ev.key](w); }
+            else if (ev.type == EV_SCROLL) {
+                /* Wheel notch delta arrives in ev.y (positive = away/up). */
+                if (w->on_scroll) w->on_scroll(w, ev.y);
+            }
+            else if (ev.type == EV_KEY && w->active_input < 0) {
+                /* No focused input: hand the raw keystroke to the app, if it
+                 * registered a key callback (e.g. a terminal or game). */
+                if (w->on_key) w->on_key(w, ev.key);
+            }
             else if (ev.type == EV_KEY && w->active_input >= 0) {
                 /* Edit the focused input. */
                 struct vui_widget *in = &w->widgets[w->active_input];
