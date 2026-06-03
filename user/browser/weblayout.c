@@ -535,7 +535,7 @@ int wl_layout(struct wl_doc *d,const char *in,int n,int vw){
 /* Compute a node's style: CSS cascade from the sheet first (ascending
  * specificity), then the element's inline style="" (highest priority). */
 static void dom_apply_style(struct dom_node *node, struct wl_st *S){
-    if(S->sheet){ char buf[640]; css_match(S->sheet, node, buf, sizeof buf); apply_decls(buf, &S->stk[S->sp]); }
+    if(S->sheet){ char buf[640]; css_match(S->sheet, node, (void*)0, 0, buf, sizeof buf); apply_decls(buf, &S->stk[S->sp]); }
     { const char *css = dom_attr(node, "style"); if(css) apply_decls(css, &S->stk[S->sp]); }
 }
 
@@ -544,7 +544,7 @@ static void dom_apply_style(struct dom_node *node, struct wl_st *S){
 static int dom_is_hidden(struct dom_node *node, struct wl_st *S){
     struct wl_style probe = S->stk[S->sp];
     probe.hidden = 0; probe.pos_fixed = 0;
-    if(S->sheet){ char buf[640]; css_match(S->sheet, node, buf, sizeof buf); apply_decls(buf, &probe); }
+    if(S->sheet){ char buf[640]; css_match(S->sheet, node, (void*)0, 0, buf, sizeof buf); apply_decls(buf, &probe); }
     { const char *css = dom_attr(node, "style"); if(css) apply_decls(css, &probe); }
     return probe.hidden || probe.pos_fixed;
 }
@@ -711,7 +711,7 @@ int wl_layout_dom(struct wl_doc *d, struct dom_node *root, int vw){
     /* Stage 2: gather <style> sheets and build the cascade. */
     cssbuf = (char*)umalloc(64*1024);
     if(cssbuf){ csslen = collect_styles(root, cssbuf, 64*1024, 0); cssbuf[csslen<64*1024?csslen:64*1024-1]=0;
-                if(csslen>0) S.sheet = css_parse(cssbuf, csslen); }
+                if(csslen>0) S.sheet = css_parse(cssbuf, csslen, vw); }
 
     if(root) layout_children(&S, root);
     if(!S.at_line_start) S.cy += (S.line_h>0?S.line_h:m_lh(WL_BODY_PX));

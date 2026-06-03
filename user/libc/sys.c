@@ -18,7 +18,7 @@ int     close(int fd) { return (int)ck(__sc1(SYS_CLOSE, (uint64_t)fd)); }
 off_t   lseek(int fd, off_t offset, int whence) { return (off_t)ck(__sc3(SYS_SEEK, (uint64_t)fd, (uint64_t)(long)offset, (uint64_t)whence)); }
 int vos_open_path(const char *path)  { return (int)ck(__sc1(SYS_OPEN,  (uint64_t)(size_t)path)); }
 int vos_creat_path(const char *path) { return (int)ck(__sc1(SYS_CREAT, (uint64_t)(size_t)path)); }
-int mkdir(const char *path, int mode) { (void)mode; return (int)ck(__sc1(26, (uint64_t)(size_t)path)); }
+int mkdir(const char *path, int mode) { (void)mode; return (int)ck(__sc1(SYS_MKDIR, (uint64_t)(size_t)path)); }
 void    _exit(int code) { __sc1(SYS_EXIT, (uint64_t)code); for (;;) __sc0(SYS_YIELD); }
 void    sched_yield_(void) { __sc0(SYS_YIELD); }
 
@@ -141,6 +141,10 @@ pid_t getpid(void) {
     return (pid_t)ck(__sc0(SYS_GETPID));
 }
 
+pid_t getppid(void) {
+    return (pid_t)ck(__sc0(SYS_GETPPID));
+}
+
 unsigned int sleep(unsigned int seconds) {
     vos_sleep_ticks((unsigned long)seconds * 100);
     return 0;
@@ -154,4 +158,22 @@ int usleep(useconds_t usec) {
         __sc0(SYS_YIELD);
     }
     return 0;
+}
+
+int unlink(const char *path) {
+    return (int)ck(__sc1(SYS_UNLINK, (uint64_t)(size_t)path));
+}
+
+int rmdir(const char *path) {
+    return unlink(path);
+}
+
+char *getcwd(char *buf, size_t size) {
+    long r = ck(__sc2(SYS_GETCWD, (uint64_t)(size_t)buf, (uint64_t)size));
+    if (r < 0) return (char *)0;
+    return buf;
+}
+
+int chdir(const char *path) {
+    return (int)ck(__sc1(SYS_CHDIR, (uint64_t)(size_t)path));
 }

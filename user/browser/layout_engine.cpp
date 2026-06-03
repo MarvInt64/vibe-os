@@ -215,9 +215,12 @@ struct StyleDecls {
     int      max_width;
     unsigned border_color;
     int      border_width;
+    int      border_radius;   /* px, 0=none */
     bool     text_transform;
     bool     list_style_none;  /* suppress list bullet */
     bool     pos_fixed;        /* position: fixed → skip subtree */
+    bool     display_inline;   /* display: inline — no forced block break */
+    bool     display_inline_block; /* display: inline-block */
 };
 
 static void apply_decls(const char *css, StyleDecls &st) {
@@ -234,7 +237,10 @@ static void apply_decls(const char *css, StyleDecls &st) {
         val[v] = '\0'; prop[p] = '\0';
         if (css[i] == ';') ++i;
 
-        if (ieq(prop,"display"))         { const char *w=val; while(*w==' ')++w; st.hidden=ieq(w,"none"); }
+        if (ieq(prop,"display"))         { const char *w=val; while(*w==' ')++w;
+                                           st.hidden=ieq(w,"none");
+                                           st.display_inline=ieq(w,"inline");
+                                           st.display_inline_block=ieq(w,"inline-block"); }
         else if (ieq(prop,"color"))      { unsigned c; if(parse_color(val,c)) st.color=c; }
         else if (ieq(prop,"background-color")||ieq(prop,"background"))
                                          { unsigned c; if(parse_color(val,c)) st.bg=c; }
@@ -292,9 +298,13 @@ static void apply_decls(const char *css, StyleDecls &st) {
         else if (ieq(prop,"text-transform")){ const char *w=val; while(*w==' ')++w; st.text_transform=ieq(w,"uppercase")||ieq(w,"capitalize"); }
         else if (ieq(prop,"list-style")||ieq(prop,"list-style-type")) {
             const char *w=val; while(*w==' ')++w; st.list_style_none=ieq(w,"none"); }
+        else if (ieq(prop,"border-radius")) {
+            const char *w=val; int px=0; while(*w==' ')++w;
+            while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} if(px>=0&&px<=100) st.border_radius=px; }
         else if (ieq(prop,"position")) {
             const char *w=val; while(*w==' ')++w;
-            st.pos_fixed=(ieq(w,"fixed")||ieq(w,"sticky")); }
+            /* sticky renders in normal flow; only fixed skips the subtree */
+            st.pos_fixed=ieq(w,"fixed"); }
         else if (ieq(prop,"text-align")) {
             const char *w=val; while(*w==' ')++w;
             if(ieq(w,"center")) st.text_align=1;
@@ -341,9 +351,12 @@ struct Style {
     int      max_width       = 0;
     unsigned border_color    = 0;
     int      border_width    = 0;
+    int      border_radius   = 0;
     bool     text_transform  = false;
     bool     list_style_none = false;
     bool     pos_fixed       = false;
+    bool     display_inline  = false;
+    bool     display_inline_block = false;
 };
 
 /* ---- layout state ------------------------------------------------------ */
@@ -361,6 +374,9 @@ struct State {
     Style     stk[40];
     int       sp             = 0;
     css_sheet *sheet         = nullptr;
+    /* Ancestor node stack for CSS descendant/child selector matching */
+    const dom_node *anc_stk[48];
+    int        anc_sp        = 0;
 
     /* Current <form> context (raw action; browser resolves + submits). */
     char      form_action[256] = {};
@@ -384,8 +400,8 @@ static void apply_css(State &S, dom_node *node) {
     StyleDecls d{S.stk[S.sp].px, S.stk[S.sp].bold, S.stk[S.sp].underline,
                  S.stk[S.sp].italic, S.stk[S.sp].strikethrough,
                  S.stk[S.sp].color, S.stk[S.sp].bg, S.stk[S.sp].hidden,
-                 0, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, false, false, false};
-    if (S.sheet) { char buf[640]; css_match(S.sheet, node, buf, sizeof buf); apply_decls(buf, d); }
+                 0, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, false, false, false, false, false};
+    if (S.sheet) { char buf[640]; css_match(S.sheet, node, S.anc_stk, S.anc_sp, buf, sizeof buf); apply_decls(buf, d); }
     const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
     S.stk[S.sp].px            = d.px;
     S.stk[S.sp].bold          = d.bold;
@@ -406,14 +422,17 @@ static void apply_css(State &S, dom_node *node) {
     if (d.line_height_pct > 0)  S.stk[S.sp].line_height_pct = d.line_height_pct;
     S.stk[S.sp].max_width      = d.max_width;
     if (d.border_width > 0)   { S.stk[S.sp].border_color = d.border_color; S.stk[S.sp].border_width = d.border_width; }
+    if (d.border_radius > 0)    S.stk[S.sp].border_radius = d.border_radius;
     if (d.text_transform)       S.stk[S.sp].text_transform = true;
     if (d.list_style_none)      S.stk[S.sp].list_style_none = true;
     if (d.pos_fixed)            S.stk[S.sp].pos_fixed = true;
+    if (d.display_inline)       S.stk[S.sp].display_inline = true;
+    if (d.display_inline_block) S.stk[S.sp].display_inline_block = true;
 }
 
 static bool check_hidden(State &S, dom_node *node) {
-    StyleDecls d{BODY_PX,false,false,false,false,COL_TEXT,0,false,0,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,false,false,false};
-    if (S.sheet) { char buf[640]; css_match(S.sheet, node, buf, sizeof buf); apply_decls(buf, d); }
+    StyleDecls d{BODY_PX,false,false,false,false,COL_TEXT,0,false,0,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,false,false,false,false,false};
+    if (S.sheet) { char buf[640]; css_match(S.sheet, node, S.anc_stk, S.anc_sp, buf, sizeof buf); apply_decls(buf, d); }
     const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
     return d.hidden || d.pos_fixed;
 }
@@ -554,6 +573,16 @@ static void add_rule(State &S, unsigned color, int h) {
 
 /* ---- DOM walker -------------------------------------------------------- */
 
+/* RAII: push node onto ancestor stack on construction, pop on destruction.
+ * Handles all early returns in walk() automatically. */
+struct AncPusher {
+    State &S;
+    AncPusher(State &st, const dom_node *n) : S(st) {
+        if (S.anc_sp < 47) S.anc_stk[S.anc_sp++] = n;
+    }
+    ~AncPusher() { if (S.anc_sp > 0) --S.anc_sp; }
+};
+
 static void walk(State &S, dom_node *node);
 
 static void walk_children(State &S, dom_node *node) {
@@ -569,6 +598,10 @@ static void walk(State &S, dom_node *node) {
         else                  place_text(S, node->text);
         return;
     }
+
+    /* Push this element onto the ancestor stack so its children's CSS
+     * selectors can match against it. Popped automatically on any return. */
+    AncPusher _anc(S, node);
 
     const char *t = node->tag;
 
@@ -857,7 +890,7 @@ static void walk(State &S, dom_node *node) {
     if (ieq(t,"div")    ||ieq(t,"section")||ieq(t,"article")||ieq(t,"header")||
         ieq(t,"main")   ||ieq(t,"aside")  ||ieq(t,"figure") ||ieq(t,"figcaption")||
         ieq(t,"fieldset")||ieq(t,"details")||ieq(t,"summary")||
-        ieq(t,"nav")    ||ieq(t,"address") ||ieq(t,"center") ||
+        ieq(t,"nav")    ||ieq(t,"address") ||ieq(t,"center") ||ieq(t,"menu")||
         ieq(t,"body")   ||ieq(t,"html")) {
         st_push(S); apply_css(S,node);
         if (!S.stk[S.sp].hidden) {
@@ -962,7 +995,7 @@ int LayoutEngine::layout(wl_doc *doc, dom_node *root, int viewport_w) {
     if (css_buf) {
         int css_len = collect_styles(root, css_buf, 64*1024, 0);
         css_buf[css_len < 64*1024 ? css_len : 64*1024-1] = '\0';
-        if (css_len > 0) S.sheet = css_parse(css_buf, css_len);
+        if (css_len > 0) S.sheet = css_parse(css_buf, css_len, S.vw);
         ufree(css_buf);
     }
 

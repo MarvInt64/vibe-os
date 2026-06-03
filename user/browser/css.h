@@ -1,15 +1,11 @@
-/* css — a small CSS cascade for the VibeOS browser (stage 2).
+/* css — stylesheet parsing + selector matching + cascade.
  *
- * Parses <style> stylesheet text into rules, matches simple selectors against
- * DOM nodes (tag / .class / #id and compounds like a.foo, div#x, plus comma
- * lists), and produces the cascaded declaration block for a node in
- * specificity + source order. The browser then feeds that block (followed by
- * the element's inline style="") to the existing apply_decls() so the same
- * property parser handles everything.
- *
- * Not a full CSS engine: no descendant/child combinators, no pseudo-classes,
- * no media queries — just enough that class/id/tag styling and display:none
- * work, which is the bulk of what shapes a page. */
+ * Supports:
+ *   - tag / .class / #id compounds and comma lists
+ *   - Descendant ( ) and child (>) combinators, up to 3 levels
+ *   - :first-child, :last-child, :nth-child(an+b/odd/even)
+ *   - CSS custom properties (--name / var(--name))
+ *   - @media blocks with min-width / max-width evaluation */
 #ifndef VIBEOS_CSS_H
 #define VIBEOS_CSS_H
 
@@ -20,15 +16,16 @@ extern "C" {
 struct dom_node;
 struct css_sheet;
 
-/* Parse stylesheet text (concatenated <style> contents). Returns an umalloc'd
- * sheet (free with css_free), or 0 on failure / empty. */
-struct css_sheet *css_parse(const char *text, int n);
+/* Parse stylesheet text. viewport_w is used to evaluate @media width conditions. */
+struct css_sheet *css_parse(const char *text, int n, int viewport_w);
 void css_free(struct css_sheet *s);
 
-/* Append the cascaded declarations matching `node` (ascending specificity, so a
- * left-to-right property parser lets higher-specificity rules win) into out[],
- * NUL-terminated. Returns the number of matching rules. */
-int css_match(struct css_sheet *s, const struct dom_node *node, char *out, int cap);
+/* Append the cascaded declarations matching `node` into out[], NUL-terminated.
+ * ancestors[0..anc_depth-1] = ancestor chain from root to direct parent.
+ * Returns the number of matching rules. */
+int css_match(struct css_sheet *s, const struct dom_node *node,
+              const struct dom_node * const *ancestors, int anc_depth,
+              char *out, int cap);
 
 #ifdef __cplusplus
 }

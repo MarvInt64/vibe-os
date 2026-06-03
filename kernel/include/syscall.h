@@ -99,7 +99,8 @@ enum syscall_number {
 	SYS_AUDIO_INFO = 50,
 	SYS_REBOOT = 51,
 	SYS_SHUTDOWN = 52,
-	SYS_GETPID = 53
+	SYS_GETPID = 53,
+	SYS_GETPPID = 54
 };
 
 struct system_info_snapshot {

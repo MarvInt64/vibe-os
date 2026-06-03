@@ -17,8 +17,13 @@ int     close(int fd);
 void    _exit(int code) __attribute__((noreturn));
 off_t   lseek(int fd, off_t offset, int whence);
 pid_t        getpid(void);
+pid_t        getppid(void);
 unsigned int sleep(unsigned int seconds);
 int          usleep(useconds_t usec);
+int          unlink(const char *pathname);
+int          rmdir(const char *pathname);
+char        *getcwd(char *buf, size_t size);
+int          chdir(const char *path);
 
 #define SEEK_SET 0
 #define SEEK_CUR 1
