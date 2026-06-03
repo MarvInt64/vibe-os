@@ -19,20 +19,20 @@ It boots via GRUB/Multiboot2, runs entirely bare-metal, and includes a working g
 | **Storage** | IDE/PIO driver, ramdisk (in-memory block device for early boot), persistent raw disk image |
 | **File system** | ext2 read/write; full VFS layer; `open`/`close`/`read`/`write`/`stat`/`readdir`/`chdir`/`getcwd`/`unlink`/`creat`/`mkdir` syscalls; survives reboots |
 | **Networking** | Intel e1000 NIC driver; ARP, IPv4, ICMP (`ping`), UDP, DNS, TCP; HTTP (`curl`); TLS via BearSSL (freestanding port) — `SYS_NET_HTTPS_GET` syscall exists and encrypts the connection, but certificate validation is disabled (accept-all, no trust store) and the shell `curl` command currently only uses plain HTTP |
-| **Graphics** | BGA (Bochs Graphics Adapter) driver; **tile-based dirty tracking** with **dirty tile merging** for optimized redraws; **Write-Combining (WC)** enabled via **PAT** for fast framebuffer writes; runtime resolution switching via `display <w> <h>` |
-| **Window server** | Multi-window compositor; drag, resize, close; PS/2 mouse + keyboard; **per-window alpha** (glass windows); **dynamic window buffer allocation**; **isolated compositor heap** prevents image corruption during heavy allocation |
-| **Desktop chrome** | Flat blue-gray glass theme; thin line window controls; **userspace top bar app** (V-logo, app menu, status indicators, power glyph); floating rounded **dock** with **SVG icons** and **anti-aliased SDF rendering** |
-| **Top-bar menu bar** | The focused app declares its menus via `SYS_WINDOW_SET_MENUBAR` / `vos_window_set_menubar` (titles, items, shortcuts, dividers, checkmarks, danger style); the **topbar app** draws the dropdowns and reports picks back as `VOS_EV_MENU_ACTION` |
-| **Theming** | Central design-token theme for both kernel chrome and VexUI (`bg`/`surface`/`border`/`text`/`accent`/`ok`/`warn`/`danger`/`menu_*`/`window_alpha`), overridable at runtime from `/home/user/.config/vibeos.theme` |
+| **Graphics** | BGA (Bochs Graphics Adapter) driver; **tile-based dirty tracking** with **dirty tile merging** for optimized redraws; **Write-Combining (WC)** enabled via **PAT** for fast framebuffer writes; runtime resolution switching via `display <w> <h>`; **black cursor outlines** for high visibility |
+| **Window server** | Multi-window compositor; drag, resize, close; **aspect-ratio locked resizing** (`WINSYS_WINDOW_ASPECT_RATIO`); PS/2 mouse + keyboard; **per-window alpha** (glass windows); **dynamic window buffer allocation**; **compositor optimizations** (direct compose + fast opaque blits); **isolated compositor heap** prevents image corruption during heavy allocation |
+| **Desktop chrome** | Flat blue-gray glass theme; thin line window controls; **userspace top bar app** (animated SVG hover V-logo, app menu, status indicators, SVG power glyph); floating rounded **dock** with **SVG icons**, **anti-aliased SDF rendering**, **active app status indicators/highlights**, and macOS-style context menu instance switching |
+| **Top-bar menu bar** | The focused app declares its menus via `SYS_WINDOW_SET_MENUBAR` / `vos_window_set_menubar` (titles, items, shortcuts, dividers, checkmarks, danger style) or custom VexUI menu sync; the **topbar app** draws the dropdowns and reports picks back as `VOS_EV_MENU_ACTION` |
+| **Theming** | Central design-token theme for both kernel chrome and VexUI (`bg`/`surface`/`border`/`text`/`accent`/`ok`/`warn`/`danger`/`menu_*`/`window_alpha`), overridable at runtime from `/home/user/.config/vibeos.theme`; customizable top shadow insets (`shadow_inset_top`) or shadow suppression (`VUI_WINDOW_NO_SHADOW`) |
 | **Wallpaper** | Userspace decodes an image (shared `user/libimage`, stb_image) and hands pixels to the kernel via `SYS_SET_WALLPAPER`; `/bin/wallpaper [path]` (default `/wallpapers/default.png`); plain theme-blue backdrop when none set |
-| **VexUI toolkit** | Retained-mode widget library: labels, rounded buttons, **pill buttons**, panels, **cards**, **status badges/pills**, **rounded inputs**, **tabs** (accent underline), progress bars, **sparklines**, **dock tiles**; **VBox/HBox layout containers** with `expand`/`fill`/`gap`/`padding`; in-window menu bar; **dirty-on-change setters + damaged-rect partial presents** for efficient redraws |
+| **VexUI toolkit** | Retained-mode widget library: labels, rounded buttons, **pill buttons**, panels, **cards**, **status badges/pills**, **rounded inputs**, **tabs** (accent underline), progress bars, **sparklines**, **dock tiles**; **VBox/HBox layout containers** with `expand`/`fill`/`gap`/`padding`; in-window menu bar; **interactive and styled scrollbars**; **hover delivery to unfocused panels**; **dirty-on-change setters + damaged-rect partial presents** for efficient redraws |
 | **Font rendering** | Built-in bitmap font atlas (`font_atlas.c`) used by VexUI and the kernel terminal; DejaVu Sans TTF embedded via `.incbin` + stb_truetype glyph cache (`appfont.c`) used by the browser for anti-aliased proportional text |
 | **Userspace libc** | Freestanding libc: stdio/stdlib/string/ctype; `crt0` (entry, `.init_array` ctors, `_exit`); user heap (`umalloc`) |
 | **SVG Rendering** | Reusable **lib/svg** library with **anti-aliased SDF (Signed Distance Field) renderer**; used by the dock for high-quality vector icons |
 | **C++20 userspace** | Full freestanding C++20 runtime: vtables, RTTI, `typeid`, global/local statics, `new`/`delete`, `__cxa_guard_*`, `__cxa_atexit`; standard headers `<array>`, `<span>`, `<algorithm>`, `<utility>`, `<type_traits>`, `<new>`, `<typeinfo>`, etc. |
 | **Kernel C++ runtime** | Kernel-side C++20 subset (no exceptions/RTTI); `new`/`delete` via `kmalloc`; `.init_array` global ctors; automatic boot self-test |
 | **Logging** | Kernel event journal (`dmesg`); serial debug output; `SYS_LOG` / `vos_log` for userspace; crash persistence to `/journal.log` |
-| **Apps** | `sh` (interactive shell), `edit` (text editor), `browser` (HTTP/HTTPS reader), `taskmgr` (process manager), **topbar** (userspace system bar), `uidemo`, `hello`, `cpptest` |
+| **Apps** | `sh` (interactive shell with `audiocfg`), `edit` (text editor), `browser` (revamped with custom **CSS engine**), `taskmgr` (v2 with real-time CPU accounting), `filebrowser` (graphical file manager), `doom` (scalable aspect-ratio locked doomgeneric port), **topbar** (userspace system bar), `uidemo`, `hello`, `cpptest` |
 
 ---
 
@@ -159,9 +159,12 @@ exit                   exit shell
 **GUI apps** (launch from shell or desktop icons)
 ```
 gui / desktop / wm     start graphical desktop
-taskmgr / tasks        process manager
-browser / web          HTTP/HTTPS text browser
+taskmgr / tasks        process manager (v2 with live CPU details)
+browser / web          HTTP/HTTPS text browser with CSS engine
+filebrowser / files    graphical file manager with icons
+doom                   aspect-ratio locked scalable doomgeneric game port
 edit <file>            text editor
+audiocfg               sound levels / audio configuration utility
 topbar                 userspace system bar
 uidemo                 VexUI widget demo
 hello                  minimal hello-world app
@@ -253,13 +256,17 @@ All the syscalls are wrapped by the libc in [`user/libc/include/vibeos.h`](user/
 
 ```c
 #include <stdio.h>
-#include <vibeos.h>
 
-int main(void) {
-    printf("hello from VibeOS\n");
-    char arg[128];
-    if (vos_getarg(arg, sizeof arg) > 0)   /* `hello world` -> arg = "world" */
-        printf("you said: %s\n", arg);
+int main(int argc, char *argv[]) {
+    printf("Hello from VibeOS!\n");
+    if (argc > 1) {
+        printf("Arguments passed: %d\n", argc - 1);
+        for (int i = 1; i < argc; i++) {
+            printf("  argv[%d]: %s\n", i, argv[i]);
+        }
+    } else {
+        printf("No arguments passed.\n");
+    }
     return 0;
 }
 ```
@@ -315,19 +322,64 @@ int main() {
 }
 ```
 
-Key VexUI calls (see `user/vexui.h` for the full list):
+### VexUI Controls & Widgets Reference
 
-| Call | Widget |
-|---|---|
-| `vui_label / vui_button / vui_pill_button` | text, rounded button, pill button |
-| `vui_card / vui_panel` | titled surfaces |
-| `vui_badge` | status pill (`vui_set_color` → ok/warn/danger variant) |
-| `vui_input` | rounded text / search field |
-| `vui_tabs(win,x,y,w,"A\|B\|C",active)` | tab strip with accent underline |
-| `vui_bar / vui_sparkline` | progress bar / mini graph |
-| `vui_vbox / vui_hbox` + `vui_box_add` | layout containers (`vui_set_gap/padding/expand/fill`) |
-| `vui_set_text/int/value/color/visible` | update a widget (repaints on change only) |
-| `vui_on_click(w, cb)` | click handler |
+VexUI provides a comprehensive set of Retained-Mode UI controls. Here is a list of all widgets available in `user/vexui.h`:
+
+#### Container & Structural Widgets
+* **`vui_panel(w, x, y, width, height, title)`**: A standard container surface with an optional top border and text title.
+* **`vui_card(w, x, y, width, height, title)`**: A rounded container card surface with a shaded background (ideal for grouping metrics).
+* **`vui_pill(w, x, y, width, height)`**: A large, pill-shaped rounded background plate (used for containers like the desktop dock).
+
+#### Interactive Buttons & Inputs
+* **`vui_button(w, x, y, text)`**: A standard clickable button with rounded corners.
+* **`vui_pill_button(w, x, y, text)`**: A fully-rounded, capsule-shaped pill button (often used for tags or quick actions).
+* **`vui_tile_button(w, x, y, text)`**: A squared, desktop-shortcut style button supporting custom SVG icon overlays.
+* **`vui_input(w, x, y, width, placeholder)`**: A rounded text field that accepts keyboard input and handles focused selection.
+
+#### Data Display & Graphics
+* **`vui_label(w, x, y, text)`**: Proportional, anti-aliased text labels supporting dynamic scaling (`vui_set_text_scale`).
+* **`vui_badge(w, x, y, text)`**: A small status badge pill (color variant determined by setting `vui_set_color` to VUI_OK, VUI_WARN, or VUI_DANGER).
+* **`vui_image(w, x, y, size)`**: Renders a raw SVG icon or logo based on custom vectors loaded through `vui_set_icon_svg`.
+* **`vui_bar(w, x, y, width, height, max)`**: A horizontal progress bar that fills up to the designated value.
+* **`vui_sparkline(w, x, y, width, height)`**: A decorative mini line graph for tracking historical trends.
+* **`vui_metric(w, x, y, width, height, title, mode)`**: A composite self-contained KPI widget displaying a title, large highlighted value, sub-label, and historical chart.
+* **`vui_tabs(w, x, y, width, labels, active)`**: Tab strip navigation with active accent underline highlighting (e.g., labels `"Home|Files|Settings"`).
+
+#### Custom Rendering (Canvas)
+* **`vui_canvas(w, x, y, width, height, pixels)`**: A retained canvas element mapping to an `XRGB` pixel array for custom drawing components.
+* **`vui_canvas_ex(w, x, y, width, height, pixels, stride)`**: Extended canvas widget supporting custom stride row lengths for hardware/sub-buffer scaling.
+
+#### Layout Containers
+* **`vui_vbox(w, x, y, width, height)`**: Invisible vertical packing box arranging children top-to-bottom.
+* **`vui_hbox(w, x, y, width, height)`**: Invisible horizontal packing box arranging children left-to-right.
+
+
+#### Window Configuration & Options (Flags)
+
+When creating a GUI window with VexUI, you can use `vui_window_open_ex` or `vui_window_open_inset` to specify custom behaviors using flags:
+
+```cpp
+vui_window *win = vui_window_open_ex("Custom Aspect App", 640, 480, 
+                                     VUI_WINDOW_ASPECT_RATIO | VUI_WINDOW_POSITIONED,
+                                     100, 100);
+```
+
+Available window flags (defined in `user/vexui.h`):
+
+* **`VUI_WINDOW_FRAMELESS`**: Renders the window without standard window chrome (borders/title bar).
+* **`VUI_WINDOW_NO_DOCK`**: Prevents the window from minimizing or registering with the dock, maintaining its standard presence.
+* **`VUI_WINDOW_POSITIONED`**: Spawns the window at absolute coordinates (`x`, `y`) instead of using cascaded center placement.
+* **`VUI_WINDOW_ALWAYS_ON_TOP`**: Keeps the window drawn on top of all normal application windows.
+* **`VUI_WINDOW_TRANSLUCENT`**: Enables alpha-translucency for the window background surface.
+* **`VUI_WINDOW_NO_SHADOW`**: Disables the drop-shadow rendering under this window (ideal for panel layouts).
+* **`VUI_WINDOW_ASPECT_RATIO`**: Locks interactive window resizing by the mouse to maintain its initial aspect ratio.
+
+#### Layout Containers & Scrollbars
+
+* **VBox/HBox Layouts**: Retrieve structured layouts with `vui_vbox` and `vui_hbox`, and pack children inside via `vui_box_add`. Supports custom spacing, gap controls, margins, and dynamic growth properties (`vui_set_expand`, `vui_set_gap`, `vui_set_padding`).
+* **Interactive Scrollbars**: VexUI automatically renders and updates interactive scrollbars for scrolls or views containing content overflow, allowing smooth vertical/horizontal panning of large widget panels or browser windows.
+
 
 ### 3. App-defined top-bar menus
 
@@ -355,22 +407,99 @@ window_alpha=234      # 0-255; <255 makes app windows glassy
 
 ### 5. Drawing your own pixels (custom canvas)
 
-Apps that need full pixel control (e.g. the browser) skip VexUI and present a
-raw `0x00RRGGBB` buffer:
+Apps requiring low-level pixel control (like browsers or game engines) bypass the VexUI widget tree and present a raw `0x00RRGGBB` pixel buffer directly to the window compositor.
+
+Here is a complete, working demo application showing how to create a custom canvas window, handle mouse dragging to draw strokes, and clear the screen using key input:
 
 ```c
-int id = vos_window_create("Canvas", 640, 480);
-static uint32_t fb[640 * 480];
-/* ... draw into fb ... */
-vos_window_present(id, fb, 640, 480);              // full present
-vos_window_present_rect(id, fb, 640, 480,          // present only a damaged rect
-                        x, y, w, h);               // (cheap incremental updates)
+#include <vibeos.h>
+#include <string.h>
 
-vos_event ev;
-while (vos_event_poll(id, &ev) == 1) {             // VOS_EV_KEY / MOUSE_* / RESIZE / CLOSE
-    /* ... */
+#define WIDTH  640
+#define HEIGHT 480
+
+static uint32_t s_fb[WIDTH * HEIGHT];
+static int s_mouse_x = -1;
+static int s_mouse_y = -1;
+static int s_mouse_down = 0;
+
+static void draw_rect(int rx, int ry, int rw, int rh, uint32_t color) {
+    // 1. Clamp bounds once outside the loop to avoid inner branch checks
+    int y_start = ry < 0 ? 0 : ry;
+    int y_end = ry + rh > HEIGHT ? HEIGHT : ry + rh;
+    int x_start = rx < 0 ? 0 : rx;
+    int x_end = rx + rw > WIDTH ? WIDTH : rx + rw;
+
+    if (x_start >= x_end || y_start >= y_end) return;
+
+    // 2. Linear inner loop allows compiler to optimize/vectorize writes
+    for (int y = y_start; y < y_end; ++y) {
+        uint32_t *row = &s_fb[y * WIDTH + x_start];
+        int count = x_end - x_start;
+        for (int x = 0; x < count; ++x) {
+            row[x] = color;
+        }
+    }
+}
+
+int main(void) {
+    // 1. Open a raw window
+    int win_id = vos_window_create("Canvas Demo", WIDTH, HEIGHT);
+    if (win_id < 0) return 1;
+
+    // Clear background to dark blue
+    draw_rect(0, 0, WIDTH, HEIGHT, 0x000F172A);
+
+    int running = 1;
+    while (running) {
+        struct vos_event ev;
+        
+        // 2. Poll inputs, resize bounds, or window close requests
+        while (vos_event_poll(win_id, &ev) == 1) {
+            switch (ev.type) {
+                case VOS_EV_CLOSE:
+                    running = 0;
+                    break;
+                case VOS_EV_MOUSE_DOWN:
+                    s_mouse_down = 1;
+                    s_mouse_x = ev.x;
+                    s_mouse_y = ev.y;
+                    break;
+                case VOS_EV_MOUSE_UP:
+                    s_mouse_down = 0;
+                    break;
+                case VOS_EV_MOUSE_MOVE:
+                    s_mouse_x = ev.x;
+                    s_mouse_y = ev.y;
+                    break;
+                case VOS_EV_KEY:
+                    if (ev.key == 'c' || ev.key == 'C') {
+                        // Clear canvas on pressing 'c'
+                        draw_rect(0, 0, WIDTH, HEIGHT, 0x000F172A);
+                    }
+                    break;
+            }
+        }
+
+        // 3. Perform custom rendering calculations (e.g. draw under mouse pointer)
+        if (s_mouse_down && s_mouse_x >= 0 && s_mouse_y >= 0) {
+            draw_rect(s_mouse_x - 4, s_mouse_y - 4, 8, 8, 0x0038BDF8); // draw sky-400 marker
+        }
+
+        // 4. Present the updated framebuffer to the window compositor.
+        // Use vos_window_present_rect to present only modified coordinates if optimizing.
+        vos_window_present(win_id, s_fb, WIDTH, HEIGHT);
+
+        // Throttle updates (sleep for 2 ticks, approx 50-60 FPS)
+        vos_sleep_ticks(2); 
+    }
+
+    return 0;
 }
 ```
+
+> [!TIP]
+> **Performance Note**: The optimized `draw_rect` version above clamps rendering bounds *outside* the loop. This completely removes branch checks (`if` statements) from the inner loop, allowing compilers (`clang`/`gcc` with `-O2` or `-O3`) to fully vectorize the drawing operation using SIMD instructions, resulting in a dramatic speedup.
 
 ### 6. Wiring it into the build
 
@@ -416,11 +545,31 @@ llvm-strip --strip-all build/user/myapp.elf
 python3 scripts/ext2_put.py vibeos-disk.img build/user/myapp.elf /bin/myapp
 ```
 
-This reuses the already-built `build/user/vexui.o` and `build/user/libc.a`; if
-you changed the toolkit or libc, run `make libc` (and `make apps` once) first.
-For a CLI C app drop `build/user/vexui.o` and use `clang`/`-std=c11`. After the
-`ext2_put.py` step the app is on the disk image — just `make run` (no full
-`make apps`, no ISO rebuild).
+This reuses the already-built `build/user/vexui.o` and `build/user/libc.a`; if you changed the toolkit or libc, run `make libc` (and `make apps` once) first. For a CLI C app drop `build/user/vexui.o` and use `clang`/`-std=c11`. 
+
+#### Writing Assets & Binaries with `ext2_put.py`
+
+To copy binaries or assets onto the persistent ext2 disk image (`vibeos-disk.img`) without rebuilding the entire system, run the Python helper script `scripts/ext2_put.py`:
+
+```bash
+python3 scripts/ext2_put.py <disk_image> <host_source_path> <guest_destination_path>
+```
+
+**Common Examples:**
+* **Copy an app binary**:
+  ```bash
+  python3 scripts/ext2_put.py vibeos-disk.img build/user/myapp.elf /bin/myapp
+  ```
+* **Copy a custom wallpaper**:
+  ```bash
+  python3 scripts/ext2_put.py vibeos-disk.img assets/wallpapers/mybg.png /wallpapers/mybg.png
+  ```
+* **Copy a custom theme profile**:
+  ```bash
+  python3 scripts/ext2_put.py vibeos-disk.img mytheme.theme /home/user/.config/vibeos.theme
+  ```
+
+*Note: The script automatically creates any missing parent folders on the virtual filesystem (like `/home/user/.config/` or `/wallpapers/`). After copying, simply start the emulator with `make run` to load the updated content.*
 
 > The built-in shell/editor (`sh`, `edit`) are different: they are embedded into
 > the kernel image as blobs, so changing them needs `make kernel` (which runs the
