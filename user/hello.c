@@ -1,23 +1,14 @@
-/* hello — smallest possible app built on the VibeOS libc. Proves the new
- * runtime: crt0 supplies _start (which calls main and exits), and the standard
- * headers/functions work. Run it from the shell: `hello`. */
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
-int main(void) {
-    char *msg = malloc(64);
-    int sum = 0, i;
-
-    if (!msg) { fputs("hello: malloc failed\n", stderr); return 1; }
-    strcpy(msg, "VibeOS");
-
-    for (i = 1; i <= 10; ++i) sum += i;
-
-    printf("Hello from %s libc!\n", msg);
-    printf("  sum(1..10) = %d, ptr = %p, hex = 0x%x\n", sum, (void *)msg, 255u);
-    printf("  argv-less main, exit code follows.\n");
-
-    free(msg);
+int main(int argc, char *argv[]) {
+    printf("Hello from VibeOS!\n");
+    if (argc > 1) {
+        printf("Arguments passed: %d\n", argc - 1);
+        for (int i = 1; i < argc; i++) {
+            printf("  argv[%d]: %s\n", i, argv[i]);
+        }
+    } else {
+        printf("No arguments passed.\n");
+    }
     return 0;
 }
