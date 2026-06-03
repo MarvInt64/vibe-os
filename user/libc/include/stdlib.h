@@ -17,6 +17,10 @@ unsigned long strtoul(const char *s, char **end, int base);
 
 int   abs(int v);
 
+#define RAND_MAX 32767
+int   rand(void);
+void  srand(unsigned int seed);
+
 void  exit(int code) __attribute__((noreturn));
 void  abort(void) __attribute__((noreturn));
 
@@ -28,7 +32,7 @@ static inline double atof(const char *s) {
     if (*p == '.') { ++p; while (*p >= '0' && *p <= '9') { f/=10.0; r+=(double)(*p-'0')*f; ++p; } }
     return neg ? -r : r;
 }
-static inline int  remove(const char *p) { (void)p; return -1; }
+static inline int  remove(const char *p) { extern int unlink(const char *); return unlink(p); }
 static inline int  rename(const char *a, const char *b) { (void)a;(void)b; return -1; }
 static inline int  system(const char *s) { (void)s; return -1; }
 

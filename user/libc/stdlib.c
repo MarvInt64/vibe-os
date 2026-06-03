@@ -58,3 +58,14 @@ long strtol(const char *s, char **end, int base) {
 }
 
 int atoi(const char *s) { return (int)strtol(s, 0, 10); }
+
+static unsigned long g_rand_seed = 1;
+
+int rand(void) {
+    g_rand_seed = g_rand_seed * 1103515245 + 12345;
+    return (int)(g_rand_seed / 65536) % 32768;
+}
+
+void srand(unsigned int seed) {
+    g_rand_seed = seed;
+}
