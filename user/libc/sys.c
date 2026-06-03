@@ -4,6 +4,7 @@
 #include <vibeos.h>
 #include <time.h>
 #include <sys/syscall.h>
+#include <sys/stat.h>
 
 int errno = 0;
 
@@ -189,4 +190,21 @@ time_t time(time_t *tloc) {
     }
     if (tloc) *tloc = sec;
     return sec;
+}
+
+int stat(const char *path, struct stat *s) {
+    long ret, kind;
+    register long sz __asm__("r8") = 0;
+    __asm__ volatile(
+        "int $0x80"
+        : "=a"(ret), "=d"(kind), "+r"(sz)
+        : "a"((long)SYS_STAT), "D"((long)path)
+        : "rcx", "r11", "memory"
+    );
+    if (ret < 0) return (int)ck(ret);
+    if (s) {
+        s->st_size = (off_t)sz;
+        s->st_mode = (kind == 1) ? 0x8000u : (kind == 2) ? 0x4000u : 0u;
+    }
+    return 0;
 }

@@ -354,61 +354,6 @@ static void cmd_ls(const char *path) {
 	}
 }
 
-static int file_creat(const char *path) {
-	return (int)syscall1(SYS_CREAT, (uint64_t)(size_t)path);
-}
-
-static int file_unlink(const char *path) {
-	return (int)syscall1(SYS_UNLINK, (uint64_t)(size_t)path);
-}
-
-static void cmd_touch(const char *path) {
-	if (!path || !path[0]) {
-		write_line("Usage: touch <file>");
-		return;
-	}
-	build_full_path(path);
-    int res = file_creat(g_full_path);
-	if (res < 0) {
-		write_str("touch: ");
-		write_str(path);
-		write_str(": ");
-        write_line(strerror(res));
-	}
-}
-
-static void cmd_rm(const char *path) {
-	if (!path || !path[0]) {
-		write_line("Usage: rm <file>");
-		return;
-	}
-	build_full_path(path);
-    int res = file_unlink(g_full_path);
-	if (res < 0) {
-		write_str("rm: ");
-		write_str(path);
-		write_str(": ");
-        write_line(strerror(res));
-	}
-}
-
-static char g_path2[MAX_PATH];
-static char g_cpbuf[8192];
-
-/* Build an absolute path from `in` (relative to cwd) into `out`. */
-static void build_path_into(const char *in, char *out) {
-    size_t i = 0;
-    if (in[0] == '/') {
-        while (in[i] && i < MAX_PATH - 1) { out[i] = in[i]; i++; }
-        out[i] = 0;
-    } else {
-        while (g_cwd[i]) { out[i] = g_cwd[i]; i++; }
-        if (i > 0 && out[i-1] != '/') out[i++] = '/';
-        const char *p = in;
-        while (*p && i < MAX_PATH - 1) out[i++] = *p++;
-        out[i] = 0;
-    }
-}
 
 static void write_dec(uint64_t n);   /* defined later */
 
@@ -448,129 +393,7 @@ static void cmd_display(int argc) {
     for (i = 0; modes[i]; ++i) { write_str("  "); write_line(modes[i]); }
 }
 
-static void cmd_mkdir(const char *path) {
-    if (!path || !path[0]) {
-        write_line("Usage: mkdir <dir>");
-        return;
-    }
-    build_full_path(path);
-    int res = (int)syscall1(SYS_MKDIR, (uint64_t)(size_t)g_full_path);
-    if (res < 0) {
-        write_str("mkdir: "); write_str(path); write_str(": ");
-        write_line(strerror(res));
-    }
-}
 
-static void cmd_cp(int argc) {
-    int fd;
-    ssize_t total = 0;
-    ssize_t n;
-    int res;
-
-    if (argc < 3) {
-        write_line("Usage: cp <src> <dst>");
-        return;
-    }
-    build_path_into(g_args[1], g_full_path); /* src */
-    build_path_into(g_args[2], g_path2);     /* dst */
-
-    fd = (int)syscall1(SYS_OPEN, (uint64_t)(size_t)g_full_path);
-    if (fd < 0) {
-        write_str("cp: "); write_str(g_args[1]); write_str(": "); write_line(strerror(fd));
-        return;
-    }
-    while ((n = syscall3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)(g_cpbuf + total),
-                         (uint64_t)(sizeof(g_cpbuf) - (size_t)total))) > 0) {
-        total += n;
-        if (total >= (ssize_t)sizeof(g_cpbuf)) break;
-    }
-    syscall1(SYS_CLOSE, (uint64_t)fd);
-
-    /* Ensure the destination exists, then write the whole contents. */
-    syscall1(SYS_CREAT, (uint64_t)(size_t)g_path2);
-    res = (int)syscall3(SYS_WRITE_FILE, (uint64_t)(size_t)g_path2,
-                        (uint64_t)(size_t)g_cpbuf, (uint64_t)total);
-    if (res < 0) {
-        write_str("cp: write "); write_str(g_args[2]); write_str(": "); write_line(strerror(res));
-    }
-}
-
-static void cmd_mv(int argc) {
-    if (argc < 3) {
-        write_line("Usage: mv <src> <dst>");
-        return;
-    }
-    cmd_cp(argc);
-    build_path_into(g_args[1], g_full_path);
-    file_unlink(g_full_path);
-}
-
-/* echo with optional output redirection:
- *   echo hello world          -> prints to the terminal
- *   echo hello > file.txt      -> writes "hello\n" to file (truncates)
- *   echo more >> file.txt      -> appends "more\n" to file
- */
-static void cmd_echo(int argc) {
-    int i;
-    int redir = 0;        /* 0 none, 1 truncate (>), 2 append (>>) */
-    int redir_idx = -1;
-    int last_word = argc;
-
-    for (i = 1; i < argc; i++) {
-        if (strcmp(g_args[i], ">") == 0) { redir = 1; redir_idx = i; last_word = i; break; }
-        if (strcmp(g_args[i], ">>") == 0) { redir = 2; redir_idx = i; last_word = i; break; }
-    }
-
-    if (!redir) {
-        for (i = 1; i < argc; i++) {
-            if (i > 1) write_char(' ');
-            write_str(g_args[i]);
-        }
-        write_str("\n");
-        return;
-    }
-
-    if (redir_idx + 1 >= argc) {
-        write_line("echo: missing filename after redirection");
-        return;
-    }
-
-    /* Assemble the text to write into g_cpbuf. */
-    {
-        int total = 0;
-        int w;
-        build_path_into(g_args[redir_idx + 1], g_path2);
-
-        if (redir == 2) {
-            /* Append: load existing contents first. */
-            int fd = (int)syscall1(SYS_OPEN, (uint64_t)(size_t)g_path2);
-            if (fd >= 0) {
-                ssize_t n;
-                while ((n = syscall3(SYS_READ, (uint64_t)fd,
-                        (uint64_t)(size_t)(g_cpbuf + total),
-                        (uint64_t)(sizeof(g_cpbuf) - 1 - (size_t)total))) > 0) {
-                    total += (int)n;
-                    if (total >= (int)sizeof(g_cpbuf) - 1) break;
-                }
-                syscall1(SYS_CLOSE, (uint64_t)fd);
-            }
-        }
-        for (w = 1; w < last_word; w++) {
-            const char *p = g_args[w];
-            if (w > 1 && total < (int)sizeof(g_cpbuf) - 1) g_cpbuf[total++] = ' ';
-            while (*p && total < (int)sizeof(g_cpbuf) - 1) g_cpbuf[total++] = *p++;
-        }
-        if (total < (int)sizeof(g_cpbuf) - 1) g_cpbuf[total++] = '\n';
-
-        syscall1(SYS_CREAT, (uint64_t)(size_t)g_path2);
-        int res = (int)syscall3(SYS_WRITE_FILE, (uint64_t)(size_t)g_path2,
-                                (uint64_t)(size_t)g_cpbuf, (uint64_t)total);
-        if (res < 0) {
-            write_str("echo: write "); write_str(g_args[redir_idx + 1]);
-            write_str(": "); write_line(strerror(res));
-        }
-    }
-}
 
 static void itoa(uint64_t n, char *s) {
     char buf[24];
@@ -923,93 +746,7 @@ static void cmd_curl(const char *url) {
     write_str("["); write_dec((uint64_t)n); write_line(" bytes received]");
 }
 
-static void cmd_cat(const char *path) {
-    if (!path || !path[0]) {
-        write_line("Usage: cat <file>");
-        return;
-    }
-    build_full_path(path);
-    int fd = (int)syscall1(SYS_OPEN, (uint64_t)(size_t)g_full_path);
-    if (fd < 0) {
-        write_str("cat: ");
-        write_str(path);
-        write_str(": ");
-        write_line(strerror(fd));
-        return;
-    }
-    ssize_t n;
-    while ((n = syscall3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)g_io_buf, sizeof(g_io_buf))) > 0) {
-        write_stdout(g_io_buf, (size_t)n);
-    }
-    if (n < 0) {
-        write_str("cat: error reading ");
-        write_str(path);
-        write_str(": ");
-        write_line(strerror((int)n));
-    }
-    syscall1(SYS_CLOSE, (uint64_t)fd);
-}
 
-static void cmd_edit(const char *filename) {
-    char full[MAX_PATH];
-    int pid;
-    size_t i;
-    if (filename && filename[0]) {
-        build_full_path(filename);
-        for (i = 0; i < MAX_PATH - 1 && g_full_path[i]; i++) full[i] = g_full_path[i];
-        full[i] = 0;
-    } else {
-        full[0] = 0;
-    }
-    pid = spawn_with_arg("/bin/edit", full);
-    if (pid <= 0) {
-        write_str("edit: ");
-        write_line(strerror(pid));
-        return;
-    }
-    waitpid(pid);
-}
-
-static void cmd_stat(const char *path) {
-    if (!path || !path[0]) {
-        write_line("Usage: stat <path>");
-        return;
-    }
-    build_full_path(path);
-    
-    /* SYS_STAT returns result in rax, kind in rdx, size in r8 */
-    uint64_t kind = 0;
-    uint64_t size = 0;
-    
-    ssize_t ret;
-    __asm__ volatile(
-        "int $0x80"
-        : "=a"(ret), "=d"(kind), "=r"(size)
-        : "a"((uint64_t)SYS_STAT), "D"((uint64_t)(size_t)g_full_path)
-        : "rcx", "r11", "memory", "r8"
-    );
-    /* In syscall implementation r8 is used for size, but inline asm r8 needs care */
-    /* Let's use a safer syscall helper for 3 return values if possible or just do it manual */
-    
-    if (ret < 0) {
-        write_str("stat: ");
-        write_str(path);
-        write_str(": ");
-        write_line(strerror((int)ret));
-        return;
-    }
-    
-    write_str("  File: ");
-    write_line(path);
-    write_str("  Size: ");
-    char sbuf[32];
-    itoa(size, sbuf);
-    write_line(sbuf);
-    write_str("  Type: ");
-    if (kind == 1) write_line("Regular File");
-    else if (kind == 2) write_line("Directory");
-    else write_line("Unknown");
-}
 
 static void parse_input(void) {
     char *p = g_input;
@@ -1050,24 +787,6 @@ static void execute_command(void) {
 		cmd_cd(g_argc > 1 ? g_args[1] : "");
 	} else if (strcmp(cmd, "ls") == 0) {
 		cmd_ls(g_argc > 1 ? g_args[1] : "");
-	} else if (strcmp(cmd, "cat") == 0) {
-		cmd_cat(g_argc > 1 ? g_args[1] : "");
-	} else if (strcmp(cmd, "edit") == 0) {
-		cmd_edit(g_argc > 1 ? g_args[1] : "");
-	} else if (strcmp(cmd, "stat") == 0) {
-		cmd_stat(g_argc > 1 ? g_args[1] : "");
-	} else if (strcmp(cmd, "echo") == 0) {
-		cmd_echo(g_argc);
-	} else if (strcmp(cmd, "touch") == 0) {
-		cmd_touch(g_argc > 1 ? g_args[1] : "");
-	} else if (strcmp(cmd, "rm") == 0) {
-		cmd_rm(g_argc > 1 ? g_args[1] : "");
-	} else if (strcmp(cmd, "mkdir") == 0) {
-		cmd_mkdir(g_argc > 1 ? g_args[1] : "");
-	} else if (strcmp(cmd, "cp") == 0) {
-		cmd_cp(g_argc);
-	} else if (strcmp(cmd, "mv") == 0) {
-		cmd_mv(g_argc);
 	} else if (strcmp(cmd, "ifconfig") == 0 || strcmp(cmd, "ip") == 0) {
 		cmd_ifconfig();
 	} else if (strcmp(cmd, "ping") == 0) {
@@ -1092,106 +811,93 @@ static void execute_command(void) {
 		cmd_curl(g_argc > 1 ? g_args[1] : "");
 	} else if (strcmp(cmd, "display") == 0 || strcmp(cmd, "resolution") == 0) {
 		cmd_display(g_argc);
-	} else if (strcmp(cmd, "audiocfg") == 0) {
-		char full[256];
-		full[0] = 0;
-		for (int i = 1; i < g_argc && i < 8; ++i) {
-			strcat(full, g_args[i]);
-			strcat(full, " ");
-		}
-		int pid = spawn_with_arg("/bin/audiocfg", full);
-		if (pid <= 0) {
-			write_str("audiocfg: "); write_line(strerror(pid));
-		}
-	} else if (strcmp(cmd, "uidemo") == 0) {
-		/* Launch the standalone GUI app installed on disk at /bin/uidemo.
-		 * Must be run from the desktop terminal (the window server is only
-		 * available while the GUI is running). */
-		int pid = spawn("/bin/uidemo");
-		if (pid <= 0) {
-			write_str("uidemo: "); write_line(strerror(pid));
-		}
-	} else if (strcmp(cmd, "taskmgr") == 0 || strcmp(cmd, "tasks") == 0) {
-		int pid = spawn("/bin/taskmgr");
-		if (pid <= 0) {
-			write_str("taskmgr: "); write_line(strerror(pid));
-		}
-	} else if (strcmp(cmd, "browser") == 0 || strcmp(cmd, "web") == 0) {
-		int pid = spawn("/bin/browser");
-		if (pid <= 0) {
-			write_str("browser: "); write_line(strerror(pid));
-		}
-	} else if (strcmp(cmd, "dock") == 0) {
-		int pid = spawn("/bin/dock");
-		if (pid <= 0) {
-			write_str("dock: "); write_line(strerror(pid));
-		}
 	} else if (strcmp(cmd, "dmesg") == 0 || strcmp(cmd, "journal") == 0) {
 		cmd_dmesg();
-	} else if (strcmp(cmd, "hello") == 0) {
-		int pid = spawn_with_arguments("/bin/hello");
-		if (pid <= 0) {
-			write_str("hello: "); write_line(strerror(pid));
-		} else {
-			waitpid(pid);
-		}
-	} else if (strcmp(cmd, "cpptest") == 0 || strcmp(cmd, "c++test") == 0) {
-		int pid = spawn_with_arguments("/bin/cpptest");
-		if (pid <= 0) {
-			write_str("cpptest: "); write_line(strerror(pid));
-		} else {
-			waitpid(pid);
-		}
-	} else if (strcmp(cmd, "threadtest") == 0) {
-		int pid = spawn_with_arguments("/bin/threadtest");
-		if (pid <= 0) {
-			write_str("threadtest: "); write_line(strerror(pid));
-		} else {
-			waitpid(pid);
-		}
 	} else if (strcmp(cmd, "gui") == 0 || strcmp(cmd, "wm") == 0 || strcmp(cmd, "desktop") == 0) {
 		write_line("Starting VibeOS desktop...");
 		syscall1(SYS_WINDOWMGR_START, 0);
 	} else if (strcmp(cmd, "exit") == 0) {
 		write_line("Goodbye!");
 		syscall1(SYS_EXIT, 0);
-    } else if (cmd[0] == '.' && cmd[1] == '/') {
-        for (i = 0; i < MAX_PATH - 1 && g_cwd[i]; i++) {
-            spawn_path[i] = g_cwd[i];
-        }
-        if (i > 0 && spawn_path[i - 1] != '/') {
-            spawn_path[i++] = '/';
-        }
-        char *arg = cmd + 2;
-        while (i < MAX_PATH - 1 && *arg) {
-            spawn_path[i++] = *arg++;
-        }
-        spawn_path[i] = 0;
-        
-        int pid = spawn_with_arguments(spawn_path);
-        if (pid <= 0) {
-            write_str("spawn: ");
-            write_str(spawn_path);
-            write_str(": ");
-            write_line(strerror(pid));
-        } else {
-            write_str("spawned pid ");
-            write_line(spawn_path);
-        }
-    } else if (cmd[0] == '/') {
-        int pid = spawn_with_arguments(cmd);
-        if (pid <= 0) {
-            write_str("spawn: ");
-            write_str(cmd);
-            write_str(": ");
-            write_line(strerror(pid));
-        } else {
-            write_str("spawned pid ");
-            write_line(cmd);
-        }
     } else {
-        write_str("Unknown: ");
-        write_line(cmd);
+        int is_path = (cmd[0] == '/' || (cmd[0] == '.' && cmd[1] == '/'));
+        
+        if (is_path) {
+            if (cmd[0] == '.' && cmd[1] == '/') {
+                spawn_path[0] = '\0';
+                for (i = 0; i < MAX_PATH - 1 && g_cwd[i]; i++) {
+                    spawn_path[i] = g_cwd[i];
+                }
+                if (i > 0 && spawn_path[i - 1] != '/') {
+                    spawn_path[i++] = '/';
+                }
+                char *arg = cmd + 2;
+                while (i < MAX_PATH - 1 && *arg) {
+                    spawn_path[i++] = *arg++;
+                }
+                spawn_path[i] = 0;
+            } else {
+                for (i = 0; i < MAX_PATH - 1 && cmd[i]; i++) {
+                    spawn_path[i] = cmd[i];
+                }
+                spawn_path[i] = 0;
+            }
+            
+            int bg = 0;
+            if (g_argc > 1 && strcmp(g_args[g_argc - 1], "&") == 0) {
+                bg = 1;
+                g_argc--;
+            } else if (strcmp(cmd, "uidemo") == 0 || strcmp(cmd, "taskmgr") == 0 ||
+                       strcmp(cmd, "browser") == 0 || strcmp(cmd, "dock") == 0 ||
+                       strcmp(cmd, "sysinfo") == 0 || strcmp(cmd, "wallpaper") == 0 ||
+                       strcmp(cmd, "audiocfg") == 0) {
+                bg = 1;
+            }
+            
+            int pid = spawn_with_arguments(spawn_path);
+            if (pid <= 0) {
+                write_str("spawn: ");
+                write_str(spawn_path);
+                write_str(": ");
+                write_line(strerror(pid));
+            } else {
+                if (!bg) {
+                    waitpid(pid);
+                }
+            }
+        } else {
+            spawn_path[0] = '\0';
+            strcat(spawn_path, "/bin/");
+            strcat(spawn_path, cmd);
+            
+            int bg = 0;
+            if (g_argc > 1 && strcmp(g_args[g_argc - 1], "&") == 0) {
+                bg = 1;
+                g_argc--;
+            } else if (strcmp(cmd, "uidemo") == 0 || strcmp(cmd, "taskmgr") == 0 ||
+                       strcmp(cmd, "browser") == 0 || strcmp(cmd, "dock") == 0 ||
+                       strcmp(cmd, "sysinfo") == 0 || strcmp(cmd, "wallpaper") == 0 ||
+                       strcmp(cmd, "audiocfg") == 0) {
+                bg = 1;
+            }
+            
+            int pid = spawn_with_arguments(spawn_path);
+            if (pid <= 0) {
+                if (pid == -2) {
+                    write_str("Unknown: ");
+                    write_line(cmd);
+                } else {
+                    write_str("spawn: ");
+                    write_str(spawn_path);
+                    write_str(": ");
+                    write_line(strerror(pid));
+                }
+            } else {
+                if (!bg) {
+                    waitpid(pid);
+                }
+            }
+        }
     }
 }
 

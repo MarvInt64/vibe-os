@@ -153,3 +153,27 @@ char *strtok(char *s, const char *delim) {
     static char *saveptr;
     return strtok_r(s, delim, &saveptr);
 }
+
+char *strerror(int err) {
+    if (err < 0) err = -err;
+    switch (err) {
+        case 0: return "Success";
+        case 1: return "Operation not permitted";
+        case 2: return "No such file or directory";
+        case 5: return "I/O error";
+        case 9: return "Bad file descriptor";
+        case 12: return "Out of memory";
+        case 13: return "Permission denied";
+        case 17: return "File exists";
+        case 20: return "Not a directory";
+        case 21: return "Is a directory";
+        case 22: return "Invalid argument";
+        case 24: return "Too many open files";
+        case 27: return "File too large";
+        case 28: return "No space left on device";
+        case 30: return "Read-only file system";
+        case 36: return "File name too long";
+        case 38: return "Function not implemented";
+        default: return "Unknown error";
+    }
+}

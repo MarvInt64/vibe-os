@@ -7,7 +7,7 @@
 #define S_IWUSR 0200
 #define S_IXUSR 0100
 struct stat { uint32_t st_mode; uint64_t st_size; };
-static inline int stat(const char *p, struct stat *s) { (void)p;(void)s; return -1; }
+int stat(const char *path, struct stat *s);
 
 #ifdef __cplusplus
 extern "C" {

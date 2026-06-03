@@ -25,6 +25,7 @@ char  *strstr(const char *hay, const char *needle);
 
 /* Bounded copy (size of dst buffer); always NUL-terminates. Returns strlen(src). */
 size_t strlcpy(char *dst, const char *src, size_t size);
+char  *strerror(int errnum);
 size_t strspn(const char *s, const char *accept);
 size_t strcspn(const char *s, const char *reject);
 char  *strpbrk(const char *s, const char *accept);

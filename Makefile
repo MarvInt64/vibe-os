@@ -212,6 +212,42 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/hello.elf $(LIBC_CRT0) build/user/hello.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/hello.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/hello.elf /bin/hello
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/echo.c -o build/user/echo.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/echo.elf $(LIBC_CRT0) build/user/echo.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/echo.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/echo.elf /bin/echo
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/mkdir.c -o build/user/mkdir.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/mkdir.elf $(LIBC_CRT0) build/user/mkdir.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/mkdir.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/mkdir.elf /bin/mkdir
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/rm.c -o build/user/rm.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/rm.elf $(LIBC_CRT0) build/user/rm.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/rm.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/rm.elf /bin/rm
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/touch.c -o build/user/touch.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/touch.elf $(LIBC_CRT0) build/user/touch.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/touch.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/touch.elf /bin/touch
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/cat.c -o build/user/cat.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/cat.elf $(LIBC_CRT0) build/user/cat.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/cat.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/cat.elf /bin/cat
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/cp.c -o build/user/cp.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/cp.elf $(LIBC_CRT0) build/user/cp.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/cp.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/cp.elf /bin/cp
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/mv.c -o build/user/mv.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/mv.elf $(LIBC_CRT0) build/user/mv.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/mv.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/mv.elf /bin/mv
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/ln.c -o build/user/ln.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/ln.elf $(LIBC_CRT0) build/user/ln.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/ln.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/ln.elf /bin/ln
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/stat.c -o build/user/stat.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/stat.elf $(LIBC_CRT0) build/user/stat.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/stat.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/stat.elf /bin/stat
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/audiotest.c -o build/user/audiotest.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/audiotest.elf \
 		$(LIBC_CRT0) build/user/audiotest.o $(LIBC_A)
