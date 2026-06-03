@@ -558,7 +558,7 @@ static struct rect surface_rect_to_screen(const struct window_state *window, con
 
 static struct rect cursor_rect(const struct desktop_state *desktop, int x, int y) {
     int size = large_ui(desktop) ? 24 : 18;
-    return rect_from_bounds(x, y, 12, size);
+    return rect_from_bounds(x - 1, y - 1, 14, size);
 }
 
 static int point_in_icon(int px, int py, const struct desktop_icon *icon, int size) {
@@ -968,23 +968,40 @@ static void draw_cursor(struct desktop_state *desktop, struct framebuffer *fb, i
         y_max = fb->clip_y + fb->clip_height;
     }
 
+    /* Step 1: Draw black border/shadow in all 8 directions around the cursor */
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            
+            for (int row = 0; row < 13; ++row) {
+                uint16_t mask = cursor_mask[row];
+                int py = y + row + dy;
+                if (py < y_min || py >= y_max) continue;
+                uint32_t *row_pixels = (uint32_t *)((uint8_t *)fb->base + (uint32_t)py * fb->pitch);
+                
+                for (int col = 0; col < 12; ++col) {
+                    if (mask & (0x8000 >> col)) {
+                        int px = x + col + dx;
+                        if (px >= x_min && px < x_max) {
+                            row_pixels[px] = 0x00000000u;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /* Step 2: Draw the white cursor body */
     for (int row = 0; row < 13; ++row) {
         uint16_t mask = cursor_mask[row];
         int py = y + row;
-        int py_shadow = py + 1;
+        if (py < y_min || py >= y_max) continue;
+        uint32_t *row_pixels = (uint32_t *)((uint8_t *)fb->base + (uint32_t)py * fb->pitch);
         
-        uint32_t *row_pixels = (py >= y_min && py < y_max) ? (uint32_t *)((uint8_t *)fb->base + (uint32_t)py * fb->pitch) : 0;
-        uint32_t *row_shadow_pixels = (py_shadow >= y_min && py_shadow < y_max) ? (uint32_t *)((uint8_t *)fb->base + (uint32_t)py_shadow * fb->pitch) : 0;
-
         for (int col = 0; col < 12; ++col) {
             if (mask & (0x8000 >> col)) {
                 int px = x + col;
-                int px_shadow = px + 1;
-                
-                if (row_shadow_pixels && px_shadow >= x_min && px_shadow < x_max) {
-                    row_shadow_pixels[px_shadow] = 0x00000000u;
-                }
-                if (row_pixels && px >= x_min && px < x_max) {
+                if (px >= x_min && px < x_max) {
                     row_pixels[px] = 0x00ffffffu;
                 }
             }
