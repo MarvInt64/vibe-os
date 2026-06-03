@@ -94,6 +94,22 @@ static char su_readchar(void) {
     return c;
 }
 
+/* ---- File reading helper -------------------------------------------------- */
+
+/*
+ * Open a file by path, read its entire contents into buf, close it.
+ * Returns the number of bytes read, or -1 on error.
+ * SYS_READ needs a file descriptor (fd), not a path — we must SYS_OPEN first.
+ */
+static ssize_t read_file(const char *path, char *buf, size_t cap) {
+    ssize_t fd = syscall1(SYS_OPEN, (uint64_t)(size_t)path);
+    if (fd < 0) return -1;
+    ssize_t n = syscall3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)buf, cap - 1);
+    syscall1(SYS_CLOSE, (uint64_t)fd);
+    if (n > 0) buf[n] = '\0';
+    return n;
+}
+
 /* ---- /etc/passwd lookup: name -> uid ------------------------------------- */
 
 /*
@@ -103,12 +119,8 @@ static char su_readchar(void) {
  */
 static int lookup_uid(const char *username) {
     static char buf[512];
-    ssize_t n = syscall3(SYS_READ,
-                         (uint64_t)(size_t)"/etc/passwd",
-                         (uint64_t)(size_t)buf,
-                         sizeof(buf) - 1);
+    ssize_t n = read_file("/etc/passwd", buf, sizeof(buf));
     if (n <= 0) return -1;
-    buf[n] = '\0';
 
     char *line = buf;
     while (*line) {
@@ -155,12 +167,8 @@ static int lookup_uid(const char *username) {
  */
 static int lookup_shadow(const char *username, char *pw_buf, size_t pw_cap) {
     static char buf[512];
-    ssize_t n = syscall3(SYS_READ,
-                         (uint64_t)(size_t)"/etc/shadow",
-                         (uint64_t)(size_t)buf,
-                         sizeof(buf) - 1);
+    ssize_t n = read_file("/etc/shadow", buf, sizeof(buf));
     if (n <= 0) return 0;
-    buf[n] = '\0';
 
     char *line = buf;
     while (*line) {

@@ -271,6 +271,8 @@ apps: $(DISK_IMG) $(LIBC_A)
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/id.elf /bin/id
 	# Seed /etc/passwd with the root user entry if not already present
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/passwd /etc/passwd
+	# Seed /tmp so it exists from first boot (ext2_put creates the dir automatically)
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/empty /tmp/.keep
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/wc.c    -o build/user/wc.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/wc.elf    $(LIBC_CRT0) build/user/wc.o    $(LIBC_A)
 	$(USTRIP) --strip-all build/user/wc.elf
