@@ -1,4 +1,5 @@
 #include "alloc.h"
+#include "audio.h"
 #include "elf.h"
 #include "ext2_fs.h"
 #include "net.h"
@@ -15,6 +16,7 @@
 #include "window.h"
 #include "winsys.h"
 #include "version.h"
+#include "io.h"
 
 /* Provided by kernel.c: the live compositor, or 0 if the GUI isn't running. */
 struct desktop_state *desktop_active(void);
@@ -2495,6 +2497,50 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 		buf = (const void *)(uintptr_t)frame->rsi;
 		size = (size_t)frame->rdx;
 		frame->rax = (uint64_t)vfs_write_all(path, buf, size);
+		return 0;
+	}
+
+	if (number == SYS_AUDIO_WRITE) {
+		/* rdi = user buf, rsi = byte count. The caller's address space is
+		 * active so the pointer is valid directly. */
+		const void *buf = (const void *)(uintptr_t)frame->rdi;
+		uint32_t bytes = (uint32_t)frame->rsi;
+		if (buf == 0 || bytes == 0) {
+			frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+		} else {
+			frame->rax = (uint64_t)(int64_t)audio_write(buf, bytes);
+		}
+		return 0;
+	}
+
+	if (number == SYS_AUDIO_INFO) {
+		struct audio_info *out = (struct audio_info *)(uintptr_t)frame->rdi;
+		if (out == 0) {
+			frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+			return 0;
+		}
+		audio_get_info(out);
+		frame->rax = 0;
+		return 0;
+	}
+
+	if (number == SYS_REBOOT) {
+		// Try PS/2 keyboard controller pulse reset line
+		outb(0x64, 0xFE);
+		// Fallback infinite loop
+		for (;;) { __asm__ volatile("hlt"); }
+		return 0;
+	}
+
+	if (number == SYS_SHUTDOWN) {
+		// QEMU ACPI shutdown
+		outw(0x604, 0x2000);
+		outw(0xB004, 0x2000);
+		outw(0x4004, 0x3400);
+		// QEMU debug exit
+		outb(0x501, 0x31);
+		// Fallback infinite loop
+		for (;;) { __asm__ volatile("hlt"); }
 		return 0;
 	}
 

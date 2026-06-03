@@ -131,6 +131,9 @@ static uint32_t ring_read(void *data, uint32_t bytes) {
  * was the source of the scratching — so the DAC only ever sees an unbroken run
  * of real samples. If the producer can't keep up the engine simply halts on a
  * buffer boundary (clean gap), and we restart it the moment data returns. */
+static uint32_t g_tick_count = 0;
+static uint32_t g_write_count = 0;
+
 void audio_tick(void) {
     if (!g_audio_present) return;
 
@@ -141,24 +144,16 @@ void audio_tick(void) {
     int queued = (g_head_bd - (int)civ + AC97_BD_COUNT) % AC97_BD_COUNT;
     int filled = 0;
 
-    /* Queue every buffer, filling with silence if the ring is insufficient. */
-    while (queued < AC97_BD_COUNT - 1) 
+    /* Queue every buffer. Real audio from the ring when available; silence
+     * otherwise so the DMA engine keeps running without restarts (restarts
+     * cause a ~35 Hz buzz from the CIV-replay at each stop/start). */
+    while (queued < AC97_BD_COUNT - 1)
     {
-        if (ring_available() >= AC97_BD_BYTES) 
-        {
+        if (ring_available() >= AC97_BD_BYTES) {
             ring_read(g_pcm_bufs[g_head_bd], AC97_BD_BYTES);
-        } 
-        else 
-        {
+        } else {
             memset(g_pcm_bufs[g_head_bd], 0, AC97_BD_BYTES);
-
-            /*if ((g_underruns++ % 100) == 0) {
-                serial_write("Audio: underrun count=");
-                serial_write_hex_u64(g_underruns);
-                serial_write("\n");
-            }*/
         }
-        
         g_head_bd = (g_head_bd + 1) % AC97_BD_COUNT;
         ++queued;
         ++filled;
@@ -178,6 +173,26 @@ void audio_tick(void) {
     if (sr & (AC97_SR_BCIS | AC97_SR_LVBCI)) {
         bm_write16(AC97_BM_PCM_OUT_SR, sr & (AC97_SR_BCIS | AC97_SR_LVBCI));
     }
+
+    /* Log every ~500 ticks so we can see the engine state without flooding */
+    // if ((g_tick_count % 500) == 0) {
+    //     serial_write("AUDIO_TICK: tick=");
+    //     serial_write_hex_u64(g_tick_count);
+    //     serial_write(" civ=");
+    //     serial_write_hex_u64(civ);
+    //     serial_write(" lvi=");
+    //     serial_write_hex_u64(bm_read8(AC97_BM_PCM_OUT_LVI));
+    //     serial_write(" sr=");
+    //     serial_write_hex_u64(sr);
+    //     serial_write(" ring=");
+    //     serial_write_hex_u64(ring_available());
+    //     serial_write(" head=");
+    //     serial_write_hex_u64((uint64_t)(unsigned)g_head_bd);
+    //     serial_write(" writes=");
+    //     serial_write_hex_u64(g_write_count);
+    //     serial_write("\n");
+    // }
+    ++g_tick_count;
 }
 
 /* ---- Public API ---- */
@@ -185,10 +200,28 @@ int audio_write(const void *data, uint32_t bytes) {
     if (!g_audio_present || !data || bytes == 0) return 0;
 
     uint32_t free = ring_free();
+    uint32_t avail_before = ring_available();
+
     if (bytes > free) bytes = free;
     if (bytes == 0) return 0;
 
     ring_write(data, bytes);
+
+    /* Log first call and every 35th (≈ once per second at 35 tics/s) */
+    if (g_write_count == 0 || (g_write_count % 35) == 0) {
+        serial_write("AUDIO_WRITE: call=");
+        serial_write_hex_u64(g_write_count);
+        serial_write(" bytes=");
+        serial_write_hex_u64(bytes);
+        serial_write(" ring_before=");
+        serial_write_hex_u64(avail_before);
+        serial_write(" ring_after=");
+        serial_write_hex_u64(ring_available());
+        serial_write(" free_was=");
+        serial_write_hex_u64(free);
+        serial_write("\n");
+    }
+    ++g_write_count;
     return (int)bytes;
 }
 

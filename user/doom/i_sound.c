@@ -175,7 +175,22 @@ void I_UpdateSound(void) {
     /* Flush any buffered mixed samples to the kernel.
      * g_mix_buf is stereo: g_mix_pos frames × 2 channels × 2 bytes each. */
     if (g_mix_pos > 0) {
-        audio_write(g_mix_buf, (unsigned long)(g_mix_pos * 2 * sizeof(int16_t)));
+        /* Blocking write: yield until all bytes are accepted so DOOM's game
+         * loop is naturally throttled to the AC97 drain rate (192 kB/s).
+         * Without this, DOOM runs faster than real-time and the ring overflows,
+         * truncating audio and producing noise. */
+        const unsigned char *buf = (const unsigned char *)g_mix_buf;
+        unsigned long remaining = (unsigned long)(g_mix_pos * 2 * sizeof(int16_t));
+        while (remaining > 0) {
+            int written = audio_write(buf, remaining);
+            if (written > 0) {
+                buf += written;
+                remaining -= (unsigned long)written;
+            } else {
+                /* SYS_YIELD = 3 — yield CPU so the kernel can drain the ring */
+                __asm__ volatile("int $0x80" : : "a"(3) : "memory");
+            }
+        }
         g_mix_pos = 0;
     }
 

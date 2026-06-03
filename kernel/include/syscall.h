@@ -89,7 +89,16 @@ enum syscall_number {
 	SYS_PTY_INTERRUPT = 47,
 	/* Seek a VFS fd. rdi=fd, rsi=offset, rdx=whence (0=SET,1=CUR,2=END).
 	 * Returns new absolute offset or <0 on error. */
-	SYS_SEEK = 48
+	SYS_SEEK = 48,
+	/* Feed raw PCM to the AC97 ring buffer.
+	 * rdi = buf (user ptr), rsi = byte count.
+	 * Returns bytes accepted or <0 on error. */
+	SYS_AUDIO_WRITE = 49,
+	/* Fill a struct audio_info (user ptr in rdi) with driver state.
+	 * Returns 0 on success or <0 on error. */
+	SYS_AUDIO_INFO = 50,
+	SYS_REBOOT = 51,
+	SYS_SHUTDOWN = 52
 };
 
 struct system_info_snapshot {
