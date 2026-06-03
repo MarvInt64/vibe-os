@@ -1318,7 +1318,13 @@ static void render_window_surface(struct desktop_state *desktop, int index) {
         int s = slot_index(index);
         int cx = app_ctx.content_x;
         int cy = app_ctx.content_y;
-        int cw = desktop->user_apps[s].content_width;
+        /* Read the stored pixels at the stride they were actually written with
+         * (data_width), which lags content_width during an interactive resize.
+         * Using content_width here would shear the image until the app's next
+         * present. Fall back to content_width before the first present. */
+        int stride = desktop->user_apps[s].data_width;
+        if (stride <= 0) stride = desktop->user_apps[s].content_width;
+        int cw = stride;
         int ch = desktop->user_apps[s].content_height;
         int row;
         if (cw > app_ctx.content_width) cw = app_ctx.content_width;
@@ -1334,7 +1340,7 @@ static void render_window_surface(struct desktop_state *desktop, int index) {
             if (n <= 0) continue;
             {
                 uint32_t *dst = (uint32_t *)((uint8_t *)fb->base + (size_t)py * fb->pitch) + cx;
-                const uint32_t *src = &desktop->user_apps[s].content_storage[(size_t)row * (size_t)desktop->user_apps[s].content_width];
+                const uint32_t *src = &desktop->user_apps[s].content_storage[(size_t)row * (size_t)stride];
                 memcpy(dst, src, (size_t)n * sizeof(uint32_t));
             }
         }
@@ -1681,6 +1687,7 @@ void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t
             desktop->user_apps[i].pid = 0;
             desktop->user_apps[i].content_width = 0;
             desktop->user_apps[i].content_height = 0;
+            desktop->user_apps[i].data_width = 0;
             desktop->user_apps[i].event_head = 0;
             desktop->user_apps[i].event_tail = 0;
             desktop->user_apps[i].menu_count = 0;
@@ -2350,6 +2357,7 @@ int desktop_app_create_ex(struct desktop_state *desktop, uint32_t pid, const str
     desktop->user_apps[slot].pid = pid;
     desktop->user_apps[slot].content_width = width;
     desktop->user_apps[slot].content_height = height;
+    desktop->user_apps[slot].data_width = 0;   /* nothing presented yet */
     desktop->user_apps[slot].event_head = 0;
     desktop->user_apps[slot].event_tail = 0;
     desktop->user_apps[slot].menu_count = 0;
@@ -2425,6 +2433,10 @@ int desktop_app_present_rect(struct desktop_state *desktop, uint32_t pid, int wi
         const uint32_t *s = &src[(size_t)(dy + row) * (size_t)src_w + (size_t)dx];
         memcpy(dst, s, (size_t)dw * sizeof(uint32_t));
     }
+
+    /* The stored pixels are now laid out at content_width stride; record that so
+     * the compositor reads them correctly until the next (post-resize) present. */
+    desktop->user_apps[slot].data_width = desktop->user_apps[slot].content_width;
 
     /* If a full surface render is already pending, let it pick the content up;
      * a full present also goes the simple route (render whole surface). */
@@ -2580,6 +2592,7 @@ void desktop_app_close_for_pid(struct desktop_state *desktop, uint32_t pid) {
     desktop->user_apps[slot].pid = 0;
     desktop->user_apps[slot].content_width = 0;
     desktop->user_apps[slot].content_height = 0;
+    desktop->user_apps[slot].data_width = 0;
     desktop->user_apps[slot].event_head = 0;
     desktop->user_apps[slot].event_tail = 0;
     desktop->user_apps[slot].menu_count = 0;

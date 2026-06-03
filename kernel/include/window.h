@@ -82,6 +82,13 @@ struct user_app_slot {
     int content_cap_px;
     int content_width;
     int content_height;
+    /* Row stride (in px) of the pixels CURRENTLY stored in content_storage —
+     * i.e. the width of the app's last present. It lags content_width during an
+     * interactive resize (content_width is the new target; the stored pixels are
+     * still laid out at the old width until the app presents again). The
+     * compositor must read at data_width to avoid shearing mid-resize. 0 = no
+     * content presented yet. */
+    int data_width;
     uint8_t created;
     uint32_t pid;
     struct winsys_event events[WINSYS_EVENT_QUEUE];
