@@ -803,17 +803,191 @@ static void write_dec_w(uint64_t n, int width) {
     for (int j = i - 1; j >= 0; j--) write_char(buf[j]);
 }
 
+/* Human-readable size: 1234567 → "1.2M", 4096 → "4.0K", 500 → " 500B". */
+static void write_size_human(uint64_t s) {
+    if      (s >= 1024UL*1024*1024) { write_dec_w(s/(1024*1024*1024), 4); write_char('G'); }
+    else if (s >= 1024UL*1024)      { write_dec_w(s/(1024*1024),       4); write_char('M'); }
+    else if (s >= 1024UL)           { write_dec_w(s/1024,               4); write_char('K'); }
+    else                            { write_dec_w(s,                    4); write_char('B'); }
+}
+
+/* ANSI colour helpers — keeps the rest of the code readable. */
+#define LS_COL_DIR  "\x1b[1;34m"   /* bold blue   — directories */
+#define LS_COL_EXE  "\x1b[1;32m"   /* bold green  — executables */
+#define LS_COL_RST  "\x1b[0m"      /* reset       — plain files */
+
+/* Entry collected during directory scan. */
+#define LS_MAX_ENTRIES 512
+#define LS_TERM_WIDTH   80
+
+struct ls_ent {
+    char     name[64];
+    uint64_t size;
+    uint16_t mode;
+    uint8_t  kind;   /* 1 = file, 2 = dir */
+};
+
+static struct ls_ent g_ls[LS_MAX_ENTRIES];
+static int           g_ls_n;
+
+/* Insertion sort: directories first, then alphabetical within each group. */
+static void ls_sort_alpha(void) {
+    for (int i = 1; i < g_ls_n; i++) {
+        struct ls_ent tmp = g_ls[i];
+        int j = i - 1;
+        while (j >= 0) {
+            int a_dir = (g_ls[j].kind == 2), b_dir = (tmp.kind == 2);
+            int less;
+            if (a_dir != b_dir) less = (b_dir > a_dir);   /* dirs first */
+            else less = (strcmp(g_ls[j].name, tmp.name) > 0);
+            if (!less) break;
+            g_ls[j+1] = g_ls[j]; j--;
+        }
+        g_ls[j+1] = tmp;
+    }
+}
+
+/* Sort by size descending (largest first). */
+static void ls_sort_size(void) {
+    for (int i = 1; i < g_ls_n; i++) {
+        struct ls_ent tmp = g_ls[i];
+        int j = i - 1;
+        while (j >= 0 && g_ls[j].size < tmp.size) { g_ls[j+1] = g_ls[j]; j--; }
+        g_ls[j+1] = tmp;
+    }
+}
+
+/* Build the full path "dir/name" into out[cap]. */
+static void ls_full(const char *dir, const char *name, char *out, int cap) {
+    int k = 0;
+    while (dir[k] && k < cap-2) out[k] = dir[k++];
+    if (k > 0 && out[k-1] != '/') out[k++] = '/';
+    for (int m = 0; name[m] && k < cap-1; ) out[k++] = name[m++];
+    out[k] = '\0';
+}
+
+/* Print one name with ANSI colour based on kind / executable bit. */
+static void ls_print_name(const struct ls_ent *e) {
+    if (e->kind == 2) {
+        write_str(LS_COL_DIR); write_str(e->name); write_str(LS_COL_RST);
+    } else if (e->mode & 0111u) {
+        write_str(LS_COL_EXE); write_str(e->name); write_str(LS_COL_RST);
+    } else {
+        write_str(e->name);
+    }
+}
+
+/* List one directory.  Called recursively for -R. */
+static void ls_dir(const char *path, int flag_l, int flag_a,
+                   int flag_h, int flag_1, int flag_s, int flag_R,
+                   int is_recursive_call);
+
+static void ls_dir(const char *path, int flag_l, int flag_a,
+                   int flag_h, int flag_1, int flag_s, int flag_R,
+                   int is_recursive_call) {
+    char full[MAX_PATH];
+
+    /* --- Collect entries --- */
+    g_ls_n = 0;
+    for (uint32_t idx = 0; g_ls_n < LS_MAX_ENTRIES; idx++) {
+        struct ls_ent *e = &g_ls[g_ls_n];
+        e->name[0] = '\0';
+        int res = readdir_entry(path, idx, e->name, sizeof(e->name));
+        if (res < 0) { write_str("ls: "); write_str(path); write_str(": ");
+                       write_line(strerror(res)); return; }
+        if (res == 0 || !e->name[0]) break;
+        if (!flag_a && e->name[0] == '.') continue;
+
+        ls_full(path, e->name, full, (int)sizeof(full));
+        uint64_t sz = 0; uint16_t mo = 0;
+        int kind = ls_stat(full, &sz, &mo);
+        e->kind = (kind == 2) ? 2 : 1;
+        e->size = sz;
+        e->mode = mo ? mo : (uint16_t)((e->kind == 2) ? 0755u : 0644u);
+        g_ls_n++;
+    }
+
+    /* --- Sort --- */
+    if (flag_s) ls_sort_size();
+    else        ls_sort_alpha();
+
+    /* --- Print --- */
+    if (flag_l) {
+        /* Long format: permissions  size  name */
+        for (int i = 0; i < g_ls_n; i++) {
+            struct ls_ent *e = &g_ls[i];
+            char mstr[11]; ls_mode_str(e->kind, e->mode, mstr);
+            write_str(mstr); write_char(' ');
+            if (flag_h) write_size_human(e->size);
+            else        write_dec_w(e->size, 8);
+            write_char(' ');
+            ls_print_name(e); write_char('\n');
+        }
+    } else if (flag_1) {
+        /* One entry per line, with colour. */
+        for (int i = 0; i < g_ls_n; i++) {
+            ls_print_name(&g_ls[i]); write_char('\n');
+        }
+    } else {
+        /* Multi-column layout: fit entries across LS_TERM_WIDTH columns. */
+        int maxw = 1;
+        for (int i = 0; i < g_ls_n; i++) {
+            int n = (int)strlen(g_ls[i].name);
+            if (n > maxw) maxw = n;
+        }
+        int col_w = maxw + 2;              /* name + 2-space gap */
+        int cols  = LS_TERM_WIDTH / col_w;
+        if (cols < 1) cols = 1;
+
+        for (int i = 0; i < g_ls_n; i++) {
+            ls_print_name(&g_ls[i]);
+            int printed = (int)strlen(g_ls[i].name);
+            if ((i + 1) % cols == 0 || i == g_ls_n - 1) {
+                write_char('\n');
+            } else {
+                /* Pad to column width. */
+                for (int sp = printed; sp < col_w; sp++) write_char(' ');
+            }
+        }
+    }
+
+    /* --- Recurse for -R --- */
+    if (flag_R) {
+        /* Walk entries again; recurse into each subdirectory. */
+        for (int i = 0; i < g_ls_n; i++) {
+            if (g_ls[i].kind != 2) continue;
+            if (g_ls[i].name[0] == '.') continue;  /* skip . and .. */
+            ls_full(path, g_ls[i].name, full, (int)sizeof(full));
+            write_char('\n');
+            write_str(full); write_line("/:");
+            /* Recurse — note this overwrites g_ls[], so do it AFTER we've
+             * finished iterating the current level's g_ls entries.
+             * We save only the name we need before the recursive call. */
+            char sub[MAX_PATH];
+            int k = 0;
+            while (full[k] && k < MAX_PATH-1) sub[k] = full[k++]; sub[k]='\0';
+            ls_dir(sub, flag_l, flag_a, flag_h, flag_1, flag_s, flag_R, 1);
+        }
+    }
+}
+
 static void cmd_ls(void) {
-    /* Parse flags and optional path from g_args. */
-    int flag_l = 0, flag_a = 0;
+    int flag_l = 0, flag_a = 0, flag_h = 0;
+    int flag_1 = 0, flag_s = 0, flag_R = 0;
     const char *path = g_cwd;
 
     for (int i = 1; i < g_argc; i++) {
         if (g_args[i][0] == '-' && g_args[i][1]) {
             for (int j = 1; g_args[i][j]; j++) {
-                if (g_args[i][j] == 'l') flag_l = 1;
-                else if (g_args[i][j] == 'a') flag_a = 1;
-                /* other flags silently ignored */
+                switch (g_args[i][j]) {
+                    case 'l': flag_l = 1; break;
+                    case 'a': flag_a = 1; break;
+                    case 'h': flag_h = 1; break;
+                    case '1': flag_1 = 1; break;
+                    case 's': flag_s = 1; break;
+                    case 'R': flag_R = 1; break;
+                    /* unknown flags silently ignored */
+                }
             }
         } else {
             path = g_args[i];
@@ -821,58 +995,11 @@ static void cmd_ls(void) {
     }
     if (!path || !path[0]) path = g_cwd;
 
-    char name[64];
-    char full[MAX_PATH];
-
-    for (uint32_t index = 0; ; index++) {
-        name[0] = 0;
-        int result = readdir_entry(path, index, name, sizeof(name));
-        if (result < 0) {
-            write_str("ls: "); write_str(path); write_str(": ");
-            write_line(strerror(result));
-            break;
-        }
-        if (result == 0) break;
-        if (!name[0]) continue;
-
-        /* -a: show hidden (dot) files; without -a skip them. */
-        if (!flag_a && name[0] == '.') continue;
-
-        if (flag_l) {
-            /* Build full path to stat the entry. */
-            size_t plen = strlen(path);
-            size_t nlen = strlen(name);
-            if (plen + nlen + 2 < (size_t)MAX_PATH) {
-                size_t k = 0;
-                while (path[k]) full[k++] = path[k];
-                if (k > 0 && full[k-1] != '/') full[k++] = '/';
-                size_t m = 0;
-                while (name[m]) full[k++] = name[m++];
-                full[k] = '\0';
-            } else {
-                full[0] = '\0';
-            }
-
-            uint64_t size = 0;
-            uint16_t mode = 0644;
-            int kind = ls_stat(full, &size, &mode);
-            if (kind < 0) kind = 1;
-
-            /* If mode is 0 (kernel didn't fill it), use a default. */
-            if (!mode) mode = (kind == 2) ? 0755u : 0644u;
-
-            char mstr[11];
-            ls_mode_str((uint32_t)kind, mode, mstr);
-
-            write_str(mstr);
-            write_char(' ');
-            write_dec_w(size, 8);
-            write_char(' ');
-            write_line(name);
-        } else {
-            write_line(name);
-        }
+    if (flag_R) {
+        /* Print the root path header for recursive mode. */
+        write_str(path); write_line("/:");
     }
+    ls_dir(path, flag_l, flag_a, flag_h, flag_1, flag_s, flag_R, 0);
 }
 
 static void write_dec(uint64_t n);   /* defined later */
