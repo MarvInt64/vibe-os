@@ -863,8 +863,19 @@ static void update_screen_width(void) {
 
 int main(void) {
     static uint32_t canvas_storage[MAX_WINDOW_WIDTH * WINDOW_HEIGHT];
-    desktop_status status;
+
+    /* g_status holds the most recent desktop snapshot.  We only re-fetch it
+     * once per second so the expensive kernel roundtrip and the resulting
+     * redraws don't happen on every loop iteration (~10× per second). */
+    static desktop_status g_status;
+
     uint32_t previous_signature = 0;
+    int      stat_frames        = 0;   /* counts loop iterations since last stat fetch */
+
+    /* STAT_INTERVAL: how many loop iterations between desktop-status fetches.
+     * sleep_ticks(10) ≈ 100 ms per iter → 10 iters ≈ 1 second.
+     * Keep it at 1 Hz so the sparklines look correct and CPU load is minimal. */
+    static const int STAT_INTERVAL = 10;
 
     update_screen_width();
     g_canvas = canvas_storage;
@@ -875,16 +886,25 @@ int main(void) {
     g_window_id = create_topbar_window();
     if (g_window_id < 0) return 1;
 
+    /* Prime the status so the first render has valid data. */
+    vos_desktop_status(&g_status);
+    sample_status_history(&g_status);
+    previous_signature = make_render_signature(&g_status);
+    render(&g_status);
+    present();
+
     for (;;) {
         win_event event;
         int redraw = 0;
-        uint32_t signature;
 
+        /* --- Event handling: always runs at full loop rate --------------- */
         while ((int)vos_event_poll(g_window_id, &event) == 1) {
             if (event.type == EV_MOUSE_DOWN) {
-                vos_desktop_status(&status);
-                layout_menus(&status);
-                handle_click(&status, event.x, event.y);
+                /* Need current layout for hit-testing — fetch status now. */
+                vos_desktop_status(&g_status);
+                layout_menus(&g_status);
+                handle_click(&g_status, event.x, event.y);
+                stat_frames = 0;   /* reset so next periodic fetch is fresh */
                 redraw = 1;
             } else if (event.type == EV_MOUSE_MOVE) {
                 update_logo_hover_state(&event);
@@ -896,25 +916,36 @@ int main(void) {
             }
         }
 
+        /* --- Logo hover animation: runs at full rate only when active ---- */
         if (update_logo_animation()) {
             redraw = 1;
         }
 
-        vos_desktop_status(&status);
-        sample_status_history(&status);
+        /* --- Stat update: throttled to ~1 Hz ----------------------------- *
+         * vos_desktop_status() is a kernel roundtrip that fills a large
+         * struct.  Calling it every 100 ms caused the bar to consume
+         * disproportionate CPU even when nothing was changing on screen.
+         * Fetching once per second is plenty for stat bars and sparklines. */
+        if (++stat_frames >= STAT_INTERVAL) {
+            stat_frames = 0;
+            vos_desktop_status(&g_status);
+            sample_status_history(&g_status);
 
-        signature = make_render_signature(&status);
-        if (signature != previous_signature) {
-            previous_signature = signature;
-            redraw = 1;
+            uint32_t signature = make_render_signature(&g_status);
+            if (signature != previous_signature) {
+                previous_signature = signature;
+                redraw = 1;
+            }
         }
 
         if (redraw) {
-            render(&status);
+            render(&g_status);
             present();
         }
 
-        // The hover animation updates faster than the status changes, so use a shorter sleep when the logo is animating.
-        sleep_ticks((g_logo_hover_value > 0 && g_logo_hover_value < LOGO_HOVER_STEPS) ? 2 : 100);
+        /* Sleep longer when idle (no animation).  At 100 Hz timer the ticks
+         * below map to: animating ≈ 20 ms/frame, idle ≈ 100 ms/frame. */
+        sleep_ticks((g_logo_hover_value > 0 &&
+                     g_logo_hover_value < LOGO_HOVER_STEPS) ? 2 : 10);
     }
 }
