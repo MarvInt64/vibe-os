@@ -496,6 +496,34 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
             /* Apply a runtime resolution change by re-initialising the WM. */
             if (g_resolution_change_requested) {
                 g_resolution_change_requested = 0;
+
+                /* Save userspace app slots before desktop_init nukes them */
+                uint8_t saved_active[MAX_USER_APPS];
+                uint32_t saved_pid[MAX_USER_APPS];
+                int saved_cw[MAX_USER_APPS], saved_ch[MAX_USER_APPS];
+                int saved_dw[MAX_USER_APPS];
+                int saved_eh[MAX_USER_APPS], saved_et[MAX_USER_APPS];
+                int saved_mc[MAX_USER_APPS], saved_mbc[MAX_USER_APPS];
+                char saved_title[MAX_USER_APPS][64];
+                struct window_state saved_ws[MAX_USER_APPS];
+                int si;
+                for (si = 0; si < MAX_USER_APPS; si++) {
+                    saved_active[si] = g_desktop.user_apps[si].created;
+                    if (saved_active[si]) {
+                        saved_pid[si] = g_desktop.user_apps[si].pid;
+                        saved_cw[si] = g_desktop.user_apps[si].content_width;
+                        saved_ch[si] = g_desktop.user_apps[si].content_height;
+                        saved_dw[si] = g_desktop.user_apps[si].data_width;
+                        saved_eh[si] = g_desktop.user_apps[si].event_head;
+                        saved_et[si] = g_desktop.user_apps[si].event_tail;
+                        saved_mc[si] = g_desktop.user_apps[si].menu_count;
+                        saved_mbc[si] = g_desktop.user_apps[si].menubar_count;
+                        strncpy(saved_title[si], g_desktop.user_apps[si].title, 63);
+                        saved_title[si][63] = '\0';
+                        saved_ws[si] = g_desktop.windows[WINDOW_APP_FIRST + si];
+                    }
+                }
+
                 if (g_shell_dock_pid != 0 && process_pid_alive(g_shell_dock_pid)) {
                     (void)process_kill(g_shell_dock_pid);
                 }
@@ -507,6 +535,55 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
                 g_desktop_scene_started = 0;
                 if (start_window_manager(&presented_cursor_x, &presented_cursor_y)) {
                     struct rect r;
+
+                    /* Restore userspace apps that were alive before the reset */
+                    for (si = 0; si < MAX_USER_APPS; si++) {
+                        if (saved_active[si] && saved_pid[si] != 0
+                            && process_pid_alive(saved_pid[si])) {
+                            int wi = WINDOW_APP_FIRST + si;
+
+                            g_desktop.user_apps[si].created = 1;
+                            g_desktop.user_apps[si].pid = saved_pid[si];
+                            g_desktop.user_apps[si].content_width = saved_cw[si];
+                            g_desktop.user_apps[si].content_height = saved_ch[si];
+                            g_desktop.user_apps[si].data_width = saved_dw[si];
+                            g_desktop.user_apps[si].event_head = saved_eh[si];
+                            g_desktop.user_apps[si].event_tail = saved_et[si];
+                            g_desktop.user_apps[si].menu_count = saved_mc[si];
+                            g_desktop.user_apps[si].menubar_count = saved_mbc[si];
+                            strncpy(g_desktop.user_apps[si].title, saved_title[si], 63);
+                            g_desktop.user_apps[si].title[63] = '\0';
+
+                            g_desktop.windows[wi] = saved_ws[si];
+                            g_desktop.windows[wi].title = g_desktop.user_apps[si].title;
+
+                            /* Re-init the window's surface framebuffer */
+                            fb_init(&g_desktop.window_fbs[wi],
+                                    (uintptr_t)g_desktop.user_apps[si].surface_storage,
+                                    g_desktop.windows[wi].width,
+                                    g_desktop.windows[wi].height,
+                                    g_desktop.windows[wi].width * 4u, 32u);
+
+                            g_desktop.windows[wi].visible = 1;
+                            g_desktop.window_dirty[wi] = 1;
+
+                            /* Send EV_RESIZE so the app picks up the new resolution */
+                            {
+                                int tail = g_desktop.user_apps[si].event_tail;
+                                int next = (tail + 1) % WINSYS_EVENT_QUEUE;
+                                if (next != g_desktop.user_apps[si].event_head) {
+                                    g_desktop.user_apps[si].events[tail].type = WINSYS_EVENT_RESIZE;
+                                    g_desktop.user_apps[si].events[tail].x = saved_cw[si];
+                                    g_desktop.user_apps[si].events[tail].y = saved_ch[si];
+                                    g_desktop.user_apps[si].events[tail].buttons = 0;
+                                    g_desktop.user_apps[si].events[tail].key = 0;
+                                    g_desktop.user_apps[si].event_tail = next;
+                                }
+                            }
+                        }
+                    }
+                    g_desktop.dirty = 1;
+
                     (void)desktop_get_dirty_region(&g_desktop, &r);
                     ensure_shell_dock_running();
                     ensure_shell_topbar_running();
