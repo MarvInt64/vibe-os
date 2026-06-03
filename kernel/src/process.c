@@ -1907,10 +1907,20 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             return 0;
         }
 
-        result = process_stat_path(path, &kind, &size);
-        frame->rax = (uint64_t)result;
-        frame->rdx = kind;
-        frame->r8 = size;
+        {
+            struct vfs_stat st;
+            if (!vfs_stat_path(path, &st)) {
+                frame->rax = (uint64_t)(-SYSCALL_ENOENT);
+                return 0;
+            }
+            frame->rax = 0;
+            frame->rdx = st.kind;
+            frame->r8  = st.size;
+            /* Pack mode/uid/gid into r9: bits 0-15=mode, 16-31=uid, 32-47=gid */
+            frame->r9  = (uint64_t)st.mode
+                       | ((uint64_t)st.uid << 16)
+                       | ((uint64_t)st.gid << 32);
+        }
         return 0;
     }
 
@@ -2595,6 +2605,53 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 		return 0;
 	}
 
+	if (number == SYS_GETUID) {
+		frame->rax = (uint64_t)process->uid;
+		return 0;
+	}
+
+	if (number == SYS_GETGID) {
+		frame->rax = (uint64_t)process->gid;
+		return 0;
+	}
+
+	if (number == SYS_SETUID) {
+		uint32_t new_uid = (uint32_t)frame->rdi;
+		/* Root may set any uid; others may only keep their own. */
+		if (process->uid != 0 && new_uid != process->uid) {
+			frame->rax = (uint64_t)(-SYSCALL_EPERM);
+			return 0;
+		}
+		process->uid = new_uid;
+		frame->rax = 0;
+		return 0;
+	}
+
+	if (number == SYS_CHMOD) {
+		char path[64];
+		uint16_t mode = (uint16_t)(frame->rsi & 0777u);
+		if (!process_copy_user_string(path, sizeof(path),
+		        (const char *)(uintptr_t)frame->rdi)) {
+			frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+			return 0;
+		}
+		frame->rax = (uint64_t)vfs_chmod(path, mode);
+		return 0;
+	}
+
+	if (number == SYS_CHOWN) {
+		char path[64];
+		uint16_t uid = (uint16_t)frame->rsi;
+		uint16_t gid = (uint16_t)frame->rdx;
+		if (!process_copy_user_string(path, sizeof(path),
+		        (const char *)(uintptr_t)frame->rdi)) {
+			frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+			return 0;
+		}
+		frame->rax = (uint64_t)vfs_chown(path, uid, gid);
+		return 0;
+	}
+
 	frame->rax = (uint64_t)syscall_dispatch(&process->syscalls, number, frame->rdi, frame->rsi, frame->rdx, frame->r10, frame->r8, frame->r9);
 	return 0;
 }
@@ -2621,6 +2678,14 @@ int timer_handle_interrupt(struct interrupt_frame *frame) {
     g_kernel_resume_result = PROCESS_RUN_YIELDED;
     g_current_process = 0;
     return 1;
+}
+
+uint32_t process_current_uid(void) {
+    return g_current_process ? g_current_process->uid : 0;
+}
+
+uint32_t process_current_gid(void) {
+    return g_current_process ? g_current_process->gid : 0;
 }
 
 uint32_t process_loaded_count(void) {

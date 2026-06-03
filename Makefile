@@ -248,6 +248,24 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/stat.elf $(LIBC_CRT0) build/user/stat.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/stat.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/stat.elf /bin/stat
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/chmod.c  -o build/user/chmod.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/chmod.elf  $(LIBC_CRT0) build/user/chmod.o  $(LIBC_A)
+	$(USTRIP) --strip-all build/user/chmod.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/chmod.elf /bin/chmod
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/chown.c  -o build/user/chown.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/chown.elf  $(LIBC_CRT0) build/user/chown.o  $(LIBC_A)
+	$(USTRIP) --strip-all build/user/chown.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/chown.elf /bin/chown
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/whoami.c -o build/user/whoami.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/whoami.elf $(LIBC_CRT0) build/user/whoami.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/whoami.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/whoami.elf /bin/whoami
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/id.c     -o build/user/id.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/id.elf     $(LIBC_CRT0) build/user/id.o     $(LIBC_A)
+	$(USTRIP) --strip-all build/user/id.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/id.elf /bin/id
+	# Seed /etc/passwd with the root user entry if not already present
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/passwd /etc/passwd
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/wc.c    -o build/user/wc.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/wc.elf    $(LIBC_CRT0) build/user/wc.o    $(LIBC_A)
 	$(USTRIP) --strip-all build/user/wc.elf

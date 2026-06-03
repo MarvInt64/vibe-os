@@ -234,17 +234,65 @@ int readdir_at(const char *path, int idx, char *name_out, int cap, int *type_out
 
 int stat(const char *path, struct stat *s) {
     long ret, kind;
-    register long sz __asm__("r8") = 0;
+    /* The kernel returns:
+     *   rax = 0 (success) or negative error
+     *   rdx = vfs kind (1 = file, 2 = dir)
+     *   r8  = byte size
+     *   r9  = packed permission data: bits 0-15 = mode, 16-31 = uid, 32-47 = gid */
+    register long sz  __asm__("r8") = 0;
+    register long r9  __asm__("r9") = 0;
     __asm__ volatile(
         "int $0x80"
-        : "=a"(ret), "=d"(kind), "+r"(sz)
+        : "=a"(ret), "=d"(kind), "+r"(sz), "+r"(r9)
         : "a"((long)SYS_STAT), "D"((long)path)
         : "rcx", "r11", "memory"
     );
     if (ret < 0) return (int)ck(ret);
     if (s) {
         s->st_size = (off_t)sz;
-        s->st_mode = (kind == 1) ? 0x8000u : (kind == 2) ? 0x4000u : 0u;
+        /* Reconstruct st_mode: file-type bits from vfs kind + permission bits
+         * from the lower 16 bits of r9. */
+        uint16_t perm = (uint16_t)(r9 & 0xFFFFu);
+        uint16_t type = (kind == 1) ? 0x8000u : (kind == 2) ? 0x4000u : 0u;
+        s->st_mode = (uint32_t)(type | perm);
+        s->st_uid  = (uint16_t)((r9 >> 16) & 0xFFFFu);
+        s->st_gid  = (uint16_t)((r9 >> 32) & 0xFFFFu);
     }
     return 0;
+}
+
+/* ---- User/group identity ------------------------------------------------ */
+
+uid_t getuid(void) {
+    return (uid_t)__sc0(SYS_GETUID);
+}
+
+gid_t getgid(void) {
+    return (gid_t)__sc0(SYS_GETGID);
+}
+
+/*
+ * Change the effective user ID of the current process.
+ * Root (uid 0) may change to any uid; other users may only re-set their own.
+ */
+int setuid(uid_t uid) {
+    return (int)ck(__sc1(SYS_SETUID, (uint64_t)uid));
+}
+
+/*
+ * chmod — change permission bits on a file or directory.
+ * 'mode' must be in the range 0–0777 (standard Unix octal permission bits).
+ * The caller must be the file owner or root.
+ */
+int chmod(const char *path, int mode) {
+    return (int)ck(__sc2(SYS_CHMOD, (uint64_t)(size_t)path, (uint64_t)(unsigned)mode));
+}
+
+/*
+ * chown — change the owner user-ID and group-ID of a file.
+ * Only root (uid 0) may call this.
+ */
+int chown(const char *path, unsigned int uid, unsigned int gid) {
+    return (int)ck(__sc3(SYS_CHOWN, (uint64_t)(size_t)path,
+                         (uint64_t)uid, (uint64_t)gid));
 }

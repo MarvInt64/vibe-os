@@ -128,10 +128,17 @@ struct process {
     char cwd[256];
     char spawn_arg[64];
     char name[32];
+    /* Effective user/group ID. 0 = root (all access). */
+    uint32_t uid;
+    uint32_t gid;
     /* x87+SSE state, saved/restored across context switches (FXSAVE/FXRSTOR).
      * 16-byte aligned as the instructions require. */
     uint8_t fpu_state[512] __attribute__((aligned(16)));
 };
+
+/* Return uid/gid of the currently executing process (0 when idle). */
+uint32_t process_current_uid(void);
+uint32_t process_current_gid(void);
 
 void process_init(void);
 int process_spawn_demo_processes(uint32_t count);

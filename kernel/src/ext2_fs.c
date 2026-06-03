@@ -102,7 +102,7 @@ static void ext2_free_inode_num(struct ext2_filesystem *fs, uint32_t inode_num) 
     }
 }
 
-static int ext2_write_inode(struct ext2_filesystem *fs, uint32_t inode_num) {
+int ext2_write_inode(struct ext2_filesystem *fs, uint32_t inode_num) {
     uint32_t inode_block_num;
     uint32_t inode_offset;
     uint8_t *block;

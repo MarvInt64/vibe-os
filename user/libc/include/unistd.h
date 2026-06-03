@@ -25,6 +25,15 @@ int          rmdir(const char *pathname);
 char        *getcwd(char *buf, size_t size);
 int          chdir(const char *path);
 
+/* User/group identity.
+ * getuid/getgid — return the effective uid/gid of the calling process.
+ * setuid       — change effective uid.  Root (uid 0) may set any uid;
+ *                other users may only re-set their own uid.
+ *                Returns 0 on success, -EPERM on permission error. */
+uid_t getuid(void);
+gid_t getgid(void);
+int   setuid(uid_t uid);
+
 #define SEEK_SET 0
 #define SEEK_CUR 1
 #define SEEK_END 2

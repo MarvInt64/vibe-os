@@ -216,6 +216,14 @@ int ext2_readdir(struct ext2_filesystem *fs, uint32_t inode, struct ext2_dir_ent
 int ext2_stat(struct ext2_filesystem *fs, uint32_t inode, struct ext2_inode *inode_out);
 
 /*
+ * Write the in-memory inode table entry for 'inode_num' back to disk.
+ * Call this after modifying fs->inode_table[inode_num - 1] directly
+ * (e.g. to update mode/uid/gid without a full re-create).
+ * Returns 0 on success, -1 on failure.
+ */
+int ext2_write_inode(struct ext2_filesystem *fs, uint32_t inode_num);
+
+/*
  * Unmount filesystem and free resources
  * @param fs: Filesystem instance
  */

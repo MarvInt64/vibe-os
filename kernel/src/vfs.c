@@ -24,6 +24,7 @@
 
 #include "vfs.h"
 #include "ext2_fs.h"
+#include "process.h"
 #include "string.h"
 #include "serial.h"
 
@@ -132,6 +133,9 @@ static int ext2_vfs_stat(const char *path, struct vfs_stat *stat) {
         stat->kind = VFS_NODE_FILE;
     }
     stat->size = inode.size;
+    stat->mode = inode.mode & 0777u;  /* permission bits only */
+    stat->uid  = inode.uid;
+    stat->gid  = inode.gid;
     return 1;
 }
 
@@ -632,4 +636,91 @@ ssize_t vfs_read_user(const char *path, size_t offset, void *buffer, size_t coun
 		((uint8_t *)buffer)[i] = f->data[offset + i];
 	}
 	return (ssize_t)to_copy;
+}
+
+/* ---- Permission helpers ------------------------------------------------- */
+
+/*
+ * Check whether a process with the given uid may perform an operation on an
+ * inode.  'want' is a combination of 04 (read), 02 (write), 01 (execute).
+ *
+ * The three standard Unix permission tiers are checked in order:
+ *   owner bits  (shift 6) when uid == inode.uid
+ *   other bits  (shift 0) otherwise
+ * Group bits are omitted — groups are not yet tracked per-process.
+ *
+ * Root (uid 0) always has full access.
+ */
+static int perm_ok(const struct ext2_inode *inode, uint32_t uid, int want) {
+    uint16_t mode = inode->mode & 0777u;
+
+    if (uid == 0)
+        return 1;  /* root is omnipotent */
+
+    int shift = (uid == (uint32_t)inode->uid) ? 6 : 0;
+    return ((mode >> shift) & want) == (unsigned)want;
+}
+
+int vfs_chmod(const char *path, uint16_t mode) {
+    uint32_t ino;
+    struct ext2_inode *ip;
+    uint32_t caller_uid = process_current_uid();
+
+    if (!g_ext2 || !path) return -1;
+
+    ino = ext2_lookup_inode(g_ext2, path);
+    if (ino == 0) return -2;  /* ENOENT */
+
+    /* Work directly on the in-memory inode table entry so we can write it
+     * back with a single ext2_write_inode() call. */
+    ip = &g_ext2->inode_table[ino - 1];
+
+    /* Only the file owner or root may change permission bits (POSIX rule). */
+    if (caller_uid != 0 && caller_uid != (uint32_t)ip->uid)
+        return -1;  /* EPERM */
+
+    /* Preserve the file-type bits in the high nibble; update only the nine
+     * rwxrwxrwx permission bits in the low twelve bits. */
+    ip->mode = (ip->mode & ~(uint16_t)0777u) | (mode & 0777u);
+    ext2_write_inode(g_ext2, ino);
+    return 0;
+}
+
+int vfs_chown(const char *path, uint16_t uid, uint16_t gid) {
+    uint32_t ino;
+    struct ext2_inode *ip;
+    uint32_t caller_uid = process_current_uid();
+
+    if (!g_ext2 || !path) return -1;
+
+    ino = ext2_lookup_inode(g_ext2, path);
+    if (ino == 0) return -2;  /* ENOENT */
+
+    /* Only root may reassign file ownership — same rule as Linux. */
+    if (caller_uid != 0) return -1;  /* EPERM */
+
+    ip = &g_ext2->inode_table[ino - 1];
+    ip->uid = uid;
+    ip->gid = gid;
+    ext2_write_inode(g_ext2, ino);
+    return 0;
+}
+
+/*
+ * Enforce read/write permission for the current process on 'path'.
+ * Returns 1 if access is allowed, 0 if denied.
+ * Skips the check when no ext2 filesystem is mounted (RAM-only mode).
+ */
+static int vfs_access_ok(const char *path, int want) {
+    uint32_t ino;
+    struct ext2_inode inode;
+
+    if (!g_ext2) return 1;  /* no persistent fs — always allow */
+
+    ino = ext2_lookup_inode(g_ext2, path);
+    if (ino == 0) return 1;  /* doesn't exist yet; let the caller handle ENOENT */
+
+    if (ext2_stat(g_ext2, ino, &inode) < 0) return 1;
+
+    return perm_ok(&inode, process_current_uid(), want);
 }

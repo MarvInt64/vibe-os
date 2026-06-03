@@ -100,7 +100,18 @@ enum syscall_number {
 	SYS_REBOOT = 51,
 	SYS_SHUTDOWN = 52,
 	SYS_GETPID = 53,
-	SYS_GETPPID = 54
+	SYS_GETPPID = 54,
+	/* User/permission syscalls.
+	 * SYS_GETUID / SYS_GETGID: return effective uid/gid of the caller.
+	 * SYS_SETUID: rdi = new uid; root (uid 0) may set any uid, others only
+	 *             their own.  Returns 0 or -EPERM.
+	 * SYS_CHMOD:  rdi = path (user str), rsi = mode (rwx bits, 0–0777).
+	 * SYS_CHOWN:  rdi = path, rsi = new uid, rdx = new gid. */
+	SYS_GETUID = 55,
+	SYS_GETGID = 56,
+	SYS_SETUID = 57,
+	SYS_CHMOD  = 58,
+	SYS_CHOWN  = 59
 };
 
 struct system_info_snapshot {

@@ -61,8 +61,13 @@ enum {
     SYS_AUDIO_INFO = 50,
     SYS_REBOOT = 51,
     SYS_SHUTDOWN = 52,
-    SYS_GETPID = 53,
-    SYS_GETPPID = 54
+    SYS_GETPID  = 53,
+    SYS_GETPPID = 54,
+    SYS_GETUID  = 55,  /* returns effective uid of caller */
+    SYS_GETGID  = 56,  /* returns effective gid of caller */
+    SYS_SETUID  = 57,  /* rdi = new uid; root can set any, others only own */
+    SYS_CHMOD   = 58,  /* rdi = path, rsi = mode (0–0777) */
+    SYS_CHOWN   = 59   /* rdi = path, rsi = uid, rdx = gid; root only */
 };
 
 /* Unused argument registers are explicitly zeroed: the kernel inspects rdi/rsi/

@@ -3,7 +3,10 @@
 #include <stddef.h>
 typedef long ssize_t;
 typedef long off_t;
-typedef int pid_t;
+typedef int          pid_t;
+typedef unsigned int uid_t;       /* user ID  — matches ext2 uint16 range */
+typedef unsigned int gid_t;       /* group ID — matches ext2 uint16 range */
+typedef unsigned int mode_t;      /* file permission bits */
 typedef unsigned int useconds_t;
-typedef long time_t;
+typedef long         time_t;
 #endif
