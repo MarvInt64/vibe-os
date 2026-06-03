@@ -51,14 +51,20 @@ QEMU_DISK ?= -drive file=$(DISK_IMG),format=raw,if=ide,index=0,media=disk
 # Hardware acceleration: hvf on macOS, kvm on Linux, tcg as fallback
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
-QEMU_ACCEL ?= -accel tcg
+QEMU_ACCEL ?= -accel hvf -accel tcg
 else
 QEMU_ACCEL ?= -accel kvm -accel tcg
 endif
 
 # "max" exposes RDRAND under TCG; the default qemu64 CPU does not, and the TLS
 # layer needs it for entropy (otherwise it falls back to an insecure seed).
+# hvf requires host CPU type; "host" passes through the real CPU features
+# which is correct for HVF.  TCG fallback still uses "max" for RDRAND support.
+ifeq ($(UNAME_S),Darwin)
+QEMU_CPU ?= host
+else
 QEMU_CPU ?= max
+endif
 QEMU_MEM ?= 512M
 QEMU_AUDIO ?= -audiodev coreaudio,id=audio0,out.frequency=48000,out.mixing-engine=on -device AC97,audiodev=audio0
 
