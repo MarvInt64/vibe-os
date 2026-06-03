@@ -62,15 +62,29 @@ extern "C" {
 /* Maximum PCM samples per decoded frame (1152 stereo pairs). */
 #define MP3DEC_MAX_SAMPLES 1152
 
-/* ── Opaque state ──────────────────────────────────────────────────────────── */
-
-/* Forward declaration; actual struct is defined in mp3dec.c.
- * Callers must not access any field directly. */
-typedef struct mp3dec mp3dec_t;
-
-/* Returns the sizeof the state struct so callers can allocate correctly
- * without needing to see the full struct definition. */
-size_t mp3dec_size(void);
+/* ── Decoder state ─────────────────────────────────────────────────────────── *
+ *
+ * The full struct is exposed here so callers can allocate statically or on the
+ * stack without needing mp3dec_size() / malloc.  Do not access fields directly.
+ *
+ * Memory footprint: ~340 KB (dominated by the two 1024-float synthesis FIFOs
+ * and the 2×32×18 IMDCT overlap buffers).  Declare as `static` if putting on
+ * the stack would overflow; C++ member fields work directly.            */
+typedef struct mp3dec {
+    uint8_t  buf[8192];
+    int      buf_len;
+    int      buf_pos;
+    uint8_t  reservoir[2048];
+    int      res_len;
+    float    overlap[2][32][18];
+    float    fifo[2][1024];
+    int      fifo_pos;
+    int      sample_rate;
+    int      channels;
+    int      bitrate;
+    int      frame_size;
+    int      sr_idx;      /* 0=44100, 1=48000, 2=32000 — index into sfb_bands */
+} mp3dec_t;
 
 /* Initialise (or re-initialise after a seek) the decoder state.
  * dec must point to at least mp3dec_size() bytes of writable memory. */

@@ -148,6 +148,19 @@ private:
     ImgEntry images_[MAX_IMGS] = {};
     int      n_imgs_   = 0;
 
+    /* ---- audio playback ----------------------------------------------- *
+     * <audio src="..."> tags trigger a background fetch + decode + stream.
+     * Only one audio stream plays at a time; navigating away stops it.    */
+    std::thread   audio_thread_;
+    std::atomic<bool> audio_stop_{false};
+    char          audio_src_[512] = {};     /* URL of the currently-playing audio */
+    bool          audio_playing_ = false;
+
+    void play_audio(const char *src);       /* start playback in a background thread */
+    void stop_audio();                      /* signal the thread to stop and join    */
+    void scan_and_play_audio();             /* find first <audio src> and play it    */
+    static void audio_worker(Browser *b, char src[512], std::atomic<bool> *stop);
+
     /* ---- DNS cache ----------------------------------------------------- */
     static constexpr int DNS_CACHE_CAP = 16;
     struct DnsEntry { char host[256]; uint32_t ip; };

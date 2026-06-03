@@ -55,11 +55,15 @@
 #include "image.h"
 #include "dom.h"
 #include "../vexui_font.h"
+#include "../../lib/mp3/mp3dec.h"
 
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
 #include <sys/syscall.h>
+#include <audio.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 /* The browser's identity, sent as the User-Agent on every request. */
 static const char *BROWSER_USER_AGENT = "VibeOS github.com/MarvInt64/vibe-os";
@@ -520,6 +524,8 @@ void Browser::layout_current() {
 void Browser::navigate(const char *url, bool push_to_history) {
     if (!url || !url[0]) return;
     blogf("browser: navigate url=%s push=%d", url, push_to_history);
+    /* Stop any audio from the previous page before loading a new one. */
+    stop_audio();
     uint32_t gen = ++load_gen_;
     __builtin_strncpy(pending_url_, url, sizeof pending_url_);
     pending_url_[sizeof pending_url_ - 1] = '\0';
@@ -539,10 +545,176 @@ void Browser::fetch_worker(uint32_t gen, bool push_to_history) {
     if (load_gen_.load(std::memory_order_acquire) != gen) { blog("browser: fetch_worker aborted (after load_url)"); return; }
     blogf("browser: fetch_worker after load_url html_len=%d", html_len_);
     text_ready_.store(true, std::memory_order_release);
+
+    /* Scan the page for an <audio src="..."> tag and start playback.  Only the
+     * first audio element is played (one stream at a time).  Done before image
+     * loading so audio starts promptly. */
+    scan_and_play_audio();
+
     load_images(gen);
     if (load_gen_.load(std::memory_order_acquire) != gen) { blog("browser: fetch_worker aborted (after load_images)"); return; }
     fetch_state_.store((int)FetchState::Ready, std::memory_order_release);
     blog("browser: fetch_worker done");
+}
+
+/* ---- Audio playback ------------------------------------------------------ *
+ *
+ * <audio src="..."> support.  The audio runs on its own background thread so
+ * the UI and network worker stay responsive.  The thread either streams from
+ * a local disk file (src resolves to an openable path) or HTTP-fetches the
+ * whole file into a heap buffer, then decodes MPEG-1 Layer 3 frame by frame
+ * and writes PCM to the kernel mixer via audio_write().
+ *
+ * Only one stream plays at a time; navigating to a new page calls stop_audio()
+ * which signals the worker to exit and joins it. */
+
+/* Walk the parsed DOM for the first <audio src> and hand it to play_audio(). */
+void Browser::scan_and_play_audio() {
+    if (!html_buf_ || html_len_ <= 0) return;
+    dom_doc dom; dom_init(&dom);
+    dom_node *root = dom_parse(&dom, html_buf_, html_len_);
+    if (!root) { dom_free(&dom); return; }
+
+    char found[512] = {};
+    struct Walk {
+        static bool go(dom_node *node, char *out, int cap) {
+            for (dom_node *c = node->first_child; c; c = c->next_sibling) {
+                if (c->type == DOM_ELEMENT && __builtin_strcmp(c->tag, "audio") == 0) {
+                    const char *s = dom_attr(c, "src");
+                    /* <audio><source src=...></audio> form: check child <source>. */
+                    if (!s || !s[0]) {
+                        for (dom_node *sc = c->first_child; sc; sc = sc->next_sibling)
+                            if (sc->type == DOM_ELEMENT &&
+                                __builtin_strcmp(sc->tag, "source") == 0) {
+                                s = dom_attr(sc, "src");
+                                if (s && s[0]) break;
+                            }
+                    }
+                    if (s && s[0]) { __builtin_strncpy(out, s, cap-1); out[cap-1]='\0'; return true; }
+                }
+                if (go(c, out, cap)) return true;
+            }
+            return false;
+        }
+    };
+    bool have = Walk::go(root, found, (int)sizeof found);
+    dom_free(&dom);
+
+    if (have) play_audio(found);
+}
+
+/* Stop any currently-playing audio: signal the worker and join it. */
+void Browser::stop_audio() {
+    if (!audio_playing_) return;
+    audio_stop_.store(true, std::memory_order_release);
+    if (audio_thread_.joinable()) audio_thread_.join();
+    audio_playing_ = false;
+    audio_src_[0] = '\0';
+}
+
+/* Begin playing the audio at 'src' (resolved relative to the current page). */
+void Browser::play_audio(const char *src) {
+    stop_audio();   /* never run two streams at once */
+
+    char resolved[512];
+    /* A leading '/' that maps to a local disk path (e.g. /music/song.mp3) is
+     * tried as a local file first by the worker; otherwise resolve to a URL. */
+    if (src[0] == '/' && src[1] != '/') {
+        __builtin_strncpy(resolved, src, sizeof resolved - 1);
+        resolved[sizeof resolved - 1] = '\0';
+    } else {
+        resolve_href(src, resolved, (int)sizeof resolved);
+    }
+    __builtin_strncpy(audio_src_, resolved, sizeof audio_src_ - 1);
+    audio_src_[sizeof audio_src_ - 1] = '\0';
+
+    audio_stop_.store(false, std::memory_order_release);
+    audio_playing_ = true;
+    if (audio_thread_.joinable()) audio_thread_.detach();
+    /* audio_src_ stays alive for the thread's lifetime (member, and stop_audio
+     * joins before it is overwritten). */
+    audio_thread_ = std::thread([this] { audio_worker(this, audio_src_, &audio_stop_); });
+}
+
+/* Blocking PCM write that respects the stop flag — yields when the ring is
+ * full so audio_tick() can drain it.  Returns false if asked to stop. */
+static bool browser_audio_write_all(const int16_t *buf, int samples,
+                                    std::atomic<bool> *stop) {
+    const unsigned char *p = (const unsigned char *)buf;
+    unsigned long remaining = (unsigned long)samples * sizeof(int16_t);
+    while (remaining > 0) {
+        if (stop->load(std::memory_order_acquire)) return false;
+        int written = audio_write(p, (unsigned int)remaining);
+        if (written > 0) { p += written; remaining -= (unsigned long)written; }
+        else __asm__ volatile("int $0x80" : : "a"(3) : "memory"); /* SYS_YIELD */
+    }
+    return true;
+}
+
+void Browser::audio_worker(Browser *b, char src[512], std::atomic<bool> *stop) {
+    blogf("browser: audio_worker start src=%s", src);
+
+    /* Decoder + scratch buffers are large; allocate on the heap so the thread
+     * stack stays small. */
+    mp3dec_t *dec = (mp3dec_t *)__builtin_malloc(sizeof(mp3dec_t));
+    int16_t  *pcm = (int16_t *)__builtin_malloc(MP3DEC_MAX_SAMPLES * 2 * sizeof(int16_t));
+    if (!dec || !pcm) { if (dec) __builtin_free(dec); if (pcm) __builtin_free(pcm); return; }
+    mp3dec_init(dec);
+
+    int sr = 0, ch = 0, br = 0, first = 1;
+
+    /* Path 1: try opening as a local disk file (streams in 4 KB chunks). */
+    int fd = open(src, 0 /*O_RDONLY*/);
+    if (fd >= 0) {
+        unsigned char in[4096];
+        ssize_t n;
+        while (!stop->load(std::memory_order_acquire) &&
+               (n = read(fd, in, sizeof in)) > 0) {
+            mp3dec_feed(dec, in, (int)n);
+            int s;
+            while ((s = mp3dec_decode(dec, pcm, &sr, &ch, &br)) > 0) {
+                if (first) {
+                    if (sr > 0) audio_ioctl(AUDIO_IOCTL_SET_RATE, (unsigned)sr);
+                    first = 0;
+                }
+                if (!browser_audio_write_all(pcm, s, stop)) break;
+            }
+        }
+        close(fd);
+    } else {
+        /* Path 2: HTTP fetch the whole file into a heap buffer, then decode.
+         * Audio files can be several MB, so use a generous 8 MB buffer. */
+        const int CAP = 8 * 1024 * 1024;
+        char *raw = (char *)__builtin_malloc(CAP);
+        if (raw) {
+            int bodyoff = 0;
+            int total = fetch_raw(src, raw, CAP, &bodyoff);
+            if (total > bodyoff && !stop->load(std::memory_order_acquire)) {
+                int pos = bodyoff;
+                while (pos < total && !stop->load(std::memory_order_acquire)) {
+                    int chunk = total - pos; if (chunk > 4096) chunk = 4096;
+                    int used = mp3dec_feed(dec, (const uint8_t *)raw + pos, chunk);
+                    pos += (used > 0) ? used : chunk;
+                    int s;
+                    while ((s = mp3dec_decode(dec, pcm, &sr, &ch, &br)) > 0) {
+                        if (first) {
+                            if (sr > 0) audio_ioctl(AUDIO_IOCTL_SET_RATE, (unsigned)sr);
+                            first = 0;
+                        }
+                        if (!browser_audio_write_all(pcm, s, stop)) { pos = total; break; }
+                    }
+                }
+            }
+            __builtin_free(raw);
+        }
+    }
+
+    /* Restore the system default sample rate so other apps play at 48 kHz. */
+    if (sr > 0 && sr != 48000) audio_ioctl(AUDIO_IOCTL_SET_RATE, 48000);
+
+    __builtin_free(dec);
+    __builtin_free(pcm);
+    blog("browser: audio_worker done");
 }
 
 void Browser::load_images(uint32_t gen) {

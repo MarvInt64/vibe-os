@@ -102,8 +102,8 @@ bump-version:
 UCC := clang
 # Userspace MAY use SSE/float (the kernel enables SSE at boot and saves XMM per
 # process across switches), which stb_truetype/stb_image and any float code need.
-UCFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=small -fno-builtin -Wall -Wextra -std=c11 -O2
-UCXXFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=small -fno-builtin -Wall -Wextra -std=c++20 -O2 -fno-exceptions
+UCFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=small -fno-builtin -Wall -Wextra -std=c11 -O2 -g
+UCXXFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=small -fno-builtin -Wall -Wextra -std=c++20 -O2 -fno-exceptions -g
 USTRIP := $(firstword $(wildcard /opt/homebrew/opt/llvm/bin/llvm-strip /usr/local/opt/llvm/bin/llvm-strip) llvm-strip)
 UAR := $(firstword $(wildcard /opt/homebrew/opt/llvm/bin/llvm-ar /usr/local/opt/llvm/bin/llvm-ar) llvm-ar)
 
@@ -168,7 +168,7 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/filebrowser.elf \
 		$(LIBC_CRT0) build/user/filebrowser.o build/user/filebrowser_main.o \
 		build/user/vexui.o build/user/svg.o $(LIBC_A)
-	$(USTRIP) --strip-all build/user/filebrowser.elf
+#	$(USTRIP) --strip-all build/user/filebrowser.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/filebrowser.elf /bin/filebrowser
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/dock/dock.cpp -o build/user/dock.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/dock.elf \
@@ -193,12 +193,13 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/libimage -Ithird_party/stb -c user/libimage/image.c  -o build/user/image.o
 	$(CC)  $(ASFLAGS)                             -c user/browser/font_data.S  -o build/user/font_data.o
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -c user/browser/layout_engine.cpp -o build/user/browser_layout_engine.o
-	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -Iuser/libimage -Ilib/svg -c user/browser/browser.cpp       -o build/user/browser_main.o
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -Iuser/libimage -Ilib/svg -Ilib/mp3 -c user/browser/browser.cpp       -o build/user/browser_main.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ilib/mp3 -c lib/mp3/mp3dec.c -o build/user/mp3dec.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/browser.elf \
 		$(LIBC_CRT0) build/user/browser_main.o build/user/browser_layout_engine.o \
 		build/user/weblayout.o build/user/dom.o build/user/css.o \
 		build/user/appfont.o build/user/image.o build/user/font_data.o \
-		build/user/vexui.o build/user/svg.o $(LIBC_A)
+		build/user/vexui.o build/user/svg.o build/user/mp3dec.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/browser.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/browser.elf /bin/browser
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/libimage -c user/wallpaper/wallpaper.c -o build/user/wallpaper.o
@@ -320,6 +321,14 @@ apps: $(DISK_IMG) $(LIBC_A)
 		$(LIBC_CRT0) build/user/audiotest.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/audiotest.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/audiotest.elf /bin/audiotest
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ilib/mp3 -c lib/mp3/mp3dec.c  -o build/user/mp3dec.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ilib/mp3 -c user/mp3play.c    -o build/user/mp3play.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/mp3play.elf \
+		$(LIBC_CRT0) build/user/mp3play.o build/user/mp3dec.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/mp3play.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/mp3play.elf /bin/mp3play
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/music/becorbal-town.mp3 /music/becorbal-town.mp3
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/music/player.html /music/player.html
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/audiocfg.c -o build/user/audiocfg.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/audiocfg.elf \
 		$(LIBC_CRT0) build/user/audiocfg.o build/user/libc.a

@@ -968,37 +968,7 @@ static const huff_table_ref_t huff_tables[34] = {
  * §2  DECODER STATE STRUCT
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-struct mp3dec {
-    /* ── Input ring buffer ────────────────────────────────────────────────
-     * We keep a flat sliding window: valid bytes are buf[buf_pos..buf_pos+buf_len). */
-    uint8_t  buf[8192];
-    int      buf_len;   /* number of valid bytes */
-    int      buf_pos;   /* start index in buf[] */
 
-    /* ── Bit reservoir (main_data) — ISO 11172-3 §2.4.3.1 ───────────────
-     * Encoded granule data may reach back up to 511 bytes before the current
-     * frame's main_data_begin, so we maintain a reservoir of recent bytes. */
-    uint8_t  reservoir[2048];
-    int      res_len;
-
-    /* ── IMDCT overlap buffers — one per channel × subband ───────────────
-     * The overlap-add operation requires storing the second half of each
-     * IMDCT output from the previous granule.  Shape: [ch][subband][18]. */
-    float    overlap[2][32][18];
-
-    /* ── Polyphase synthesis FIFO — one per channel ──────────────────────
-     * The synthesis filterbank uses a 1024-sample sliding window shifted by
-     * 64 samples (32 subbands × 2) per granule step.  ISO §2.4.3.7. */
-    float    fifo[2][1024];
-    int      fifo_pos;   /* write position (mod 512, doubled for aliasing) */
-
-    /* ── Cached frame metadata ─────────────────────────────────────────── */
-    int      sample_rate;
-    int      channels;
-    int      bitrate;
-    int      frame_size;  /* full frame size in bytes including 4-byte header */
-    int      sr_idx;      /* 0/1/2 index into sfb_bands */
-};
 
 /* Sentinel count1 table quad patterns (for the count1 region decoder).
  * We decode the count1 region differently: we look up 4-bit patterns for
@@ -1008,7 +978,7 @@ struct mp3dec {
  * §3  PUBLIC LIFECYCLE
  * ═══════════════════════════════════════════════════════════════════════════ */
 
-size_t mp3dec_size(void) { return sizeof(struct mp3dec); }
+
 
 void mp3dec_init(mp3dec_t *dec)
 {
