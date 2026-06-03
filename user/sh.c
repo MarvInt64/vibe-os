@@ -486,6 +486,28 @@ static void readline(char *buf, int cap, const char *username, uint32_t uid) {
     int len = 0;
     int hist_nav = 0;  /* how many entries back we have navigated; 0 = current */
 
+    /* Read the whole line at once — the TTY/PTY delivers a complete line
+     * when the user presses Enter.  Reading char-by-char conflicts with
+     * TTY canonical echo and produces empty or garbled input. */
+    {
+        ssize_t n;
+        while (1) {
+            n = syscall3(SYS_READ, 0, (uint64_t)(size_t)buf, (uint64_t)(cap - 1));
+            if (n > 0) break;
+            yield();
+        }
+        /* Strip trailing CR/LF. */
+        while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) n--;
+        buf[n] = '\0';
+        len = (int)n;
+
+        /* Add to history if non-empty. */
+        if (len > 0) hist_add(buf);
+        (void)hist_nav; (void)username; (void)uid;
+        return;
+    }
+
+    /* --- Dead code below: char-by-char editor (kept for future raw-mode use) --- */
     while (1) {
         char c = 0;
         ssize_t n = syscall3(SYS_READ, 0, (uint64_t)(size_t)&c, 1);

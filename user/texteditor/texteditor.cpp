@@ -502,7 +502,7 @@ bool TextEditor::load_from_path(const char *path) {
 }
 
 bool TextEditor::write_to_path(const char *path) {
-    int fd = vos_creat_path(path);
+    int fd = (int)__sc1(SYS_CREAT, (uint64_t)(size_t)path);
     if (fd < 0) return false;
     bool ok = true;
     for (int i = 0; i < num_lines_; ++i) {
