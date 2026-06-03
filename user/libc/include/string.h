@@ -25,6 +25,11 @@ char  *strstr(const char *hay, const char *needle);
 
 /* Bounded copy (size of dst buffer); always NUL-terminates. Returns strlen(src). */
 size_t strlcpy(char *dst, const char *src, size_t size);
+size_t strspn(const char *s, const char *accept);
+size_t strcspn(const char *s, const char *reject);
+char  *strpbrk(const char *s, const char *accept);
+char  *strtok(char *s, const char *delim);
+char  *strtok_r(char *s, const char *delim, char **saveptr);
 
 /* POSIX extensions (inside the guard) */
 static inline char *strdup(const char *s) {

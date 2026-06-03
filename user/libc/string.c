@@ -93,3 +93,63 @@ size_t strlcpy(char *dst, const char *src, size_t size) {
     while (src[n]) ++n;   /* count the full source length */
     return n;
 }
+
+size_t strspn(const char *s, const char *accept) {
+    const char *p = s;
+    while (*p) {
+        const char *a = accept;
+        while (*a && *a != *p) ++a;
+        if (!*a) break;
+        ++p;
+    }
+    return (size_t)(p - s);
+}
+
+size_t strcspn(const char *s, const char *reject) {
+    const char *p = s;
+    while (*p) {
+        const char *r = reject;
+        while (*r && *r != *p) ++r;
+        if (*r) break;
+        ++p;
+    }
+    return (size_t)(p - s);
+}
+
+char *strpbrk(const char *s, const char *accept) {
+    for (; *s; ++s) {
+        const char *a = accept;
+        while (*a) {
+            if (*a == *s) return (char *)s;
+            ++a;
+        }
+    }
+    return 0;
+}
+
+char *strtok_r(char *s, const char *delim, char **saveptr) {
+    char *token;
+    if (s == 0) s = *saveptr;
+    if (s == 0) return 0;
+
+    s += strspn(s, delim);
+    if (*s == '\0') {
+        *saveptr = 0;
+        return 0;
+    }
+
+    token = s;
+    s += strcspn(s, delim);
+    if (*s == '\0') {
+        *saveptr = 0;
+    } else {
+        *s = '\0';
+        *saveptr = s + 1;
+    }
+    return token;
+}
+
+char *strtok(char *s, const char *delim) {
+    static char *saveptr;
+    return strtok_r(s, delim, &saveptr);
+}
