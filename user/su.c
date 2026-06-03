@@ -224,21 +224,19 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Prompt without echoing — read char-by-char and discard the echo. */
+    /* Prompt for password.  The TTY echoes what is typed (no way to suppress
+     * it without a TCSETA ioctl, which is not yet implemented).
+     * Read the whole line at once — same approach as the shell readline fix:
+     * the PTY delivers a complete line when Enter is pressed, so a large
+     * SYS_READ call is the only reliable way to get the full password. */
     su_write("Password: ");
     char entered[128];
-    size_t ei = 0;
-    while (ei < sizeof(entered) - 1) {
-        char c = su_readchar();
-        if (c == '\n' || c == '\r') break;
-        if ((c == '\x7f' || c == '\b') && ei > 0) {
-            ei--;
-            continue;
-        }
-        if (c >= 0x20 && c < 0x7f) {
-            entered[ei++] = c;
-        }
-    }
+    ssize_t ei = syscall3(SYS_READ, 0,
+                          (uint64_t)(size_t)entered,
+                          sizeof(entered) - 1);
+    if (ei < 0) ei = 0;
+    /* Strip trailing CR and LF so "vibeos\r\n" → "vibeos". */
+    while (ei > 0 && (entered[ei-1] == '\n' || entered[ei-1] == '\r')) ei--;
     entered[ei] = '\0';
     su_write("\n");
 
