@@ -23,17 +23,35 @@
  */
 
 /*
- * stat — display file or directory metadata
+ * stat — display file metadata in a human-readable format
  *
  * Usage: stat <path> [path2 ...]
  *
- * Prints size and type for each path.  Exits 1 if any path cannot be
- * stat'd; processes remaining paths regardless.
+ * Output per entry:
+ *   File:  <path>
+ *   Size:  <bytes>
+ *   Type:  regular file | directory | unknown
+ *   Mode:  <octal>  (<rwxrwxrwx string>)
+ *   Owner: uid=<N>  gid=<N>
  */
 
 #include <stdio.h>
-#include <string.h>
 #include <sys/stat.h>
+
+/* Convert mode bits to a 10-char "drwxr-xr-x" string (null-terminated). */
+static void mode_str(unsigned int kind_is_dir, unsigned int mode, char out[11]) {
+    out[0] = kind_is_dir ? 'd' : '-';
+    out[1] = (mode & 0400u) ? 'r' : '-';
+    out[2] = (mode & 0200u) ? 'w' : '-';
+    out[3] = (mode & 0100u) ? 'x' : '-';
+    out[4] = (mode & 0040u) ? 'r' : '-';
+    out[5] = (mode & 0020u) ? 'w' : '-';
+    out[6] = (mode & 0010u) ? 'x' : '-';
+    out[7] = (mode & 0004u) ? 'r' : '-';
+    out[8] = (mode & 0002u) ? 'w' : '-';
+    out[9] = (mode & 0001u) ? 'x' : '-';
+    out[10] = '\0';
+}
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
@@ -50,13 +68,19 @@ int main(int argc, char *argv[]) {
             continue;
         }
 
-        const char *type =
-            S_ISREG(st.st_mode)  ? "regular file" :
-            S_ISDIR(st.st_mode)  ? "directory"    : "unknown";
+        int is_dir = S_ISDIR(st.st_mode);
+        const char *type = is_dir          ? "directory"    :
+                           S_ISREG(st.st_mode) ? "regular file" : "unknown";
 
-        printf("  File: %s\n", argv[i]);
-        printf("  Size: %d\n", (int)st.st_size);
-        printf("  Type: %s\n", type);
+        char mstr[11];
+        mode_str((unsigned int)is_dir, st.st_mode & 0777u, mstr);
+
+        printf("  File:  %s\n",        argv[i]);
+        printf("  Size:  %d\n",        (int)st.st_size);
+        printf("  Type:  %s\n",        type);
+        printf("  Mode:  %04o  (%s)\n",(unsigned)(st.st_mode & 0777u), mstr);
+        printf("  Owner: uid=%-4u gid=%u\n",
+               (unsigned)st.st_uid, (unsigned)st.st_gid);
     }
     return status;
 }
