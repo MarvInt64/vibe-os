@@ -1586,6 +1586,14 @@ int process_run_ready_slice(void) {
         result = process_run_slice(&process->context);
     }
     fpu_save(process->fpu_state);             /* save whatever it left behind */
+    /* Count scheduling quanta for the task manager's CPU metric.
+     * The timer-interrupt handler already incremented runtime_ticks when it
+     * preempted this process (and left a trace in preempt_count).  For slices
+     * that ended via a cooperative SYS_YIELD or a blocking syscall the timer
+     * never fired, so runtime_ticks was not bumped — do it here so every
+     * scheduler turn is accounted for. */
+    if (result != PROCESS_RUN_YIELDED || process->preempt_count == 0)
+        ++process->runtime_ticks;
     return result;
 }
 

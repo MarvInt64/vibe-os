@@ -88,6 +88,15 @@ void ProcessRow::init(vui_window *win, vui_widget *rows_vbox, int slot,
     vui_box_add(row_vbox_, sep_);
 
     pid_ = 0;
+    /* Start hidden — update() makes a row visible when it gets a real process. */
+    vui_set_visible(row_vbox_,     0);
+    vui_set_visible(name_label_,   0);
+    vui_set_visible(thread_label_, 0);
+    vui_set_visible(state_label_,  0);
+    vui_set_visible(metric_label_, 0);
+    vui_set_visible(ram_label_,    0);
+    vui_set_visible(kill_button_,  0);
+    vui_set_visible(sep_,          0);
 }
 
 void ProcessRow::update(const vui_process_info &p, int cpu_tenths) {

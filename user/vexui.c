@@ -1181,10 +1181,11 @@ static void layout_box(struct vui_window *w, int box_idx) {
     int gap   = box->gap;
     int i;
 
-    /* Pass A: measure */
+    /* Pass A: measure (hidden children take no space) */
     int n_children = 0, n_expand = 0, fixed_sum = 0;
     for (i = 0; i < w->widget_count; ++i) {
         if (w->widgets[i].parent_idx != box_idx) continue;
+        if (!w->widgets[i].visible) continue;    /* hidden = no slot */
         n_children++;
         if (w->widgets[i].expand)
             n_expand++;
@@ -1203,11 +1204,12 @@ static void layout_box(struct vui_window *w, int box_idx) {
     if (free_space   < 0) free_space = 0;
     int expand_share = n_expand > 0 ? free_space / n_expand : 0;
 
-    /* Pass B: place */
+    /* Pass B: place (skip hidden children — they contribute neither space nor gaps) */
     int cursor = (horiz ? box->x : box->y) + pad;
     for (i = 0; i < w->widget_count; ++i) {
         struct vui_widget *ch = &w->widgets[i];
         if (ch->parent_idx != box_idx) continue;
+        if (!ch->visible) continue;
 
         int main_sz  = ch->expand ? expand_share
                                   : (horiz ? ch->w : ch->h);
