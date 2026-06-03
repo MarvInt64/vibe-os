@@ -28,8 +28,10 @@
 #define WIN_H    (DOOM_H * SCALE)
 
 /* VexUI/window-server limits (must match VUI_MAX_W/H). */
-#define BUF_STRIDE  900
-#define BUF_H_MAX   640
+/* Canvas stride == WIN_W: DOOM's window is fixed-size so logical width and
+ * row stride are identical — the kernel reads both as WIN_W, no shear. */
+#define BUF_STRIDE  WIN_W
+#define BUF_H_MAX   WIN_H
 
 /* ---- vexui event constants (mirrored from vexui.c) -------------------- */
 #define EV_MOUSE_MOVE  1
