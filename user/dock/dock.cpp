@@ -112,6 +112,7 @@ int main() {
             vui_set_icon_svg_path(button, kEntries[i].icon_path);
         }
         vui_set_user(button, (void *)kEntries[i].path);
+        vui_set_tooltip(button, kEntries[i].label);
         vui_on_click(button, launch_app);
         vui_box_add(row, button);
     }

@@ -176,6 +176,9 @@ void vui_on_resize(vui_window *w, vui_resize_callback cb);
 void vui_on_context_menu(vui_window *w, vui_context_callback cb);
 /* Register a raw-key handler; fired for keystrokes when no input is focused. */
 void vui_on_key(vui_window *w, vui_key_callback cb);
+/* Set a tooltip text shown as a bubble above the widget after a short hover.
+ * Pass NULL or "" to remove. Works on buttons, tile-buttons, and pill-buttons. */
+void vui_set_tooltip(vui_widget *wgt, const char *tip);
 /* Register a mouse-wheel handler for this window. */
 void vui_on_scroll(vui_window *w, vui_scroll_callback cb);
 /* Declare an entry for this window's dock-icon context menu. The window server

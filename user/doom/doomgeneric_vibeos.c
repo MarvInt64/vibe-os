@@ -219,3 +219,10 @@ int DG_GetKey(int *pressed, unsigned char *doom_key) {
 void DG_SetWindowTitle(const char *title) {
     (void)title;  /* fixed title "DOOM" at window creation */
 }
+
+/* Entry point: pass -iwad so DOOM finds the WAD on our filesystem. */
+int main(void) {
+    static char *argv[] = { "doom", "-iwad", "/doom1.wad", 0 };
+    doomgeneric_Create(3, argv);
+    for (;;) doomgeneric_Tick();
+}

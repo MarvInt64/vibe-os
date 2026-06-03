@@ -155,6 +155,9 @@ struct vui_widget {
      * rather than a clickable text item; on_click is ignored for separators.   */
     uint8_t separator;
 
+    /* Tooltip text shown as a bubble above the widget on hover. Empty = none. */
+    char tooltip[48];
+
     /* runtime / rendering state */
     uint8_t hover;
     uint8_t pressed;
@@ -181,6 +184,10 @@ struct vui_window {
     vui_context_callback on_context_menu;
     vui_key_callback on_key;
     vui_scroll_callback on_scroll;
+    /* Tooltip: index of the hovered widget (-1=none) and a tick counter.
+     * The bubble appears after TOOLTIP_DELAY ticks of continuous hover. */
+    int  tooltip_widget;
+    int  tooltip_ticks;
     vui_menu_callback menu_cbs[WINSYS_MAX_MENU_ITEMS];
     char menu_labels[WINSYS_MAX_MENU_ITEMS][WINSYS_MENU_LABEL_MAX];
     int menu_count;
@@ -859,6 +866,11 @@ void vui_on_tick(vui_window *w, vui_tick_callback cb){ if(w) w->on_tick=cb; }
 void vui_on_resize(vui_window *w, vui_resize_callback cb){ if(w) w->on_resize=cb; }
 void vui_on_context_menu(vui_window *w, vui_context_callback cb){ if(w) w->on_context_menu=cb; }
 void vui_on_key(vui_window *w, vui_key_callback cb){ if(w) w->on_key=cb; }
+void vui_set_tooltip(vui_widget *wd, const char *tip){
+    if (!wd) return;
+    if (!tip) { wd->tooltip[0] = 0; return; }
+    scopy(wd->tooltip, tip, sizeof(wd->tooltip));
+}
 void vui_on_scroll(vui_window *w, vui_scroll_callback cb){ if(w) w->on_scroll=cb; }
 void vui_request_repaint(vui_window *w){ if(w) w->dirty=1; }
 
@@ -1514,6 +1526,40 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
     }
 }
 
+#define TOOLTIP_DELAY  18   /* ticks of hover before the bubble appears (~1 s at 16 Hz) */
+#define TOOLTIP_PAD     6   /* horizontal padding inside the bubble */
+#define TOOLTIP_VPAD    4   /* vertical padding inside the bubble */
+
+/* Draw a tooltip bubble above the hovered widget when enough hover time has
+ * accumulated.  Rendered last so it always appears on top of everything. */
+static void draw_tooltip(struct vui_window *w) {
+    struct vui_widget *wd;
+    int tx, ty, tw, th, bx, by;
+
+    if (w->tooltip_widget < 0 || w->tooltip_widget >= w->widget_count) return;
+    if (w->tooltip_ticks < TOOLTIP_DELAY) return;
+
+    wd = &w->widgets[w->tooltip_widget];
+    if (!wd->tooltip[0] || !wd->visible || !wd->hover) return;
+
+    tw = text_px(wd->tooltip, 1) + TOOLTIP_PAD * 2;
+    th = 16 + TOOLTIP_VPAD * 2;
+
+    /* Centre above the widget; clamp to window edges. */
+    bx = wd->x + (wd->w - tw) / 2;
+    if (bx < 2) bx = 2;
+    if (bx + tw > w->width - 2) bx = w->width - 2 - tw;
+    by = wd->y - th - 6;
+    if (by < 2) by = wd->y + wd->h + 6;   /* flip below if no room above */
+
+    /* Bubble background: themed surface with border. */
+    fill_round_rect(w, bx, by, tw, th, 4, g_theme.surface, g_theme.border);
+
+    tx = bx + TOOLTIP_PAD;
+    ty = by + TOOLTIP_VPAD;
+    text(w, tx, ty, wd->tooltip, g_theme.text);
+}
+
 /* Draw the open dropdown panel + all its items on top of everything else. */
 static void draw_dropdown(struct vui_window *w) {
     int menu_idx = w->active_menu_idx;
@@ -1561,6 +1607,8 @@ static void repaint(struct vui_window *w) {
     for (i = 0; i < w->widget_count; ++i) draw_widget(w, &w->widgets[i]);
     /* Pass 2: dropdown overlay so it always appears on top. */
     draw_dropdown(w);
+    /* Pass 3: tooltip bubble — rendered last, above everything. */
+    draw_tooltip(w);
     /* g_canvas is packed at stride w->width (see canvas_index): row y starts at
      * y * w->width, so the present width is also the source row stride. */
     sc6(SYS_WINDOW_PRESENT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas,
@@ -1613,6 +1661,7 @@ vui_window *vui_window_open_ex(const char *title, int width, int height,
     g_win.clear_color=g_theme.bg;
     g_win.widget_count=0; g_win.dirty=1; g_win.on_tick=0; g_win.on_resize=0; g_win.on_context_menu=0; g_win.on_key=0; g_win.on_scroll=0;
     g_win.menu_count=0; g_win.active_menu_idx=-1; g_win.active_input=-1;
+    g_win.tooltip_widget=-1; g_win.tooltip_ticks=0;
     return &g_win;
 }
 
@@ -1749,6 +1798,25 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
                                     inside(wd, w->mouse_x, w->mouse_y));
             uint8_t prs = (uint8_t)(hov && w->mouse_down);
             if (hov != wd->hover || prs != wd->pressed) { wd->hover=hov; wd->pressed=prs; w->dirty=1; dmg_add(wd->x, wd->y, wd->w + 24, wd->h + 8); }
+            /* Tooltip: accumulate hover ticks; reset when leaving the widget. */
+            if (wd->tooltip[0]) {
+                int idx = (int)(wd - w->widgets);
+                if (hov) {
+                    if (w->tooltip_widget == idx) {
+                        if (w->tooltip_ticks < TOOLTIP_DELAY) {
+                            ++w->tooltip_ticks;
+                            if (w->tooltip_ticks == TOOLTIP_DELAY) { w->dirty = 1; dmg_full(); }
+                        }
+                    } else {
+                        w->tooltip_widget = idx;
+                        w->tooltip_ticks  = 1;
+                    }
+                } else if (w->tooltip_widget == idx) {
+                    if (w->tooltip_ticks >= TOOLTIP_DELAY) { w->dirty = 1; dmg_full(); }
+                    w->tooltip_widget = -1;
+                    w->tooltip_ticks  = 0;
+                }
+            }
             if (click_x >= 0 && inside(wd, click_x, click_y)) {
                 if (wd->type == W_INPUT) {        /* focus this input for typing */
                     w->active_input = (int)(wd - w->widgets); input_clicked = 1; w->dirty = 1;
