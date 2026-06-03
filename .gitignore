@@ -32,6 +32,7 @@ __pycache__/
 *.swp
 *.swo
 *~
+compile_commands.json
 
 # ---- Claude Code session data --------------------------------------------
 .claude/
@@ -64,3 +65,4 @@ conductor/
 
 # ---- Third-party source trees that are NOT submodules -------------------
 third_party/quickjs/
+.cache
