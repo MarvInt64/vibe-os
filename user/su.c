@@ -229,14 +229,21 @@ int main(int argc, char **argv) {
      * Read the whole line at once — same approach as the shell readline fix:
      * the PTY delivers a complete line when Enter is pressed, so a large
      * SYS_READ call is the only reliable way to get the full password. */
+    /* The PTY slave read (used by the terminal app) is non-blocking: it
+     * returns 0 immediately when no data is in the ring buffer.  We must
+     * read character-by-character with a spin-yield loop so we wait
+     * correctly on both TTY (boot console) and PTY (terminal app). */
     su_write("Password: ");
     char entered[128];
-    ssize_t ei = syscall3(SYS_READ, 0,
-                          (uint64_t)(size_t)entered,
-                          sizeof(entered) - 1);
-    if (ei < 0) ei = 0;
-    /* Strip trailing CR and LF so "vibeos\r\n" → "vibeos". */
-    while (ei > 0 && (entered[ei-1] == '\n' || entered[ei-1] == '\r')) ei--;
+    size_t ei = 0;
+    while (ei < sizeof(entered) - 1) {
+        char c = 0;
+        while (syscall3(SYS_READ, 0, (uint64_t)(size_t)&c, 1) <= 0)
+            syscall1(3 /*SYS_YIELD*/, 0);  /* yield CPU until data arrives */
+        if (c == '\n' || c == '\r') break;
+        if ((c == '\x7f' || c == '\b') && ei > 0) { ei--; continue; }
+        if (c >= 0x20) entered[ei++] = c;
+    }
     entered[ei] = '\0';
     su_write("\n");
 
