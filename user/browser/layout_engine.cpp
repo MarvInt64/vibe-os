@@ -810,9 +810,16 @@ static void walk(State &S, dom_node *node) {
     }
 
     /* ---- Form controls: input / textarea / button / select ------------- *
-     * Each emits a WL_FIELD run (a box carrying the cascaded style: color,
-     * background, font-size and an optional CSS width) plus a wl_field entry
-     * with the metadata needed to submit the owning form. */
+     * Outside a <form> context, <button> and <select> render their children
+     * as inline text (buttons are often used as nav toggles / dropdowns). */
+    if (ieq(t,"button") || ieq(t,"select")) {
+        if (S.form_depth == 0) {
+            /* Not a real form control — render content as inline styled text */
+            st_push(S); apply_css(S,node);
+            if (!S.stk[S.sp].hidden) walk_children(S,node);
+            st_pop(S); return;
+        }
+    }
     if (ieq(t,"input") || ieq(t,"textarea") || ieq(t,"button") || ieq(t,"select")) {
         st_push(S); apply_css(S,node);
         if (S.stk[S.sp].hidden) { st_pop(S); return; }
