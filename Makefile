@@ -225,7 +225,7 @@ doom: $(DISK_IMG) $(LIBC_A)
 		$(LIBC_CRT0) $(DOOM_OBJS) $(LIBC_A)
 	$(USTRIP) --strip-all build/user/doom.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/doom.elf /bin/doom
-	python3 scripts/ext2_put.py $(DISK_IMG) assets/doom1.wad /doom1.wad
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/doom1.wad /games/doom1.wad
 	@echo "DOOM installed to $(DISK_IMG)."
 
 # Create a blank persistent disk image if it does not exist yet. No external
