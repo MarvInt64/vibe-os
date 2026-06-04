@@ -133,17 +133,23 @@ static inline float svg_clampf(float v,float lo,float hi){ return v<lo?lo:(v>hi?
 
 typedef struct { float r, g, b, a; } svg_rgba;     /* straight alpha, 0..1 */
 
+enum { SVG_GRAD_LINEAR = 0, SVG_GRAD_RADIAL };
 typedef struct {
     int   used; char id[32];
-    float x1, y1, x2, y2;                          /* axis, user space */
+    int   type;                                    /* SVG_GRAD_LINEAR/RADIAL  */
+    float x1, y1, x2, y2;                           /* linear axis, user space */
+    float cx, cy, r;                               /* radial centre + radius  */
     int   nstops; float off[SVG_MAX_STOPS]; svg_rgba col[SVG_MAX_STOPS];
 } svg_gradient;
 
 enum { SVG_PAINT_NONE = 0, SVG_PAINT_SOLID, SVG_PAINT_GRAD };
 typedef struct { int kind; svg_rgba color; int grad; } svg_paint;
 
-enum { FE_BLUR = 1, FE_COLORMATRIX, FE_BLEND };
-typedef struct { int type; float stddev; float m[20]; int in_source; } svg_fe;
+enum { FE_BLUR = 1, FE_COLORMATRIX, FE_BLEND, FE_DROPSHADOW };
+typedef struct {
+    int type; float stddev; float m[20]; int in_source;
+    float dx, dy; svg_rgba flood;                  /* feDropShadow parameters */
+} svg_fe;
 typedef struct { int used; char id[32]; int n; svg_fe fe[SVG_MAX_FE]; } svg_filter;
 
 /* Offscreen layers, straight-alpha 0xAARRGGBB. The base layer is the caller's
@@ -152,6 +158,7 @@ static uint32_t *g_svg_base;
 static uint32_t g_svg_group[SVG_LAYER_PX];
 static uint32_t g_svg_tmpA[SVG_LAYER_PX];
 static uint32_t g_svg_tmpB[SVG_LAYER_PX];
+static uint32_t g_svg_tmpC[SVG_LAYER_PX];          /* feDropShadow scratch    */
 static uint32_t *g_svg_target;                     /* current draw layer */
 
 static int   g_svg_size;
@@ -283,11 +290,20 @@ static svg_rgba svg_paint_at(const svg_paint *pt, float px, float py) {
     if (pt->kind == SVG_PAINT_SOLID) return pt->color;
     if (pt->kind == SVG_PAINT_GRAD) {
         const svg_gradient *g = &g_grads[pt->grad];
-        float gx1 = g->x1 * g_svg_scale + g_svg_ox, gy1 = g->y1 * g_svg_scale + g_svg_oy;
-        float gx2 = g->x2 * g_svg_scale + g_svg_ox, gy2 = g->y2 * g_svg_scale + g_svg_oy;
-        float dx = gx2 - gx1, dy = gy2 - gy1, len2 = dx * dx + dy * dy;
-        float t = len2 > 0 ? ((px - gx1) * dx + (py - gy1) * dy) / len2 : 0.0f;
+        float t;
         int i;
+        if (g->type == SVG_GRAD_RADIAL) {
+            float gcx = g->cx * g_svg_scale + g_svg_ox;
+            float gcy = g->cy * g_svg_scale + g_svg_oy;
+            float gr  = g->r  * g_svg_scale;
+            float ex = px - gcx, ey = py - gcy;
+            t = (gr > 0.0f) ? svg_sqrtf(ex * ex + ey * ey) / gr : 1.0f;
+        } else {
+            float gx1 = g->x1 * g_svg_scale + g_svg_ox, gy1 = g->y1 * g_svg_scale + g_svg_oy;
+            float gx2 = g->x2 * g_svg_scale + g_svg_ox, gy2 = g->y2 * g_svg_scale + g_svg_oy;
+            float dx = gx2 - gx1, dy = gy2 - gy1, len2 = dx * dx + dy * dy;
+            t = len2 > 0 ? ((px - gx1) * dx + (py - gy1) * dy) / len2 : 0.0f;
+        }
         t = svg_clampf(t, 0, 1);
         if (g->nstops == 0) return z;
         if (t <= g->off[0]) return g->col[0];
@@ -366,17 +382,38 @@ static int svg_path_cmd(char ch) {
 /* Parse a path "d" string (user coords) into flattened subpaths. */
 /* Minimal math implementations for freestanding environment. */
 static float svg_fabsf(float x) { return x < 0 ? -x : x; }
+/* Range-reduced 7th-order minimax sin: accurate (|err|<2e-4) for ANY angle,
+   unlike the old Taylor pair which was only valid near 0 — that made arc
+   rendering (which needs sin/cos of angles up to several radians) collapse. */
 static float svg_sinf(float x) {
-    /* Taylor series sin(x) approx */
+    const float PI = 3.14159265f, TWO_PI = 6.28318531f;
+    while (x < -PI) x += TWO_PI;
+    while (x >  PI) x -= TWO_PI;
     float x2 = x * x;
-    return x - x2 * x / 6.0f + x2 * x2 * x / 120.0f;
+    return x * (0.9999966f + x2 * (-0.16664824f + x2 * (0.00830629f - x2 * 0.00018363f)));
 }
-static float svg_cosf(float x) {
-    /* Taylor series cos(x) approx */
-    float x2 = x * x;
-    return 1.0f - x2 / 2.0f + x2 * x2 / 24.0f;
-}
+static float svg_cosf(float x) { return svg_sinf(x + 1.57079633f); }
 static float svg_tanf(float x) { return svg_sinf(x) / svg_cosf(x); }
+
+/* atan on [-1,1] (minimax), then atan2 via octant reduction. */
+static float svg_atanf(float z) {
+    float z2 = z * z;
+    return z * (0.9998660f + z2 * (-0.3302995f + z2 * (0.1801410f +
+               z2 * (-0.0851330f + z2 * 0.0208351f))));
+}
+static float svg_atan2f(float y, float x) {
+    const float PI = 3.14159265f, HALF_PI = 1.57079633f;
+    if (x == 0.0f) return (y > 0) ? HALF_PI : (y < 0 ? -HALF_PI : 0.0f);
+    float a;
+    if (svg_fabsf(x) >= svg_fabsf(y)) {
+        a = svg_atanf(y / x);
+        if (x < 0) a += (y >= 0) ? PI : -PI;
+    } else {
+        a = HALF_PI - svg_atanf(x / y);
+        if (y < 0) a -= PI;
+    }
+    return a;
+}
 static float svg_ceilf(float x) {
     int i = (int)x;
     return (x > (float)i) ? (float)(i + 1) : (float)i;
@@ -459,13 +496,40 @@ static void svg_parse_path(const char *p, const char *end) {
             last_cp_x = x2; last_cp_y = y2;
             cx = x; cy = y;
         } else if (cmd == 'A' || cmd == 'a') {
-            /* Arc handling is simplified: assumes circular arcs for now */
+            /* Elliptical arc "A rx ry x-rot large-flag sweep-flag x y".
+             * Convert the SVG endpoint parametrisation to centre form (SVG spec
+             * implementation notes; x-axis-rotation assumed 0 — true for every
+             * icon arc) and hand it to svg_geo_arc, which flattens it to cubic
+             * Beziers. Degenerate (zero-radius) arcs fall back to a line. */
             if (!svg_parse_f(&p, &rx) || !svg_parse_f(&p, &ry) || !svg_parse_f(&p, &rot) ||
                 !svg_parse_f(&p, &large) || !svg_parse_f(&p, &sweep) ||
                 !svg_parse_f(&p, &x) || !svg_parse_f(&p, &y)) break;
             if (cmd == 'a') { x += cx; y += cy; }
-            /* This is a simplified approximation */
-            svg_geo_lineto(x, y);
+            (void)rot;
+            rx = svg_fabsf(rx); ry = svg_fabsf(ry);
+            if (rx < 1e-4f || ry < 1e-4f || (cx == x && cy == y)) {
+                svg_geo_lineto(x, y);
+            } else {
+                float x1p = (cx - x) * 0.5f, y1p = (cy - y) * 0.5f;
+                float lam = (x1p*x1p)/(rx*rx) + (y1p*y1p)/(ry*ry);
+                if (lam > 1.0f) { float s = svg_sqrtf(lam); rx *= s; ry *= s; }
+                float num = rx*rx*ry*ry - rx*rx*y1p*y1p - ry*ry*x1p*x1p;
+                float den = rx*rx*y1p*y1p + ry*ry*x1p*x1p;
+                float co  = (den > 0.0f) ? svg_sqrtf(num > 0.0f ? num / den : 0.0f) : 0.0f;
+                if (large != 0.0f) { if (sweep != 0.0f) co = -co; }   /* fa==fs → neg */
+                else               { if (sweep == 0.0f) co = -co; }
+                float cxp =  co * (rx * y1p / ry);
+                float cyp =  co * (-ry * x1p / rx);
+                float ecx = cxp + (cx + x) * 0.5f;
+                float ecy = cyp + (cy + y) * 0.5f;
+                float ux = (x1p - cxp) / rx, uy = (y1p - cyp) / ry;
+                float vx = (-x1p - cxp) / rx, vy = (-y1p - cyp) / ry;
+                float th1 = svg_atan2f(uy, ux);
+                float dth = svg_atan2f(ux*vy - uy*vx, ux*vx + uy*vy);
+                if (sweep == 0.0f && dth > 0.0f) dth -= 6.28318531f;
+                if (sweep != 0.0f && dth < 0.0f) dth += 6.28318531f;
+                svg_geo_arc(ecx, ecy, rx, ry, th1, dth);
+            }
             last_cp_x = x; last_cp_y = y;
             cx = x; cy = y;
         } else break;
@@ -600,6 +664,32 @@ static void svg_gaussian(uint32_t *inout, float sigma_px) {
         svg_blur_axis(g_svg_tmpA, inout, r, 0);       /* vertical   */
     }
 }
+
+/* feDropShadow: build a blurred, offset, flood-coloured copy of `cur`s alpha
+ * (the shadow) in g_svg_tmpC, then composite the original `cur` back over it.
+ * With dx=dy=0 this is a soft coloured glow behind the graphic — the look the
+ * play-button SVG relies on. Shadow lives in g_svg_tmpC so the gaussian pass
+ * can keep using g_svg_tmpA as its own scratch. */
+static void svg_dropshadow(uint32_t *cur, float dx, float dy,
+                           float sigma_px, svg_rgba flood) {
+    int n = g_svg_size * g_svg_size, x, y, i;
+    int ox = (int)(dx * g_svg_scale + (dx < 0 ? -0.5f : 0.5f));
+    int oy = (int)(dy * g_svg_scale + (dy < 0 ? -0.5f : 0.5f));
+
+    for (y = 0; y < g_svg_size; ++y) {
+        for (x = 0; x < g_svg_size; ++x) {
+            int sx = x - ox, sy = y - oy;
+            float a = 0.0f;
+            if (sx >= 0 && sy >= 0 && sx < g_svg_size && sy < g_svg_size)
+                a = svg_unpack(cur[sy * g_svg_size + sx]).a;
+            svg_rgba s = flood; s.a *= a;
+            g_svg_tmpC[y * g_svg_size + x] = svg_pack(s);
+        }
+    }
+    svg_gaussian(g_svg_tmpC, sigma_px);
+    for (i = 0; i < n; ++i)
+        cur[i] = svg_pack(svg_over(svg_unpack(cur[i]), svg_unpack(g_svg_tmpC[i])));
+}
 static void svg_colormatrix(uint32_t *L, const float *m) {
     int i, n = g_svg_size * g_svg_size;
     for (i = 0; i < n; ++i) {
@@ -627,6 +717,9 @@ static void svg_apply_filter(const svg_filter *f) {
             for (j = 0; j < n; ++j)
                 g_svg_tmpB[j] = svg_pack(svg_over(svg_unpack(g_svg_group[j]),
                                                   svg_unpack(g_svg_tmpB[j])));
+        } else if (fe->type == FE_DROPSHADOW) {
+            svg_dropshadow(g_svg_tmpB, fe->dx, fe->dy, fe->stddev * g_svg_scale,
+                           fe->flood);
         }
     }
 }
@@ -642,6 +735,17 @@ static void svg_composite_onto_base(const uint32_t *L, float opacity) {
         }
 }
 
+/* Find `needle` in an attribute value starting at `s`, stopping at the closing
+ * quote (attribute values are not NUL-terminated). Returns the match or 0. */
+static const char *svg_strstr_lim(const char *s, const char *needle) {
+    for (; *s && *s != '"'; ++s) {
+        int i = 0;
+        while (needle[i] && s[i] == needle[i]) ++i;
+        if (needle[i] == 0) return s;
+    }
+    return 0;
+}
+
 /* ---- defs ---- */
 static void svg_parse_defs(const char *svg) {
     const char *p;
@@ -650,13 +754,48 @@ static void svg_parse_defs(const char *svg) {
         if (p[0] == '<' && svg_match_name(p + 1, "linearGradient") && g_grad_n < SVG_MAX_GRAD) {
             svg_gradient *g = &g_grads[g_grad_n++];
             const char *q;
-            g->used = 1;
+            g->used = 1; g->type = SVG_GRAD_LINEAR;
             svg_copy_attr(p, "id", g->id, sizeof(g->id));
             g->x1 = svg_attr_f(p, "x1", 0); g->y1 = svg_attr_f(p, "y1", 0);
             g->x2 = svg_attr_f(p, "x2", 1); g->y2 = svg_attr_f(p, "y2", 0);
             g->nstops = 0;
             for (q = svg_tag_end(p); *q; ++q) {
                 if (q[0] == '<' && q[1] == '/' && svg_match_name(q + 2, "linearGradient")) break;
+                if (q[0] == '<' && svg_match_name(q + 1, "stop") && g->nstops < SVG_MAX_STOPS) {
+                    const char *cv = svg_attr_val(q, "stop-color", 0);
+                    svg_rgba col = {0, 0, 0, 1.0f};
+                    if (cv && *cv == '#') col = svg_hex_color(cv);
+                    col.a *= svg_attr_f(q, "stop-opacity", 1.0f);
+                    g->off[g->nstops] = svg_clampf(svg_attr_f(q, "offset", 0), 0, 1);
+                    g->col[g->nstops] = col;
+                    ++g->nstops;
+                }
+            }
+        } else if (p[0] == '<' && svg_match_name(p + 1, "radialGradient") && g_grad_n < SVG_MAX_GRAD) {
+            svg_gradient *g = &g_grads[g_grad_n++];
+            const char *q, *gt;
+            float cx, cy, r, tx = 0, ty = 0, sc = 1.0f;
+            g->used = 1; g->type = SVG_GRAD_RADIAL;
+            svg_copy_attr(p, "id", g->id, sizeof(g->id));
+            cx = svg_attr_f(p, "cx", 0.5f);
+            cy = svg_attr_f(p, "cy", 0.5f);
+            r  = svg_attr_f(p, "r",  0.5f);
+            /* Honour a simple gradientTransform "translate(tx ty) ... scale(s)"
+             * (rotation is irrelevant for a circular fill) — the userSpaceOnUse
+             * form design tools emit. */
+            gt = svg_attr_val(p, "gradientTransform", 0);
+            if (gt) {
+                const char *tp = svg_strstr_lim(gt, "translate(");
+                const char *sp = svg_strstr_lim(gt, "scale(");
+                if (tp) { tp += 10; svg_parse_f(&tp, &tx); svg_parse_f(&tp, &ty); }
+                if (sp) { sp += 6;  svg_parse_f(&sp, &sc); }
+            }
+            g->cx = tx + cx * sc;
+            g->cy = ty + cy * sc;
+            g->r  = r * sc;
+            g->nstops = 0;
+            for (q = svg_tag_end(p); *q; ++q) {
+                if (q[0] == '<' && q[1] == '/' && svg_match_name(q + 2, "radialGradient")) break;
                 if (q[0] == '<' && svg_match_name(q + 1, "stop") && g->nstops < SVG_MAX_STOPS) {
                     const char *cv = svg_attr_val(q, "stop-color", 0);
                     svg_rgba col = {0, 0, 0, 1.0f};
@@ -693,6 +832,17 @@ static void svg_parse_defs(const char *svg) {
                     const char *in = svg_attr_val(q, "in", 0);
                     f->fe[f->n].type = FE_BLEND;
                     f->fe[f->n].in_source = in && svg_match_name(in, "SourceGraphic");
+                    ++f->n;
+                } else if (svg_match_name(q + 1, "feDropShadow")) {
+                    const char *fc = svg_attr_val(q, "flood-color", 0);
+                    svg_rgba col = {0, 0, 0, 1.0f};
+                    if (fc && *fc == '#') col = svg_hex_color(fc);
+                    col.a *= svg_attr_f(q, "flood-opacity", 1.0f);
+                    f->fe[f->n].type   = FE_DROPSHADOW;
+                    f->fe[f->n].dx     = svg_attr_f(q, "dx", 2.0f);
+                    f->fe[f->n].dy     = svg_attr_f(q, "dy", 2.0f);
+                    f->fe[f->n].stddev = svg_attr_f(q, "stdDeviation", 2.0f);
+                    f->fe[f->n].flood  = col;
                     ++f->n;
                 }
             }
