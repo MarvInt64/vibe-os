@@ -24,6 +24,7 @@
 
 #include "net.h"
 #include "e1000.h"
+#include "paging.h"
 #include "process.h"
 #include "serial.h"
 #include "string.h"
@@ -137,6 +138,10 @@ struct tcp_conn {
     uint8_t *rx_buf;
     int rx_cap;
     int rx_len;
+    /* CR3 of the process that owns rx_buf.  Non-zero when rx_buf points into
+     * user-space — the NIC interrupt handler runs in whatever CR3 is current,
+     * so it must switch to rx_owner_cr3 before writing to rx_buf. */
+    uintptr_t rx_owner_cr3;
     uint8_t peer_fin;
     uint8_t in_use;
     /* HTTP keep-alive: a connection that finished a framed response and may be
@@ -170,7 +175,8 @@ static struct tcp_conn *tcp_alloc(void) {
     return c;   /* 0 only if all slots are busy with active (non-idle) requests */
 }
 static void tcp_free(struct tcp_conn *c) {
-    if (c) { c->in_use = 0; c->idle = 0; c->state = TCP_CLOSED; }
+    if (c) { c->in_use = 0; c->idle = 0; c->state = TCP_CLOSED;
+             c->rx_buf = 0; c->rx_owner_cr3 = 0; }
 }
 
 /* Reuse a cached keep-alive connection to (ip, port) if one is still alive.
@@ -187,6 +193,7 @@ static struct tcp_conn *tcp_find_idle(uint32_t ip, uint16_t port,
             k->rx_buf = out;
             k->rx_cap = out_cap;
             k->rx_len = 0;
+            k->rx_owner_cr3 = paging_read_cr3();
             c = k;
             break;
         }
@@ -459,7 +466,18 @@ static void handle_tcp(const uint8_t *ip, const uint8_t *tcp, uint16_t seg_len) 
             copy = c->rx_cap - c->rx_len;
         }
         if (copy > 0) {
-            memcpy(c->rx_buf + c->rx_len, payload, (size_t)copy);
+            /* rx_buf may point into user-space (set by net_http_get).  The NIC
+             * interrupt can fire while a different process's CR3 is active, so
+             * switch to the connection owner's page tables before the copy and
+             * restore them afterward. */
+            if (c->rx_owner_cr3 != 0) {
+                uintptr_t prev = paging_read_cr3();
+                paging_load_cr3(c->rx_owner_cr3);
+                memcpy(c->rx_buf + c->rx_len, payload, (size_t)copy);
+                paging_load_cr3(prev);
+            } else {
+                memcpy(c->rx_buf + c->rx_len, payload, (size_t)copy);
+            }
             c->rx_len += copy;
         }
         c->rcv_nxt += payload_len;
@@ -992,6 +1010,9 @@ int net_http_get(uint32_t dst_ip, uint16_t port, const char *host_header,
         c->rx_buf = (uint8_t *)out;
         c->rx_cap = out_cap;
         c->rx_len = 0;
+        /* Record the CR3 so the NIC interrupt handler can switch to the
+         * correct page tables before writing into this user-space buffer. */
+        c->rx_owner_cr3 = paging_read_cr3();
 
         /* Three-way handshake: send SYN, wait for ESTABLISHED. */
         tcp_send(c, TCP_SYN, 0, 0);
@@ -1058,6 +1079,7 @@ int net_http_get(uint32_t dst_ip, uint16_t port, const char *host_header,
         c->rx_buf = 0;
         c->rx_cap = 0;
         c->rx_len = 0;
+        c->rx_owner_cr3 = 0;
         return result;
     }
 
