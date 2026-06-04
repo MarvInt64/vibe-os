@@ -62,6 +62,7 @@ struct process_snapshot {
      * thread_count = number of threads sharing this address space (>=1). */
     uint64_t mem_bytes;
     uint32_t thread_count;
+    uint8_t  is_thread;     /* 1 = a worker thread, not a top-level app */
 };
 
 /* kind 0 = embedded vfs_file pointer, kind 1 = path-based (user/ext2) */

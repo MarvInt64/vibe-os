@@ -148,6 +148,7 @@ static int kstack_canary_check(void);
 static const struct fd_ops PROCESS_STDIO_FD_OPS;
 static const struct fd_ops PROCESS_VFS_FD_OPS;
 static void process_reap(struct process *process);
+static void process_kill_sibling_threads(struct process *owner);
 
 static void process_wake_ready(uint64_t current_tick) {
     size_t i;
@@ -1719,6 +1720,7 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         process->exit_code = (int32_t)frame->rdi;
         process->state = PROCESS_STATE_EXITED;
         journal_log_hex(JOURNAL_INFO, process->pid, "process exited, code=", (uint64_t)frame->rdi);
+        process_kill_sibling_threads(process);
         process_wake_waiter(process);
         g_kernel_resume_result = PROCESS_RUN_EXITED;
         g_current_process = 0;
@@ -2862,6 +2864,7 @@ int process_get_snapshot(uint32_t slot, struct process_snapshot *snapshot) {
         }
         snapshot->thread_count = threads ? threads : 1u;
     }
+    snapshot->is_thread = process->is_thread;
     return 1;
 }
 
@@ -3028,10 +3031,37 @@ int process_handle_user_fault(uint64_t vector, uint64_t rip, uint64_t cr2, uint6
     journal_log_hex(JOURNAL_FAULT, process->pid, "  cr3 expected=", process->cr3);
     journal_log_hex(JOURNAL_FAULT, process->pid, "  cr3 actual=",   paging_read_cr3());
 
+    process_kill_sibling_threads(process);   /* a faulted owner takes its threads down */
     process_wake_waiter(process);
     g_kernel_resume_result = PROCESS_RUN_EXITED;
     g_current_process = 0;
     return 1;
+}
+
+/* When a process that owns an address space dies, its threads (separate slots
+ * that share its page tables) must die with it — otherwise a worker thread,
+ * e.g. the audioplayer's decode thread, is orphaned and keeps running (and
+ * playing audio) with no window. Only a non-thread "owner" reaps; a thread
+ * exiting on its own never takes the parent down. */
+static void process_kill_sibling_threads(struct process *owner) {
+    size_t i;
+    if (owner == 0 || owner->is_thread || owner->user_page_tables == 0) return;
+    for (i = 0; i < PROCESS_MAX_COUNT; ++i) {
+        struct process *t = &g_processes[i];
+        if (t == owner || !t->loaded || !t->is_thread) continue;
+        if (t->state == PROCESS_STATE_EXITED || t->state == PROCESS_STATE_EMPTY) continue;
+        if (t->user_page_tables != owner->user_page_tables) continue;
+        process_clear_pending_tty_wait(t);
+        t->exit_code = -1;
+        t->state = PROCESS_STATE_EXITED;
+        process_wake_waiter(t);
+        if (g_current_process == t) {
+            g_kernel_resume_result = PROCESS_RUN_EXITED;
+            g_current_process = 0;
+        }
+        journal_log_hex(JOURNAL_INFO, t->pid, "thread reaped with owner pid=",
+                        (uint64_t)owner->pid);
+    }
 }
 
 int process_kill(uint32_t pid) {
@@ -3053,6 +3083,7 @@ int process_kill(uint32_t pid) {
 
     process->exit_code = -1;
     process->state = PROCESS_STATE_EXITED;
+    process_kill_sibling_threads(process);
     process_wake_waiter(process);
     if (g_current_process == process) {
         g_kernel_resume_result = PROCESS_RUN_EXITED;

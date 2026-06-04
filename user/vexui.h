@@ -99,6 +99,7 @@ typedef struct vui_process_info {
     /* Must match struct process_snapshot in kernel/include/process.h. */
     unsigned long mem_bytes;     /* physical RAM footprint (bytes)        */
     unsigned int  thread_count;  /* threads sharing the address space (>=1) */
+    unsigned char is_thread;     /* 1 = worker thread, not a top-level app  */
 } vui_process_info;
 
 /* Open a window with a content area of width x height pixels.

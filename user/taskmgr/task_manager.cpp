@@ -142,6 +142,15 @@ void TaskManager::refresh() {
             continue;
         }
 
+        /* Worker threads are scheduler entities sharing their owner's address
+         * space — they are not separate apps. Surface them only via the owner's
+         * thread_count, never as their own row (and don't double-count their
+         * shared memory). */
+        if (p.is_thread) {
+            prev_runtime_[slot] = 0;
+            continue;
+        }
+
         /* Cards/counts reflect ALL processes. */
         ++loaded;
         if (s == ProcessState::Ready)    ++ready;
