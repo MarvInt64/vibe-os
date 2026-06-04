@@ -1086,8 +1086,21 @@ static int mp3_huffman_decode(bitreader_t *br, const granule_info_t *g,
  *            * 2^(-0.5*(1+scalefac_scale)*sf)   (long block)
  *   short blocks add the per-window subblock_gain term. */
 
-/* Precomputed pow(n, 4.0/3.0) for n = 0..8206 would be large; compute on
- * the fly using mp3_powf().  VibeOS userspace has FPU so this is acceptable. */
+/* Precomputed |is|^(4/3) lookup.  The Huffman magnitudes span 0..8206
+ * (15 + max 13 linbits), so a 8207-entry table (≈32 KB) covers every possible
+ * value and removes the per-line mp3_powf() — previously ~16% of decode CPU. */
+static float pow43_tab[8207];
+static int   pow43_ready = 0;
+static void pow43_init(void)
+{
+    int i;
+    for (i = 0; i < 8207; i++) pow43_tab[i] = mp3_powf((float)i, 4.0f / 3.0f);
+    pow43_ready = 1;
+}
+static inline float pow43(int a)   /* a >= 0 */
+{
+    return (a < 8207) ? pow43_tab[a] : mp3_powf((float)a, 4.0f / 3.0f);
+}
 
 static void mp3_requantize(const int is[576], const granule_info_t *g,
                             const int scalefac_l[22],
@@ -1100,6 +1113,7 @@ static void mp3_requantize(const int is[576], const granule_info_t *g,
     float gg      = (float)g->global_gain;
     int i;
 
+    if (!pow43_ready) pow43_init();
     for (i = 0; i < 576; i++) xr[i] = 0.0f;
 
     /* Dequantise one line at a positional index, in place (xr[idx] ~ is[idx]).
@@ -1107,7 +1121,7 @@ static void mp3_requantize(const int is[576], const granule_info_t *g,
     #define REQ_LINE(idx, sf, gain) do {                                      \
         int _s = is[idx];                                                     \
         if (_s) {                                                             \
-            float _m = mp3_powf((float)(_s < 0 ? -_s : _s), 4.0f / 3.0f);     \
+            float _m = pow43(_s < 0 ? -_s : _s);                              \
             xr[idx] = (_s < 0 ? -_m : _m) * (sf) * (gain);                    \
         }                                                                     \
     } while (0)
@@ -1356,7 +1370,22 @@ static void mp3_imdct(const float xr[576], const granule_info_t *g,
 {
     int sb, n;
 
+    /* Highest subband with any nonzero spectral line.  Music typically zeros
+     * the upper subbands entirely; their IMDCT output is all zero, so we only
+     * need to flush the stored overlap (18 copies) instead of 648 MAC ops. */
+    int hi = 575;
+    while (hi >= 0 && xr[hi] == 0.0f) hi--;
+    int last_sb = (hi < 0) ? -1 : hi / 18;
+
     for (sb = 0; sb < 32; sb++) {
+        if (sb > last_sb) {
+            /* All-zero input → IMDCT is zero; output is just the overlap tail. */
+            for (n = 0; n < 18; n++) {
+                sb_samples[sb][n] = overlap[sb][n];
+                overlap[sb][n]    = 0.0f;
+            }
+            continue;
+        }
         /* First two subbands of a mixed block are long; rest follow block_type. */
         int bt = (g->mixed_block_flag && sb < 2) ? 0 : g->block_type;
         float raw[36];
@@ -1424,17 +1453,27 @@ static void mp3_synth(float sb_samples[32][18], float v_vec[1024],
 
     if (!synth_cos_ready) mp3_synth_init();
 
+    /* Highest subband carrying any sample this granule.  The upper subbands
+     * are usually all zero, so bounding the 32-wide matrix loop skips them
+     * without the per-element indirection that a sparse gather would cost. */
+    int smax = 0;
+    for (j = 0; j < 32; j++)
+        for (i = 0; i < 18; i++)
+            if (sb_samples[j][i] != 0.0f) { smax = j; break; }
+
     for (ss = 0; ss < 18; ss++) {           /* 18 sample-times per granule */
         /* Shift the 1024-sample V FIFO up by 64. */
         for (i = 1023; i > 63; i--) v_vec[i] = v_vec[i - 64];
 
         /* Matrix the 32 subband samples into 64 new V values:
-         *   V[i] = Σ_{j} S[j] · cos((16+i)·(2j+1)·π/64),  i = 0..63 */
-        for (j = 0; j < 32; j++) s_vec[j] = sb_samples[j][ss];
+         *   V[i] = Σ_{j} S[j] · cos((16+i)·(2j+1)·π/64),  i = 0..63
+         * Only the nonzero subbands contribute, so gather their indices once
+         * and skip the rest — the upper subbands are usually all zero. */
+        for (j = 0; j <= smax; j++) s_vec[j] = sb_samples[j][ss];
         for (i = 0; i < 64; i++) {
+            const float *row = synth_cos[i];
             sum = 0.0f;
-            for (j = 0; j < 32; j++)
-                sum += s_vec[j] * synth_cos[i][j];
+            for (j = 0; j <= smax; j++) sum += s_vec[j] * row[j];
             v_vec[i] = sum;
         }
 
