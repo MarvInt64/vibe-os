@@ -292,9 +292,7 @@ private:
     // present just that rectangle (vui_canvas_flush) without repainting the
     // static chrome. Chrome is redrawn only when chrome_dirty_ is set (state or
     // the displayed second changed).
-    vui_widget *wave_canvas_ = nullptr;  // waveform band, flushed every tick
-    vui_widget *bg_canvas_   = nullptr;  // full window, flushed on chrome change
-    int  wave_x_ = 0, wave_y_ = 0, wave_w_ = 0, wave_h_ = 0;
+    int  wave_x_ = 0, wave_y_ = 0, wave_w_ = 0, wave_h_ = 0;  // spectrum band
     bool chrome_dirty_ = false;
     bool last_paused_ = false;
     long last_sec_ = -1;
@@ -737,12 +735,19 @@ void AudioPlayer::draw_transport(const Layout &L) {
 // ring, feDropShadow halo, gradient glyph) at button size and blit it centred.
 // The SVG is assembled from the shared defs + the play or pause glyph.
 void AudioPlayer::draw_play_pause(int cx, int cy, int r) {
+    // The glow button (radialGradient + feDropShadow over 128x128) is by far
+    // the most expensive thing on the frame. It only changes on play<->pause,
+    // so render the SVG once per state and blit the cached pixels every frame.
     static uint32_t buf[BTN_SVG_SZ * BTN_SVG_SZ];
-    char svg[1600];
-    snprintf(svg, sizeof svg, "<svg viewBox=\"0 0 128 128\">%s%s</svg>",
-             SVG_DEFS, g_paused.load() ? SVG_PLAY_GLYPH : SVG_PAUSE_GLYPH);
-
-    svg_render_rgba(svg, buf, BTN_SVG_SZ, 0xffffff);
+    static int cached_state = -1;          // -1 none, 0 playing(pause icon), 1 paused(play icon)
+    int state = g_paused.load() ? 1 : 0;
+    if (state != cached_state) {
+        char svg[1600];
+        snprintf(svg, sizeof svg, "<svg viewBox=\"0 0 128 128\">%s%s</svg>",
+                 SVG_DEFS, state ? SVG_PLAY_GLYPH : SVG_PAUSE_GLYPH);
+        svg_render_rgba(svg, buf, BTN_SVG_SZ, 0xffffff);
+        cached_state = state;
+    }
 
     int x0 = cx - BTN_SVG_SZ / 2, y0 = cy - BTN_SVG_SZ / 2;
     for (int iy = 0; iy < BTN_SVG_SZ; ++iy) {
@@ -1005,29 +1010,24 @@ void AudioPlayer::on_tick() {
         if (bar_heights_[i] < 2.0f) bar_heights_[i] = 2.0f;
     }
 
-    // Redraw the spectrum band into g_canvas and present ONLY that rectangle —
-    // the static chrome stays in the framebuffer untouched.
-    fill_wave_bg(L);
-    draw_waveform(L);
-    if (wave_canvas_) vui_canvas_flush(win_, wave_canvas_);
-
-    // Chrome (progress fill, time, play/pause icon) only needs repainting when
-    // the displayed second advances or an interaction changed state.
-    long played = g_played.load(), total = g_total.load();
+    // Chrome (album art, labels, all SVG transport icons, the glow play button,
+    // progress + volume) is static between state changes — render it into
+    // g_canvas only when the displayed second advances or an interaction
+    // changed something. This keeps every SVG render off the per-frame path.
+    long played = g_played.load(), total = g_total.load(); (void)total;
     int  rate   = g_rate.load(); if (rate <= 0) rate = 44100;
     long sec    = played / rate;
-    if (sec != last_sec_) { last_sec_ = sec; chrome_dirty_ = true; }
+    if (sec != last_sec_)            { last_sec_ = sec; chrome_dirty_ = true; }
     bool pz = g_paused.load();
-    if (pz != last_paused_) { last_paused_ = pz; chrome_dirty_ = true; }
-    (void)total;
-    if (chrome_dirty_) {
-        chrome_dirty_ = false;
-        render_chrome();
-        // Present the whole window via the region path (not vui_request_repaint)
-        // so window_dirty stays clear and the waveform's per-tick region present
-        // keeps taking the kernel's immediate path.
-        if (bg_canvas_) vui_canvas_flush(win_, bg_canvas_);
-    }
+    if (pz != last_paused_)          { last_paused_ = pz; chrome_dirty_ = true; }
+    if (chrome_dirty_) { chrome_dirty_ = false; render_chrome(); }
+
+    // Per frame: erase the band with the precomputed gradient and draw the bars.
+    // The chrome already in g_canvas is left intact. Then present the whole
+    // window (correct stride; the compositor blit is cheap).
+    fill_wave_bg(L);
+    draw_waveform(L);
+    if (win_) vui_request_repaint(win_);
 }
 
 void AudioPlayer::on_click(int x, int y) {
@@ -1106,27 +1106,28 @@ void AudioPlayer::run(const char *path) {
     if (win_w_ > CANVAS_MAX_W) win_w_ = CANVAS_MAX_W;
     if (win_h_ > CANVAS_MAX_H) win_h_ = CANVAS_MAX_H;
 
-    // Full-window canvas holds the static chrome (drawn into g_canvas). Kept so
-    // chrome updates can be presented via vui_canvas_flush too (never a full
-    // vui_request_repaint, which would set window_dirty and force every region
-    // present into the kernel's deferred path — that pinned the waveform to the
-    // ~1 Hz chrome cadence).
-    bg_canvas_ = vui_canvas_ex(win_, 0, 0, win_w_, win_h_, g_canvas, CANVAS_MAX_W);
+    // Single full-window canvas. The whole frame is rendered into g_canvas and
+    // presented each tick. Cheap now because the expensive bits are off the
+    // per-frame path: the glow play button is cached (rendered only on state
+    // change) and the band gradient is precomputed; combined with the 8 Hz tick
+    // throttle and the worker no longer busy-spinning, CPU stays modest while
+    // the spectrum stays smooth. (Region-present was dropped: g_canvas uses a
+    // CANVAS_MAX_W stride that differs from the window's content width, so a
+    // partial flush mixed strides and only worked when they happened to match.)
+    vui_canvas_ex(win_, 0, 0, win_w_, win_h_, g_canvas, CANVAS_MAX_W);
 
-    // A second canvas covering only the waveform band, pointing INTO g_canvas
-    // at that band's offset. on_tick draws the spectrum here and presents just
-    // this rectangle, leaving the chrome untouched.
+    // Waveform band geometry + precomputed per-row background gradient, so the
+    // only per-frame cost is erasing the band (a cheap precomputed fill) and
+    // drawing the bars — the chrome (album art, labels, SVG icons, the glow
+    // play button) is rendered only when it changes.
     {
         Layout L = layout();
-        wave_x_ = L.wave_x0 - 6;
         wave_y_ = L.wave_cy - L.wave_half - 16;
-        wave_w_ = (L.wave_x1 - L.wave_x0) + 12;
         wave_h_ = 2 * L.wave_half + 28;
-        if (wave_x_ < 0) wave_x_ = 0;
+        wave_x_ = L.wave_x0 - 6;
+        wave_w_ = (L.wave_x1 - L.wave_x0) + 12;
         if (wave_y_ < 0) wave_y_ = 0;
-        wave_canvas_ = vui_canvas_ex(win_, wave_x_, wave_y_, wave_w_, wave_h_,
-                                     &g_canvas[wave_y_ * CANVAS_MAX_W + wave_x_],
-                                     CANVAS_MAX_W);
+        if (wave_x_ < 0) wave_x_ = 0;
         for (int iy = 0; iy < wave_h_ && iy < CANVAS_MAX_H; ++iy)
             wave_row_[iy] = lerp_rgb(COL_BG_TOP, COL_BG_BOT,
                                      (float)(wave_y_ + iy) / (float)win_h_);
