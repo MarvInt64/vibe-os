@@ -29,14 +29,19 @@
 // ───────────────────────────────────────────────────────────────────────────
 // Canvas geometry
 // ───────────────────────────────────────────────────────────────────────────
-static constexpr int CANVAS_MAX_W = 760;   // backing-buffer stride / max size
-static constexpr int CANVAS_MAX_H = 480;
 static constexpr int DEFAULT_W    = 720;
 static constexpr int DEFAULT_H    = 460;
 static constexpr int MAX_BARS     = 160;    // waveform bar slots
-static constexpr int BTN_SVG_SZ   = 128;    // play/pause glow SVG render size
 
-static uint32_t g_canvas[CANVAS_MAX_W * CANVAS_MAX_H];
+// The whole UI is built from retained VexUI widgets (labels, SVG icons,
+// sliders); the ONLY hand-drawn pixel surface is the waveform, which lives in
+// its own canvas widget with a matching stride. A small second canvas holds the
+// procedural album art (rendered once).
+static constexpr int WAVE_MAX_W = 720;      // waveform canvas backing size
+static constexpr int WAVE_MAX_H = 140;
+static uint32_t g_wave[WAVE_MAX_W * WAVE_MAX_H];
+static constexpr int ALBUM_S = 92;          // album-art tile side
+static uint32_t g_album[ALBUM_S * ALBUM_S];
 
 // ───────────────────────────────────────────────────────────────────────────
 // SVGs for player icons
@@ -49,16 +54,6 @@ static const char* SVG_SHUFFLE =
 static const char* SVG_PREV = 
     "<svg viewBox=\"0 0 24 24\">"
     "<path d=\"M19 20L9 12L19 4Z M4 5h2v14H4Z\" fill=\"currentColor\"/>"
-    "</svg>";
-
-static const char* SVG_PLAY = 
-    "<svg viewBox=\"0 0 24 24\">"
-    "<path d=\"M8 5v14l11-7Z\" fill=\"currentColor\"/>"
-    "</svg>";
-
-static const char* SVG_PAUSE = 
-    "<svg viewBox=\"0 0 24 24\">"
-    "<path d=\"M6 4h4v16H6Z M14 4h4v16h-4Z\" fill=\"currentColor\"/>"
     "</svg>";
 
 static const char* SVG_NEXT = 
@@ -146,7 +141,6 @@ static float ap_sin(float x) {
     return x * (0.9999966f + x2 * (-0.16664824f + x2 * (0.00830629f - x2 * 0.00018363f)));
 }
 static inline float ap_cos(float x) { return ap_sin(x + 1.57079633f); }
-static inline float ap_fabs(float x) { return x < 0 ? -x : x; }
 static inline float ap_clamp(float v, float lo, float hi) {
     return v < lo ? lo : (v > hi ? hi : v);
 }
@@ -221,11 +215,7 @@ static inline float ap_exp2(float x) {
 // ───────────────────────────────────────────────────────────────────────────
 // Background gradient harmonised with the VexUI window chrome (theme bg
 // 0x15273c) so the canvas no longer reads as a different blue from the frame.
-static constexpr uint32_t COL_BG_TOP   = 0x001a3050;  // background gradient (top)
-static constexpr uint32_t COL_BG_BOT   = 0x00102338;  // background gradient (bottom)
-static constexpr uint32_t COL_PANEL    = 0x18273f;  // raised glass panels
-static constexpr uint32_t COL_PANEL_HI = 0x2b3d5e;  // panel top highlight line
-static constexpr uint32_t COL_TRACK    = 0x223047;  // empty slider / progress track
+static constexpr uint32_t COL_BG       = 0x00142840;  // solid window background
 static constexpr uint32_t COL_ACCENT   = 0x4aa8ff;  // azure accent (play / sliders)
 static constexpr uint32_t COL_ACCENT_HI= 0x8ccbff;  // bright accent (handles, glow)
 static constexpr uint32_t COL_TEXT     = 0xeef3fb;  // primary text
@@ -265,114 +255,44 @@ static float hash01(int n) {
 class AudioPlayer {
 public:
     static AudioPlayer *instance() { return instance_; }
-
     void run(const char *path);
+    void on_tick();                       // called from the VexUI tick trampoline
 
-    // event callbacks (forwarded from the C trampolines below)
-    void on_tick();
-    void on_click(int x, int y);
-    void on_mouse_move(int x, int y);
-    void on_mouse_release(int x, int y);
-    void on_resize(int w, int h);
+    // Retained chrome widgets that interaction/state updates poke at runtime.
+    vui_widget *play_ic_    = nullptr;
+    vui_widget *shuffle_ic_ = nullptr;
+    vui_widget *repeat_ic_  = nullptr;
+    vui_widget *progress_   = nullptr;
+    vui_widget *volume_     = nullptr;
 
 private:
     static AudioPlayer *instance_;
 
-    vui_window *win_  = nullptr;
-    int   win_w_      = DEFAULT_W;
-    int   win_h_      = DEFAULT_H;
-    char  path_[256]  = {};
+    vui_window *win_ = nullptr;
+    char  path_[256] = {};
 
-    float anim_phase_ = 0.0f;   // free-running phase for sparkle/glow motion
-    float level_lp_   = 0.0f;   // low-pass-filtered audio level (smooth pulsing)
-    int   dragging_   = 0;      // 0 none, 1 progress bar, 2 volume slider
+    vui_widget *wave_canvas_ = nullptr;   // the only hand-drawn surface
+    vui_widget *title_lbl_ = nullptr, *artist_lbl_ = nullptr, *meta_lbl_ = nullptr;
+    vui_widget *time_l_lbl_ = nullptr, *time_r_lbl_ = nullptr;
 
-    // The waveform is the only part that animates every tick; it gets its own
-    // canvas widget pointing INTO the waveform band of g_canvas, so we can
-    // present just that rectangle (vui_canvas_flush) without repainting the
-    // static chrome. Chrome is redrawn only when chrome_dirty_ is set (state or
-    // the displayed second changed).
-    int  wave_x_ = 0, wave_y_ = 0, wave_w_ = 0, wave_h_ = 0;  // spectrum band
-    bool chrome_dirty_ = false;
-    bool last_paused_ = false;
-    long last_sec_ = -1;
-    int  tick_count_ = 0;
-    uint32_t wave_row_[CANVAS_MAX_H] = {};  // precomputed gradient per band row
+    int   wave_w_ = 0, wave_h_ = 0;       // waveform canvas size (own stride)
+    int   tick_count_ = 0;
+    float level_lp_ = 0.0f;
+    float bar_heights_[MAX_BARS] = {};    // current displayed bar heights
+    float bar_peak_[MAX_BARS]    = {};    // per-band running peak (AGC)
 
-    float bar_heights_[MAX_BARS] = {};   // current displayed bar heights
-    float bar_peak_[MAX_BARS]    = {};   // per-band running peak (AGC normaliser)
-    void  draw_svg_icon(int cx, int cy, const char *svg, uint32_t c);
-
-    // ---- computed layout (recomputed each render from win_w_/win_h_) -------
-    struct Layout {
-        int album_x, album_y, album_s;
-        int text_x, title_y, artist_y, meta_y;
-        int heart_x, menu_x, icon_y;
-        int wave_x0, wave_x1, wave_cy, wave_half;
-        int prog_x0, prog_x1, prog_y;
-        int time_l_x, time_r_x, time_y;
-        int bar_x, bar_y, bar_w, bar_h;          // transport panel
-        int ctl_y;                               // transport icon centre line
-        int shuffle_x, prev_x, play_x, next_x, repeat_x;
-        int play_r;
-        int vol_spk_x, vol_x0, vol_x1, vol_y;
-    };
-    Layout layout() const;
-
-    // ---- drawing primitives ------------------------------------------------
-    inline void put(int x, int y, uint32_t c) {
-        if ((unsigned)x < (unsigned)win_w_ && (unsigned)y < (unsigned)win_h_)
-            g_canvas[y * CANVAS_MAX_W + x] = c;
-    }
-    inline void blend(int x, int y, uint32_t c, int a) {        // a: 0..255
-        if ((unsigned)x >= (unsigned)win_w_ || (unsigned)y >= (unsigned)win_h_) return;
-        if (a <= 0) return;
-        if (a >= 255) { g_canvas[y * CANVAS_MAX_W + x] = c; return; }
-        uint32_t &d = g_canvas[y * CANVAS_MAX_W + x];
-        uint32_t r = ((((c >> 16) & 0xff) * a) + (((d >> 16) & 0xff) * (255 - a))) / 255;
-        uint32_t g = ((((c >> 8)  & 0xff) * a) + (((d >> 8)  & 0xff) * (255 - a))) / 255;
-        uint32_t b = ((((c)       & 0xff) * a) + (((d)       & 0xff) * (255 - a))) / 255;
-        d = (r << 16) | (g << 8) | b;
-    }
-    void fill_rect(int x, int y, int w, int h, uint32_t c);
-    void round_rect(int x, int y, int w, int h, int r, uint32_t c, int a = 255);
-    void round_rect_outline(int x, int y, int w, int h, int r, uint32_t c, int a);
-    void disc(int cx, int cy, float r, uint32_t c, int a = 255);
-    void ring(int cx, int cy, float r, float thick, uint32_t c, int a);
-    void thick_line(int x0, int y0, int x1, int y1, float t, uint32_t c, int a = 255);
-    void tri(int x0, int y0, int x1, int y1, int x2, int y2, uint32_t c);
-    void draw_text(int x, int y, const char *s, uint32_t c, int scale = 1) {
-        // The kernel TTF rasteriser uses the buffer-width argument as the row
-        // stride, so pass the real backing stride (CANVAS_MAX_W), not win_w_.
-        if (s && *s) vos_text_draw(g_canvas, CANVAS_MAX_W, win_h_, x, y, s, c, scale);
-    }
-    int  text_w(const char *s, int scale = 1) { return s && *s ? vos_text_metrics(s, scale) : 0; }
+    // chrome-change tracking (labels/slider/icon only refreshed when these move)
+    long last_sec_     = -1;
+    bool last_paused_  = false;
+    int  last_bitrate_ = -1;
 
     static uint32_t lerp_rgb(uint32_t a, uint32_t b, float t);
+    static void fmt_time(long seconds, char *out);
+    void draw_album_art();                // render once into g_album
+    void draw_spectrum();                 // per-tick into g_wave
+    void update_chrome();                 // refresh widgets whose value changed
 
-    // ---- composed pieces ---------------------------------------------------
-    void render();              // full frame (chrome + waveform) — used on resize
-    void render_chrome();       // everything except the waveform band
-    void fill_wave_bg(const Layout &L);  // repaint the gradient under the bars
-    void draw_background();
-    void draw_album_art(const Layout &L);
-    void draw_header(const Layout &L);
-    void draw_waveform(const Layout &L);
-    void draw_progress(const Layout &L);
-    void draw_transport(const Layout &L);
-    void draw_play_pause(int cx, int cy, int r);
-    void draw_icon_shuffle(int cx, int cy, uint32_t c);
-    void draw_icon_prev(int cx, int cy, uint32_t c);
-    void draw_icon_next(int cx, int cy, uint32_t c);
-    void draw_icon_repeat(int cx, int cy, uint32_t c);
-    void draw_icon_speaker(int cx, int cy, uint32_t c);
-    void draw_icon_heart(int cx, int cy, uint32_t c);
-    void draw_icon_dots(int cx, int cy, uint32_t c);
-    void fmt_time(long seconds, char *out);
-
-    // ---- decode/stream worker ---------------------------------------------
-    // dec and pcm are pre-allocated on the main thread to work around the
-    // SYS_SBRK-from-thread bug: malloc inside a spawned thread crashes.
+    // ---- decode/stream worker (unchanged) ---------------------------------
     struct WorkerArgs { AudioPlayer *self; mp3dec_t *dec; int16_t *pcm; };
     static void worker(WorkerArgs *args);
     static bool write_all(const int16_t *pcm, int samples);
@@ -380,412 +300,41 @@ private:
 
 AudioPlayer *AudioPlayer::instance_ = nullptr;
 
-// ===========================================================================
-// Layout
-// ===========================================================================
-AudioPlayer::Layout AudioPlayer::layout() const {
-    const int W = win_w_, H = win_h_;
-    Layout L{};
+// Self-contained alpha blend into an arbitrary RGBX buffer (the waveform/album
+// canvases own their pixels; we no longer share a chrome canvas).
+static inline void blend_px(uint32_t *buf, int stride, int w, int h,
+                            int x, int y, uint32_t c, int a) {
+    if ((unsigned)x >= (unsigned)w || (unsigned)y >= (unsigned)h || a <= 0) return;
+    uint32_t &d = buf[(long)y * stride + x];
+    if (a >= 255) { d = c & 0xffffff; return; }
+    uint32_t r = ((((c >> 16) & 0xff) * a) + (((d >> 16) & 0xff) * (255 - a))) / 255;
+    uint32_t g = ((((c >> 8)  & 0xff) * a) + (((d >> 8)  & 0xff) * (255 - a))) / 255;
+    uint32_t b = ((((c)       & 0xff) * a) + (((d)       & 0xff) * (255 - a))) / 255;
+    d = (r << 16) | (g << 8) | b;
+}
 
-    L.album_s  = 92;
-    L.album_x  = 28;
-    L.album_y  = 24;
-    L.text_x   = L.album_x + L.album_s + 22;
-    L.title_y  = 32;
-    L.artist_y = 70;
-    L.meta_y   = 96;
-    L.icon_y   = 40;
-    L.menu_x   = W - 34;
-    L.heart_x  = W - 66;
-
-    L.wave_x0   = 44;
-    L.wave_x1   = W - 44;
-    L.wave_cy   = (int)(H * 0.45f);
-    L.wave_half = 54;
-
-    L.prog_y   = H - 168;
-    L.time_y   = L.prog_y - 8;
-    L.time_l_x = 44;
-    L.time_r_x = W - 44;
-    L.prog_x0  = 96;
-    L.prog_x1  = W - 96;
-
-    L.bar_x = 24;
-    L.bar_w = W - 48;
-    L.bar_h = 116;
-    L.bar_y = H - L.bar_h - 18;
-    L.ctl_y = L.bar_y + L.bar_h / 2;
-
-    L.play_r    = 27;
-    L.play_x    = W / 2;
-    L.prev_x    = W / 2 - 82;
-    L.next_x    = W / 2 + 82;
-    L.shuffle_x = W / 2 - 162;
-    L.repeat_x  = W / 2 + 162;
-
-    L.vol_spk_x = W - 116;
-    L.vol_x0    = W - 92;
-    L.vol_x1    = W - 40;
-    L.vol_y     = L.ctl_y;
-    return L;
+// Assemble the glow play/pause SVG (shared defs + glyph) into a reusable buffer.
+static const char *glow_svg(bool play_icon) {
+    static char buf[1600];
+    snprintf(buf, sizeof buf, "<svg viewBox=\"0 0 128 128\">%s%s</svg>",
+             SVG_DEFS, play_icon ? SVG_PLAY_GLYPH : SVG_PAUSE_GLYPH);
+    return buf;
 }
 
 // ===========================================================================
-// Drawing primitives
+// Layout
+// ===========================================================================
+// ===========================================================================
+// Colour + time helpers
 // ===========================================================================
 uint32_t AudioPlayer::lerp_rgb(uint32_t a, uint32_t b, float t) {
     t = ap_clamp(t, 0.0f, 1.0f);
     int ar = (a >> 16) & 0xff, ag = (a >> 8) & 0xff, ab = a & 0xff;
     int br = (b >> 16) & 0xff, bg = (b >> 8) & 0xff, bb = b & 0xff;
-    int r = ar + (int)((br - ar) * t);
-    int g = ag + (int)((bg - ag) * t);
+    int r  = ar + (int)((br - ar) * t);
+    int g  = ag + (int)((bg - ag) * t);
     int bl = ab + (int)((bb - ab) * t);
     return (r << 16) | (g << 8) | bl;
-}
-
-void AudioPlayer::draw_svg_icon(int cx, int cy, const char *svg, uint32_t c) {
-    uint32_t tmp[24 * 24];
-    svg_render_rgba(svg, tmp, 24, c & 0xffffff);
-    int x0 = cx - 12;
-    int y0 = cy - 12;
-    for (int y = 0; y < 24; ++y) {
-        for (int x = 0; x < 24; ++x) {
-            uint32_t px = tmp[y * 24 + x];
-            int a = (px >> 24) & 0xff;
-            if (a > 0) {
-                blend(x0 + x, y0 + y, px & 0xffffff, a);
-            }
-        }
-    }
-}
-
-void AudioPlayer::fill_rect(int x, int y, int w, int h, uint32_t c) {
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (x + w > win_w_) w = win_w_ - x;
-    if (y + h > win_h_) h = win_h_ - y;
-    for (int iy = 0; iy < h; ++iy) {
-        uint32_t *row = &g_canvas[(y + iy) * CANVAS_MAX_W + x];
-        for (int ix = 0; ix < w; ++ix) row[ix] = c;
-    }
-}
-
-// Filled rounded rectangle with per-corner anti-aliasing, optional alpha.
-void AudioPlayer::round_rect(int x, int y, int w, int h, int r, uint32_t c, int a) {
-    if (r * 2 > w) r = w / 2;
-    if (r * 2 > h) r = h / 2;
-    for (int iy = 0; iy < h; ++iy) {
-        for (int ix = 0; ix < w; ++ix) {
-            // distance into the nearest corner; outside the corner radius → skip
-            int dx = 0, dy = 0;
-            if (ix < r)            dx = r - ix;
-            else if (ix >= w - r)  dx = ix - (w - r - 1);
-            if (iy < r)            dy = r - iy;
-            else if (iy >= h - r)  dy = iy - (h - r - 1);
-            int cov = a;
-            if (dx && dy) {
-                float dist = ap_fabs((float)r) - 0.0f;
-                float d = (float)(dx * dx + dy * dy);
-                float edge = (float)(r * r);
-                if (d > edge) {
-                    float over = (d - edge) / (2.0f * r + 1.0f);
-                    if (over > 1.0f) continue;            // fully outside
-                    cov = (int)(a * (1.0f - over));
-                }
-                (void)dist;
-            }
-            blend(x + ix, y + iy, c, cov);
-        }
-    }
-}
-
-void AudioPlayer::round_rect_outline(int x, int y, int w, int h, int r, uint32_t c, int a) {
-    if (r * 2 > w) r = w / 2;
-    if (r * 2 > h) r = h / 2;
-    // top & bottom straight runs
-    for (int ix = x + r; ix < x + w - r; ++ix) { blend(ix, y, c, a); blend(ix, y + h - 1, c, a); }
-    for (int iy = y + r; iy < y + h - r; ++iy) { blend(x, iy, c, a); blend(x + w - 1, iy, c, a); }
-    // four corner quarter-arcs
-    for (int t = 0; t <= 90; ++t) {
-        float rad = t * 3.14159265f / 180.0f;
-        int cxv = (int)(r * ap_cos(rad)), cyv = (int)(r * ap_sin(rad));
-        blend(x + w - r - 1 + cxv, y + r - cyv,         c, a);
-        blend(x + r - cxv,         y + r - cyv,         c, a);
-        blend(x + w - r - 1 + cxv, y + h - r - 1 + cyv, c, a);
-        blend(x + r - cxv,         y + h - r - 1 + cyv, c, a);
-    }
-}
-
-// Anti-aliased filled circle (coverage from the sub-pixel distance to centre).
-void AudioPlayer::disc(int cx, int cy, float r, uint32_t c, int a) {
-    int ri = (int)(r + 2.0f);
-    for (int dy = -ri; dy <= ri; ++dy) {
-        for (int dx = -ri; dx <= ri; ++dx) {
-            float d = (float)dx * dx + (float)dy * dy;
-            float rr = r * r;
-            if (d <= rr) {
-                blend(cx + dx, cy + dy, c, a);
-            } else {
-                float over = (d - rr) / (2.0f * r + 1.0f);
-                if (over < 1.0f) blend(cx + dx, cy + dy, c, (int)(a * (1.0f - over)));
-            }
-        }
-    }
-}
-
-// Anti-aliased ring (stroked circle) of the given thickness.
-void AudioPlayer::ring(int cx, int cy, float r, float thick, uint32_t c, int a) {
-    int ri = (int)(r + thick + 2.0f);
-    float r_out = r + thick * 0.5f, r_in = r - thick * 0.5f;
-    for (int dy = -ri; dy <= ri; ++dy) {
-        for (int dx = -ri; dx <= ri; ++dx) {
-            float dist = 0.0f; { float dd = (float)dx * dx + (float)dy * dy;
-                // cheap sqrt via Newton (one step is plenty for AA coverage)
-                float g = dd > 0 ? dd : 1.0f; float s = g; s = 0.5f * (s + dd / s); s = 0.5f * (s + dd / s); dist = s; }
-            float cov = 1.0f;
-            cov = ap_clamp(r_out - dist + 0.5f, 0.0f, 1.0f) *
-                  ap_clamp(dist - r_in + 0.5f, 0.0f, 1.0f);
-            if (cov > 0.0f) blend(cx + dx, cy + dy, c, (int)(a * cov));
-        }
-    }
-}
-
-void AudioPlayer::thick_line(int x0, int y0, int x1, int y1, float t, uint32_t c, int a) {
-    int dx = x1 - x0, dy = y1 - y0;
-    int steps = (dx < 0 ? -dx : dx) > (dy < 0 ? -dy : dy)
-              ? (dx < 0 ? -dx : dx) : (dy < 0 ? -dy : dy);
-    if (steps == 0) steps = 1;
-    int half = (int)(t * 0.5f);
-    for (int i = 0; i <= steps; ++i) {
-        int px = x0 + dx * i / steps, py = y0 + dy * i / steps;
-        for (int oy = -half; oy <= half; ++oy)
-            for (int ox = -half; ox <= half; ++ox)
-                blend(px + ox, py + oy, c, a);
-    }
-}
-
-// Solid triangle (scanline fill); used for the play / skip glyphs.
-void AudioPlayer::tri(int x0, int y0, int x1, int y1, int x2, int y2, uint32_t c) {
-    int ymin = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
-    int ymax = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
-    for (int y = ymin; y <= ymax; ++y) {
-        int xs[3], n = 0;
-        auto edge = [&](int ax, int ay, int bx, int by) {
-            if ((ay <= y && by > y) || (by <= y && ay > y))
-                xs[n++] = ax + (bx - ax) * (y - ay) / (by - ay);
-        };
-        edge(x0, y0, x1, y1); edge(x1, y1, x2, y2); edge(x2, y2, x0, y0);
-        if (n >= 2) {
-            int l = xs[0] < xs[1] ? xs[0] : xs[1];
-            int r = xs[0] > xs[1] ? xs[0] : xs[1];
-            for (int x = l; x <= r; ++x) put(x, y, c);
-        }
-    }
-}
-
-// ===========================================================================
-// Composed UI
-// ===========================================================================
-void AudioPlayer::draw_background() {
-    // Vertical gradient + a soft radial lift toward the upper centre.
-    for (int y = 0; y < win_h_; ++y) {
-        uint32_t base = lerp_rgb(COL_BG_TOP, COL_BG_BOT, (float)y / win_h_);
-        uint32_t *row = &g_canvas[y * CANVAS_MAX_W];
-        for (int x = 0; x < win_w_; ++x) row[x] = base;
-    }
-}
-
-// Procedural "album art": a smooth deep-blue gradient crossed by two soft,
-// glowing sine waves. The waves use a per-pixel distance falloff (not 1px
-// lines) so they read as soft light, not the grainy hairlines of before, and
-// the whole tile is clipped to rounded corners to match the mockup.
-void AudioPlayer::draw_album_art(const Layout &L) {
-    const int s   = L.album_s;
-    const int ax  = L.album_x, ay = L.album_y;
-    const int rad = 12;
-
-    for (int ix = 0; ix < s; ++ix) {
-        float p   = (float)ix / (float)s;
-        float wy1 = s * 0.48f + ap_sin(p * 6.2f + 0.4f) * s * 0.20f;
-        float wy2 = s * 0.58f + ap_sin(p * 4.3f + 2.3f) * s * 0.14f;
-
-        for (int iy = 0; iy < s; ++iy) {
-            /* rounded-corner clip */
-            int dx = 0, dy = 0;
-            if (ix < rad)          dx = rad - ix;
-            else if (ix >= s - rad) dx = ix - (s - rad - 1);
-            if (iy < rad)          dy = rad - iy;
-            else if (iy >= s - rad) dy = iy - (s - rad - 1);
-            if (dx && dy && dx * dx + dy * dy > rad * rad) continue;
-
-            int px = ax + ix, py = ay + iy;
-
-            /* base: diagonal + vertical blended gradient for depth */
-            float t = (float)(ix + iy) / (2.0f * s);
-            float v = (float)iy / (float)s;
-            g_canvas[py * CANVAS_MAX_W + px] =
-                lerp_rgb(0x081a36, 0x1d4f86, t * 0.65f + v * 0.35f);
-
-            /* soft glow from the two flowing wave centrelines */
-            float d1 = (float)iy - wy1; if (d1 < 0) d1 = -d1;
-            if (d1 < 6.0f) blend(px, py, COL_WAVE_L, (int)(210.0f * (1.0f - d1 / 6.0f)));
-            float d2 = (float)iy - wy2; if (d2 < 0) d2 = -d2;
-            if (d2 < 5.0f) blend(px, py, COL_WAVE_R, (int)(150.0f * (1.0f - d2 / 5.0f)));
-        }
-    }
-    round_rect_outline(ax, ay, s, s, rad, COL_PANEL_HI, 140); // soft frame
-}
-
-void AudioPlayer::draw_header(const Layout &L) {
-    draw_album_art(L);
-    draw_text(L.text_x, L.title_y, "Midnight Drive", COL_TEXT, 2);
-    draw_text(L.text_x, L.artist_y, "VibeWave", COL_TEXT_DIM, 1);
-
-    char meta[96];
-    int br = g_bitrate.load(), rate = g_rate.load();
-    snprintf(meta, sizeof meta, "MP3  %d.%d kHz  %d kbps",
-             rate / 1000, (rate % 1000) / 100, br);
-    draw_text(L.text_x, L.meta_y, meta, COL_TEXT_DIM, 1);
-
-    draw_icon_heart(L.heart_x, L.icon_y + 6, COL_TEXT_DIM);
-    draw_icon_dots(L.menu_x, L.icon_y + 6, COL_TEXT_DIM);
-}
-
-// The hero element: a mirrored bar waveform with a position colour gradient
-// (cyan → violet → blue, the magenta peak biased centre-right like the mockup)
-// and sparkle dots over the tallest bars.
-void AudioPlayer::draw_waveform(const Layout &L) {
-    const int x0 = L.wave_x0, x1 = L.wave_x1, cy = L.wave_cy;
-    const int width = x1 - x0;
-    const int step  = 6;                              // px per bar (bar+gap)
-    int bars = width / step; if (bars > MAX_BARS) bars = MAX_BARS;
-    const int barw = 4;
-
-    for (int i = 0; i < bars; ++i) {
-        float p = (bars > 1) ? (float)i / (float)(bars - 1) : 0.0f;
-        int half = (int)bar_heights_[i];
-        if (half < 2) half = 2;
-        if (half > L.wave_half) half = L.wave_half;
-
-        // Position gradient: cyan → magenta peak (~65% across) → blue, matching
-        // the reference's left-cyan / centre-violet / right-blue colouring.
-        uint32_t col = (p < 0.65f)
-            ? lerp_rgb(COL_WAVE_L, COL_WAVE_R, p / 0.65f)
-            : lerp_rgb(COL_WAVE_R, COL_WAVE_M, (p - 0.65f) / 0.35f);
-
-        int bx = x0 + i * step;
-        round_rect(bx, cy - half, barw, half * 2, barw / 2, col, 255);
-
-        // sparkle dots above the tallest bars for a touch of life
-        if (half > 16) {
-            float r = hash01(i * 7 + 1);
-            if (r > 0.5f) {
-                int sy = cy - half - 4 - (int)(r * 9.0f);
-                int a  = 110 + (int)(hash01(i * 3) * 110.0f);
-                blend(bx + barw / 2, sy, COL_ACCENT_HI, a);
-                blend(bx + barw / 2, sy - 1, COL_ACCENT_HI, a / 2);
-            }
-        }
-    }
-}
-
-void AudioPlayer::draw_progress(const Layout &L) {
-    long played = g_played.load(), total = g_total.load();
-    int rate = g_rate.load(); if (rate <= 0) rate = 44100;
-    float prog = total > 0 ? ap_clamp((float)played / (float)total, 0.0f, 1.0f) : 0.0f;
-
-    char tl[16], tr[16];
-    fmt_time(played / rate, tl);
-    fmt_time(total / rate, tr);
-    draw_text(L.time_l_x, L.time_y, tl, COL_TEXT_DIM, 1);
-    draw_text(L.time_r_x - text_w(tr), L.time_y, tr, COL_TEXT_DIM, 1);
-
-    // track + filled portion + glowing handle
-    int y = L.prog_y, x0 = L.prog_x0, x1 = L.prog_x1;
-    round_rect(x0, y - 2, x1 - x0, 4, 2, COL_TRACK, 255);
-    int fillw = (int)((x1 - x0) * prog);
-    round_rect(x0, y - 2, fillw, 4, 2, COL_ACCENT, 255);
-    int hx = x0 + fillw;
-    disc(hx, y, 9.0f, COL_ACCENT, 70);     // glow halo
-    disc(hx, y, 5.0f, COL_ACCENT_HI, 255); // handle
-}
-
-void AudioPlayer::draw_transport(const Layout &L) {
-    // rounded glass panel
-    round_rect(L.bar_x, L.bar_y, L.bar_w, L.bar_h, 18, COL_PANEL, 235);
-    for (int x = L.bar_x + 18; x < L.bar_x + L.bar_w - 18; ++x)
-        blend(x, L.bar_y, COL_PANEL_HI, 110);   // top highlight line
-
-    draw_icon_shuffle(L.shuffle_x, L.ctl_y, g_shuffle.load() ? COL_ACCENT : COL_TEXT_DIM);
-    draw_icon_prev(L.prev_x, L.ctl_y, COL_TEXT);
-    draw_play_pause(L.play_x, L.ctl_y, L.play_r);
-    draw_icon_next(L.next_x, L.ctl_y, COL_TEXT);
-    draw_icon_repeat(L.repeat_x, L.ctl_y, g_repeat.load() ? COL_ACCENT : COL_TEXT_DIM);
-
-    // volume: speaker glyph + slider
-    draw_icon_speaker(L.vol_spk_x, L.ctl_y, COL_TEXT_DIM);
-    int vol = g_volume.load();
-    round_rect(L.vol_x0, L.vol_y - 2, L.vol_x1 - L.vol_x0, 4, 2, COL_TRACK, 255);
-    int vw = (L.vol_x1 - L.vol_x0) * vol / 100;
-    round_rect(L.vol_x0, L.vol_y - 2, vw, 4, 2, COL_ACCENT, 255);
-    disc(L.vol_x0 + vw, L.vol_y, 4.0f, COL_ACCENT_HI, 255);
-}
-
-// Play/pause button: render the designer's glow SVG (radial bg glow, gradient
-// ring, feDropShadow halo, gradient glyph) at button size and blit it centred.
-// The SVG is assembled from the shared defs + the play or pause glyph.
-void AudioPlayer::draw_play_pause(int cx, int cy, int r) {
-    // The glow button (radialGradient + feDropShadow over 128x128) is by far
-    // the most expensive thing on the frame. It only changes on play<->pause,
-    // so render the SVG once per state and blit the cached pixels every frame.
-    static uint32_t buf[BTN_SVG_SZ * BTN_SVG_SZ];
-    static int cached_state = -1;          // -1 none, 0 playing(pause icon), 1 paused(play icon)
-    int state = g_paused.load() ? 1 : 0;
-    if (state != cached_state) {
-        char svg[1600];
-        snprintf(svg, sizeof svg, "<svg viewBox=\"0 0 128 128\">%s%s</svg>",
-                 SVG_DEFS, state ? SVG_PLAY_GLYPH : SVG_PAUSE_GLYPH);
-        svg_render_rgba(svg, buf, BTN_SVG_SZ, 0xffffff);
-        cached_state = state;
-    }
-
-    int x0 = cx - BTN_SVG_SZ / 2, y0 = cy - BTN_SVG_SZ / 2;
-    for (int iy = 0; iy < BTN_SVG_SZ; ++iy) {
-        for (int ix = 0; ix < BTN_SVG_SZ; ++ix) {
-            uint32_t px = buf[iy * BTN_SVG_SZ + ix];
-            int a = (px >> 24) & 0xff;
-            if (a > 0) blend(x0 + ix, y0 + iy, px & 0xffffff, a);
-        }
-    }
-    (void)r;
-}
-
-void AudioPlayer::draw_icon_shuffle(int cx, int cy, uint32_t c) {
-    draw_svg_icon(cx, cy, SVG_SHUFFLE, c);
-}
-
-void AudioPlayer::draw_icon_prev(int cx, int cy, uint32_t c) {
-    draw_svg_icon(cx, cy, SVG_PREV, c);
-}
-
-void AudioPlayer::draw_icon_next(int cx, int cy, uint32_t c) {
-    draw_svg_icon(cx, cy, SVG_NEXT, c);
-}
-
-void AudioPlayer::draw_icon_repeat(int cx, int cy, uint32_t c) {
-    draw_svg_icon(cx, cy, SVG_REPEAT, c);
-}
-
-void AudioPlayer::draw_icon_speaker(int cx, int cy, uint32_t c) {
-    draw_svg_icon(cx, cy, SVG_SPEAKER, c);
-}
-
-void AudioPlayer::draw_icon_heart(int cx, int cy, uint32_t c) {
-    draw_svg_icon(cx, cy, SVG_HEART, c);
-}
-
-void AudioPlayer::draw_icon_dots(int cx, int cy, uint32_t c) {
-    draw_svg_icon(cx, cy, SVG_DOTS, c);
 }
 
 void AudioPlayer::fmt_time(long seconds, char *out) {
@@ -794,35 +343,71 @@ void AudioPlayer::fmt_time(long seconds, char *out) {
     snprintf(out, 16, "%02ld:%02ld", m, s);
 }
 
-void AudioPlayer::render() {
-    Layout L = layout();
-    render_chrome();
-    draw_waveform(L);
-}
+// ===========================================================================
+// Album art — procedural glow tile, rendered once into its own canvas buffer.
+// ===========================================================================
+void AudioPlayer::draw_album_art() {
+    const int s = ALBUM_S, rad = 12;
+    for (int ix = 0; ix < s; ++ix) {
+        float p   = (float)ix / (float)s;
+        float wy1 = s * 0.48f + ap_sin(p * 6.2f + 0.4f) * s * 0.20f;
+        float wy2 = s * 0.58f + ap_sin(p * 4.3f + 2.3f) * s * 0.14f;
+        for (int iy = 0; iy < s; ++iy) {
+            int dx = 0, dy = 0;                       // rounded-corner clip
+            if (ix < rad)           dx = rad - ix;
+            else if (ix >= s - rad) dx = ix - (s - rad - 1);
+            if (iy < rad)           dy = rad - iy;
+            else if (iy >= s - rad) dy = iy - (s - rad - 1);
+            if (dx && dy && dx * dx + dy * dy > rad * rad) { g_album[iy * s + ix] = COL_BG; continue; }
 
-// Everything except the per-tick waveform band. Drawn once at startup and only
-// when chrome_dirty_ is set (play/pause, seek, volume, or the second changed) —
-// this is where the expensive bits live (full-window gradient, the glow-SVG
-// play button), so keeping it off the per-frame path is the main CPU win.
-void AudioPlayer::render_chrome() {
-    Layout L = layout();
-    draw_background();
-    draw_header(L);
-    draw_progress(L);
-    draw_transport(L);
-}
+            float t = (float)(ix + iy) / (2.0f * s);
+            float v = (float)iy / (float)s;
+            g_album[iy * s + ix] = lerp_rgb(0x081a36, 0x1d4f86, t * 0.65f + v * 0.35f);
 
-// Repaint just the vertical gradient under the waveform band so the previous
-// frame's bars are erased before the new ones are drawn.
-void AudioPlayer::fill_wave_bg(const Layout &L) {
-    (void)L;
-    int xmax = wave_x_ + wave_w_; if (xmax > win_w_) xmax = win_w_;
-    for (int iy = 0; iy < wave_h_ && wave_y_ + iy < win_h_; ++iy) {
-        uint32_t base = wave_row_[iy];          // precomputed, no per-pixel float
-        uint32_t *row = &g_canvas[(wave_y_ + iy) * CANVAS_MAX_W];
-        for (int x = wave_x_; x < xmax; ++x) row[x] = base;
+            float d1 = (float)iy - wy1; if (d1 < 0) d1 = -d1;
+            if (d1 < 6.0f) blend_px(g_album, s, s, s, ix, iy, COL_WAVE_L, (int)(210.0f * (1.0f - d1 / 6.0f)));
+            float d2 = (float)iy - wy2; if (d2 < 0) d2 = -d2;
+            if (d2 < 5.0f) blend_px(g_album, s, s, s, ix, iy, COL_WAVE_R, (int)(150.0f * (1.0f - d2 / 5.0f)));
+        }
     }
 }
+
+// ===========================================================================
+// Spectrum — the only per-frame pixel work, drawn into the waveform canvas.
+// ===========================================================================
+void AudioPlayer::draw_spectrum() {
+    const int W = wave_w_, H = wave_h_;
+    const int cy = H / 2;
+    const int half_max = H / 2 - 3;
+    for (int i = 0; i < W * H; ++i) g_wave[i] = COL_BG;   // opaque background
+
+    const int step = 6, barw = 4;
+    int bars = W / step; if (bars > MAX_BARS) bars = MAX_BARS;
+    for (int i = 0; i < bars; ++i) {
+        float p = (bars > 1) ? (float)i / (float)(bars - 1) : 0.0f;
+        int half = (int)bar_heights_[i];
+        if (half < 2)        half = 2;
+        if (half > half_max) half = half_max;
+        uint32_t col = (p < 0.65f)
+            ? lerp_rgb(COL_WAVE_L, COL_WAVE_R, p / 0.65f)
+            : lerp_rgb(COL_WAVE_R, COL_WAVE_M, (p - 0.65f) / 0.35f);
+        int bx = i * step;
+        for (int yy = cy - half; yy < cy + half; ++yy)
+            for (int xx = bx; xx < bx + barw; ++xx)
+                blend_px(g_wave, W, W, H, xx, yy, col, 255);
+
+        if (half > 16) {                                 // sparkle on tall bars
+            float r = hash01(i * 7 + 1);
+            if (r > 0.5f) {
+                int sy = cy - half - 4 - (int)(r * 9.0f);
+                int a  = 110 + (int)(hash01(i * 3) * 110.0f);
+                blend_px(g_wave, W, W, H, bx + barw / 2, sy,     COL_ACCENT_HI, a);
+                blend_px(g_wave, W, W, H, bx + barw / 2, sy - 1, COL_ACCENT_HI, a / 2);
+            }
+        }
+    }
+}
+
 
 // ===========================================================================
 // Decode / stream worker
@@ -950,25 +535,24 @@ void AudioPlayer::worker(WorkerArgs *args) {
 // ===========================================================================
 // Event handling
 // ===========================================================================
+// ===========================================================================
+// Per-tick spectrum update (the only animated surface)
+// ===========================================================================
 void AudioPlayer::on_tick() {
-    // The VexUI loop ticks at ~16 Hz; an 8 Hz spectrum looks just as alive and
-    // halves the per-second draw+present+composite cost. Chrome (time/state)
-    // is still checked every other tick, which is plenty for a 1 Hz clock.
+    // VexUI ticks ~16 Hz; an 8 Hz spectrum looks just as alive and halves the
+    // draw+present cost.
     if ((++tick_count_ & 1) == 0) return;
 
-    anim_phase_ += 0.08f;
-    // low-pass the live level so the waveform pulse is smooth, not jittery
     int lvl = g_level.load();
     level_lp_ += ((float)lvl - level_lp_) * 0.25f;
 
-    Layout L = layout();
     const int step = 6;
-    int bars = (L.wave_x1 - L.wave_x0) / step;
+    int bars = wave_w_ / step;
     if (bars > MAX_BARS) bars = MAX_BARS;
     if (bars < 2)        bars = 2;
+    const float half_max = (float)(wave_h_ / 2 - 3);
 
-    // Frequency spectrum.  Hann-window the most recent 256 mono samples, FFT,
-    // and map the bins onto the bars with a logarithmic axis (bin = 2^(7t)).
+    // Hann-windowed FFT of the most recent 256 mono samples.
     ap_complex x[256];
     for (int i = 0; i < 256; ++i) {
         float w   = 0.5f * (1.0f - ap_cos(2.0f * 3.14159265f * i / 255.0f));
@@ -980,118 +564,90 @@ void AudioPlayer::on_tick() {
     for (int i = 0; i < 128; ++i)
         mags[i] = ap_sqrt(x[i].r * x[i].r + x[i].i * x[i].i);
 
-    // Per-band AGC: each bar tracks its own slowly-decaying peak and is drawn
-    // relative to it.  This is what stops the bass bars (huge raw magnitude)
-    // from pinning the left half at full height and looking frozen — every band
-    // now swings through its own full range, so highs and lows are visible
-    // across the whole spectrum.
+    // Per-band AGC + log frequency axis: every band swings through its own
+    // range so highs and lows are visible across the whole width.
     for (int i = 0; i < bars; ++i) {
         float t    = (bars > 1) ? (float)i / (float)(bars - 1) : 0.0f;
-        float freq = ap_exp2(t * 7.0f);                 // 1 .. 128
+        float freq = ap_exp2(t * 7.0f);
         int   idx  = (int)freq; if (idx < 1) idx = 1; if (idx > 126) idx = 126;
         float frac = freq - (float)idx;
         float mag  = mags[idx] * (1.0f - frac) + mags[idx + 1] * frac;
 
-        // running peak with slow decay (per band), floored so silence ≠ noise
         float pk = bar_peak_[i] * 0.992f;
         if (mag > pk) pk = mag;
         if (pk < 0.0025f) pk = 0.0025f;
         bar_peak_[i] = pk;
 
-        float norm = mag / pk;                          // 0 .. 1, self-scaled
-        if (norm > 1.0f) norm = 1.0f;
-        float target_h = (0.10f + 0.90f * norm) * (float)L.wave_half;
-
-        // fast rise, slow fall for a lively but smooth meter
+        float norm = mag / pk; if (norm > 1.0f) norm = 1.0f;
+        float target_h = (0.10f + 0.90f * norm) * half_max;
         if (target_h > bar_heights_[i])
-            bar_heights_[i] = bar_heights_[i] * 0.4f + target_h * 0.6f;
+            bar_heights_[i] = bar_heights_[i] * 0.4f  + target_h * 0.6f;
         else
             bar_heights_[i] = bar_heights_[i] * 0.78f + target_h * 0.22f;
         if (bar_heights_[i] < 2.0f) bar_heights_[i] = 2.0f;
     }
 
-    // Chrome (album art, labels, all SVG transport icons, the glow play button,
-    // progress + volume) is static between state changes — render it into
-    // g_canvas only when the displayed second advances or an interaction
-    // changed something. This keeps every SVG render off the per-frame path.
-    long played = g_played.load(), total = g_total.load(); (void)total;
+    // Draw the spectrum into its own buffer and present just that region — the
+    // chrome widgets are untouched (no full repaint).
+    draw_spectrum();
+    if (wave_canvas_) vui_canvas_flush(win_, wave_canvas_);
+
+    // Refresh the labels/slider/icon that the playback advanced (~1 Hz). These
+    // call vui_set_* which marks the window dirty; VexUI then repaints the
+    // chrome widgets (and re-blits the waveform) on its next loop pass.
+    update_chrome();
+}
+
+// Refresh only the widgets whose underlying value changed since last tick.
+void AudioPlayer::update_chrome() {
+    long played = g_played.load(), total = g_total.load();
     int  rate   = g_rate.load(); if (rate <= 0) rate = 44100;
-    long sec    = played / rate;
-    if (sec != last_sec_)            { last_sec_ = sec; chrome_dirty_ = true; }
+
+    long sec = played / rate;
+    if (sec != last_sec_) {
+        last_sec_ = sec;
+        char tl[16], tr[16];
+        fmt_time(played / rate, tl);
+        fmt_time(total  / rate, tr);
+        vui_set_text(time_l_lbl_, tl);
+        vui_set_text(time_r_lbl_, tr);
+        if (total > 0)
+            vui_set_value(progress_, (int)((long long)played * 1000 / total));
+    }
+
     bool pz = g_paused.load();
-    if (pz != last_paused_)          { last_paused_ = pz; chrome_dirty_ = true; }
-    if (chrome_dirty_) { chrome_dirty_ = false; render_chrome(); }
-
-    // Per frame: erase the band with the precomputed gradient and draw the bars.
-    // The chrome already in g_canvas is left intact. Then present the whole
-    // window (correct stride; the compositor blit is cheap).
-    fill_wave_bg(L);
-    draw_waveform(L);
-    if (win_) vui_request_repaint(win_);
-}
-
-void AudioPlayer::on_click(int x, int y) {
-    Layout L = layout();
-
-    auto hit = [&](int px, int py, int r) {
-        int dx = x - px, dy = y - py; return dx * dx + dy * dy <= r * r;
-    };
-
-    chrome_dirty_ = true;   // any control click changes something the chrome shows
-    if (hit(L.play_x, L.ctl_y, L.play_r + 4)) { g_paused.store(!g_paused.load()); return; }
-    if (hit(L.prev_x, L.ctl_y, 16))    { g_restart.store(true); g_paused.store(false); return; }
-    if (hit(L.next_x, L.ctl_y, 16))    { g_restart.store(true); g_paused.store(false); return; }
-    if (hit(L.shuffle_x, L.ctl_y, 16)) { g_shuffle.store(!g_shuffle.load()); return; }
-    if (hit(L.repeat_x, L.ctl_y, 16))  { g_repeat.store(!g_repeat.load()); return; }
-
-    // progress bar — click or start dragging to seek
-    if (y >= L.prog_y - 10 && y <= L.prog_y + 10 && x >= L.prog_x0 - 6 && x <= L.prog_x1 + 6) {
-        float f = ap_clamp((float)(x - L.prog_x0) / (L.prog_x1 - L.prog_x0), 0.0f, 1.0f);
-        g_seek.store((int)(f * 1000));
-        dragging_ = 1;
-        return;
+    if (pz != last_paused_) {
+        last_paused_ = pz;
+        vui_set_icon_svg(play_ic_, glow_svg(pz));   // play glyph when paused
     }
-    // volume slider
-    if (y >= L.vol_y - 10 && y <= L.vol_y + 10 && x >= L.vol_x0 - 6 && x <= L.vol_x1 + 6) {
-        int v = (int)(ap_clamp((float)(x - L.vol_x0) / (L.vol_x1 - L.vol_x0), 0.0f, 1.0f) * 100);
-        g_volume.store(v);
-        audio_ioctl(AUDIO_IOCTL_SET_VOLUME, (unsigned)v);
-        dragging_ = 2;
-        return;
+
+    int br = g_bitrate.load();
+    if (br != last_bitrate_) {
+        last_bitrate_ = br;
+        char m[96];
+        snprintf(m, sizeof m, "MP3  %d.%d kHz  %d kbps", rate / 1000, (rate % 1000) / 100, br);
+        vui_set_text(meta_lbl_, m);
     }
-    chrome_dirty_ = false;  // click hit nothing interactive
 }
 
-void AudioPlayer::on_mouse_move(int x, int /*y*/) {
-    if (!dragging_) return;
-    Layout L = layout();
-    if (dragging_ == 1) {
-        float f = ap_clamp((float)(x - L.prog_x0) / (L.prog_x1 - L.prog_x0), 0.0f, 1.0f);
-        g_seek.store((int)(f * 1000));
-    } else if (dragging_ == 2) {
-        int v = (int)(ap_clamp((float)(x - L.vol_x0) / (L.vol_x1 - L.vol_x0), 0.0f, 1.0f) * 100);
-        g_volume.store(v);
-        audio_ioctl(AUDIO_IOCTL_SET_VOLUME, (unsigned)v);
-    }
-    chrome_dirty_ = true;   // reflect the drag in the chrome next tick
-}
+// ===========================================================================
+// Widget callbacks — each control is a real VexUI widget now.
+// ===========================================================================
+static void cb_tick(vui_window *) { AudioPlayer::instance()->on_tick(); }
 
-void AudioPlayer::on_mouse_release(int, int) { dragging_ = 0; }
+static void cb_play(vui_widget *)    { g_paused.store(!g_paused.load()); }
+static void cb_prev(vui_widget *)    { g_restart.store(true); g_paused.store(false); }
+static void cb_next(vui_widget *)    { g_restart.store(true); g_paused.store(false); }
+static void cb_shuffle(vui_widget *w){ bool v = !g_shuffle.load(); g_shuffle.store(v);
+                                       vui_set_color(w, v ? COL_ACCENT : COL_TEXT_DIM); }
+static void cb_repeat(vui_widget *w) { bool v = !g_repeat.load();  g_repeat.store(v);
+                                       vui_set_color(w, v ? COL_ACCENT : COL_TEXT_DIM); }
+static void cb_seek(vui_widget *w)   { g_seek.store(vui_get_int(w)); }
+static void cb_vol(vui_widget *w)    { int v = vui_get_int(w); g_volume.store(v);
+                                       audio_ioctl(AUDIO_IOCTL_SET_VOLUME, (unsigned)v); }
 
-void AudioPlayer::on_resize(int w, int h) {
-    win_w_ = w > CANVAS_MAX_W ? CANVAS_MAX_W : w;
-    win_h_ = h > CANVAS_MAX_H ? CANVAS_MAX_H : h;
-    render();
-}
-
-// ---- C trampolines for the VexUI callbacks --------------------------------
-static void cb_tick(vui_window *)            { AudioPlayer::instance()->on_tick(); }
-static void cb_click(vui_window *, int x, int y)   { AudioPlayer::instance()->on_click(x, y); }
-static void cb_move(vui_window *, int x, int y)    { AudioPlayer::instance()->on_mouse_move(x, y); }
-static void cb_release(vui_window *, int x, int y) { AudioPlayer::instance()->on_mouse_release(x, y); }
-static void cb_resize(vui_window *, int w, int h)  { AudioPlayer::instance()->on_resize(w, h); }
-static void cb_playpause(vui_window *) { g_paused.store(!g_paused.load()); }
-static void cb_quit(vui_window *w) { g_stop.store(true); vui_quit(w); }
+static void cb_play_dock(vui_window *) { g_paused.store(!g_paused.load()); }
+static void cb_quit(vui_window *w)     { g_stop.store(true); vui_quit(w); }
 
 // ===========================================================================
 // Setup + run
@@ -1101,59 +657,70 @@ void AudioPlayer::run(const char *path) {
     strncpy(path_, path, sizeof(path_) - 1);
 
     win_ = vui_window_open("Audio Player", DEFAULT_W, DEFAULT_H);
-    win_w_ = vui_window_width(win_);
-    win_h_ = vui_window_height(win_);
-    if (win_w_ > CANVAS_MAX_W) win_w_ = CANVAS_MAX_W;
-    if (win_h_ > CANVAS_MAX_H) win_h_ = CANVAS_MAX_H;
+    int W = vui_window_width(win_);
+    int H = vui_window_height(win_);
+    vui_set_clear_color(win_, COL_BG);
 
-    // Single full-window canvas. The whole frame is rendered into g_canvas and
-    // presented each tick. Cheap now because the expensive bits are off the
-    // per-frame path: the glow play button is cached (rendered only on state
-    // change) and the band gradient is precomputed; combined with the 8 Hz tick
-    // throttle and the worker no longer busy-spinning, CPU stays modest while
-    // the spectrum stays smooth. (Region-present was dropped: g_canvas uses a
-    // CANVAS_MAX_W stride that differs from the window's content width, so a
-    // partial flush mixed strides and only worked when they happened to match.)
-    vui_canvas_ex(win_, 0, 0, win_w_, win_h_, g_canvas, CANVAS_MAX_W);
+    // --- header: album art + track text + corner icons --------------------
+    draw_album_art();
+    vui_canvas_ex(win_, 28, 24, ALBUM_S, ALBUM_S, g_album, ALBUM_S);
 
-    // Waveform band geometry + precomputed per-row background gradient, so the
-    // only per-frame cost is erasing the band (a cheap precomputed fill) and
-    // drawing the bars — the chrome (album art, labels, SVG icons, the glow
-    // play button) is rendered only when it changes.
-    {
-        Layout L = layout();
-        wave_y_ = L.wave_cy - L.wave_half - 16;
-        wave_h_ = 2 * L.wave_half + 28;
-        wave_x_ = L.wave_x0 - 6;
-        wave_w_ = (L.wave_x1 - L.wave_x0) + 12;
-        if (wave_y_ < 0) wave_y_ = 0;
-        if (wave_x_ < 0) wave_x_ = 0;
-        for (int iy = 0; iy < wave_h_ && iy < CANVAS_MAX_H; ++iy)
-            wave_row_[iy] = lerp_rgb(COL_BG_TOP, COL_BG_BOT,
-                                     (float)(wave_y_ + iy) / (float)win_h_);
-    }
+    title_lbl_  = vui_label(win_, 142, 30, "Midnight Drive");
+    vui_set_text_scale(title_lbl_, 2); vui_set_color(title_lbl_, COL_TEXT);
+    artist_lbl_ = vui_label(win_, 142, 70, "VibeWave");        vui_set_color(artist_lbl_, COL_TEXT_DIM);
+    meta_lbl_   = vui_label(win_, 142, 96, "MP3");             vui_set_color(meta_lbl_, COL_TEXT_DIM);
+
+    vui_widget *heart = vui_image(win_, W - 66, 34, 24);
+    vui_set_icon_svg(heart, SVG_HEART);  vui_set_color(heart, COL_TEXT_DIM);
+    vui_widget *dots  = vui_image(win_, W - 34, 34, 24);
+    vui_set_icon_svg(dots, SVG_DOTS);    vui_set_color(dots, COL_TEXT_DIM);
+
+    // --- waveform canvas (its own buffer; stride == width) ----------------
+    int wx = 44, wy = (int)(H * 0.40f), ww = W - 88, wh = 96;
+    if (ww > WAVE_MAX_W) ww = WAVE_MAX_W;
+    if (wh > WAVE_MAX_H) wh = WAVE_MAX_H;
+    wave_w_ = ww; wave_h_ = wh;
+    for (int i = 0; i < ww * wh; ++i) g_wave[i] = COL_BG;
+    wave_canvas_ = vui_canvas_ex(win_, wx, wy, ww, wh, g_wave, ww);
+
+    // --- progress slider + time labels ------------------------------------
+    int py = H - 150;
+    time_l_lbl_ = vui_label(win_, 44, py - 6, "00:00");        vui_set_color(time_l_lbl_, COL_TEXT_DIM);
+    time_r_lbl_ = vui_label(win_, W - 92, py - 6, "00:00");    vui_set_color(time_r_lbl_, COL_TEXT_DIM);
+    progress_   = vui_slider(win_, 96, py - 8, W - 192, 16, 1000);
+    vui_on_click(progress_, cb_seek);
+
+    // --- transport row ----------------------------------------------------
+    int cy = H - 92;
+    shuffle_ic_ = vui_image(win_, W / 2 - 176, cy - 14, 28);
+    vui_set_icon_svg(shuffle_ic_, SVG_SHUFFLE); vui_set_color(shuffle_ic_, COL_TEXT_DIM); vui_on_click(shuffle_ic_, cb_shuffle);
+    vui_widget *prev = vui_image(win_, W / 2 - 96, cy - 14, 28);
+    vui_set_icon_svg(prev, SVG_PREV); vui_set_color(prev, COL_TEXT); vui_on_click(prev, cb_prev);
+    play_ic_ = vui_image(win_, W / 2 - 30, cy - 30, 60);
+    vui_set_icon_svg(play_ic_, glow_svg(false)); vui_on_click(play_ic_, cb_play);
+    vui_widget *next = vui_image(win_, W / 2 + 68, cy - 14, 28);
+    vui_set_icon_svg(next, SVG_NEXT); vui_set_color(next, COL_TEXT); vui_on_click(next, cb_next);
+    repeat_ic_ = vui_image(win_, W / 2 + 148, cy - 14, 28);
+    vui_set_icon_svg(repeat_ic_, SVG_REPEAT); vui_set_color(repeat_ic_, COL_TEXT_DIM); vui_on_click(repeat_ic_, cb_repeat);
+
+    // --- volume -----------------------------------------------------------
+    vui_widget *spk = vui_image(win_, W - 150, cy - 14, 28);
+    vui_set_icon_svg(spk, SVG_SPEAKER); vui_set_color(spk, COL_TEXT_DIM);
+    volume_ = vui_slider(win_, W - 112, cy - 8, 72, 16, 100);
+    vui_set_value(volume_, g_volume.load()); vui_on_click(volume_, cb_vol);
 
     vui_on_tick(win_, cb_tick);
-    vui_on_mouse_click(win_, cb_click);
-    vui_on_mouse_move(win_, cb_move);
-    vui_on_mouse_release(win_, cb_release);
-    vui_on_resize(win_, cb_resize);
-
-    // dock-icon context menu
-    vui_add_dock_item(win_, "Play / Pause", cb_playpause);
+    vui_add_dock_item(win_, "Play / Pause", cb_play_dock);
     vui_add_dock_item(win_, "Quit", cb_quit);
 
-    // Allocate decode buffers on the main thread — SYS_SBRK from a spawned
-    // thread crashes (known VibeOS limitation), so malloc must happen here.
+    // Decode buffers must be allocated on the main thread (SYS_SBRK from a
+    // spawned thread crashes); hand them to the worker.
     static mp3dec_t dec_buf;
     static int16_t  pcm_buf[MP3DEC_MAX_SAMPLES * 2];
     static WorkerArgs wargs;
     wargs = WorkerArgs{ this, &dec_buf, pcm_buf };
-
     std::thread([]() { worker(&wargs); }).detach();
 
-    render();
-    vui_request_repaint(win_);
     vui_run(win_);
 }
 
