@@ -14,7 +14,11 @@
 #define TTY_SCREEN_COLS 80
 
 enum tty_ioctl_request {
- TTY_IOCTL_CLEAR = 1
+ TTY_IOCTL_CLEAR = 1,
+ /* Raw input mode: deliver keyboard bytes immediately (no line buffering)
+  * and suppress local echo, so a line editor in userspace can handle
+  * editing/history itself.  arg != 0 enables, arg == 0 restores cooked mode. */
+ TTY_IOCTL_SET_RAW = 2
 };
 
 /* Character attributes */
@@ -65,6 +69,11 @@ struct tty {
 
  uint32_t revision;
  uint32_t waiter_pid;
+
+ /* When set, keyboard input is delivered raw (byte-by-byte, no echo) via the
+  * raw_input ring instead of the cooked line buffer.  Toggled by
+  * TTY_IOCTL_SET_RAW so a userspace line editor can own editing + history. */
+ uint8_t raw_input_mode;
 };
 
 extern const struct fd_ops TTY_FD_OPS;

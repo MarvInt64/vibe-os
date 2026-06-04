@@ -130,7 +130,7 @@ libc: $(LIBC_A)
 
 apps: $(DISK_IMG) $(LIBC_A)
 	@mkdir -p build/user
-	$(UCC) $(UCFLAGS) -Ilib/svg -c lib/svg/svg.c -o build/user/svg.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ilib/svg -c lib/svg/svg.c -o build/user/svg.o
 	$(UCC) $(UCFLAGS) -Ilib/svg -c user/vexui.c -o build/user/vexui.o
 	$(UCC) $(UCFLAGS) -c user/uidemo.c -o build/user/uidemo.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/uidemo.elf build/user/uidemo.o build/user/vexui.o build/user/svg.o

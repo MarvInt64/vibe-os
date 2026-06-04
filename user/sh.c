@@ -25,6 +25,8 @@
 #define SYS_READ 0
 #define SYS_WRITE 1
 #define SYS_IOCTL 2
+/* TTY ioctl requests (mirror kernel/include/tty.h). */
+#define TTY_IOCTL_SET_RAW 2
 #define SYS_YIELD 3
 #define SYS_EXIT 4
 #define SYS_PROCESS_SPAWN 5
@@ -482,120 +484,110 @@ static void tab_complete(char *buf, int *len_ptr,
  * Ctrl+C, Ctrl+U and tab completion without relying on any line discipline.
  * The terminal in VibeOS passes raw bytes so we must do all of this ourselves.
  */
-static void readline(char *buf, int cap, const char *username, uint32_t uid) {
-    int len = 0;
-    int hist_nav = 0;  /* how many entries back we have navigated; 0 = current */
+/* Block until one byte is available on stdin; returns it. */
+static char read_one_byte(void) {
+    char c = 0;
+    while (syscall3(SYS_READ, 0, (uint64_t)(size_t)&c, 1) <= 0)
+        yield();
+    return c;
+}
 
-    /* Read the whole line at once — the TTY/PTY delivers a complete line
-     * when the user presses Enter.  Reading char-by-char conflicts with
-     * TTY canonical echo and produces empty or garbled input. */
-    {
-        ssize_t n;
-        while (1) {
-            n = syscall3(SYS_READ, 0, (uint64_t)(size_t)buf, (uint64_t)(cap - 1));
-            if (n > 0) break;
-            yield();
-        }
-        /* Strip trailing CR/LF. */
-        while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) n--;
-        buf[n] = '\0';
-        len = (int)n;
-
-        /* Add to history if non-empty. */
-        if (len > 0) hist_add(buf);
-        (void)hist_nav; (void)username; (void)uid;
-        return;
-    }
-
-    /* --- Dead code below: char-by-char editor (kept for future raw-mode use) --- */
+/* Cooked path: read a whole line at once (the TTY/PTY hands us the full line
+ * on Enter and echoes it itself). */
+static void readline_cooked(char *buf, int cap) {
+    ssize_t n;
     while (1) {
-        char c = 0;
-        ssize_t n = syscall3(SYS_READ, 0, (uint64_t)(size_t)&c, 1);
-        if (n <= 0) { yield(); continue; }
+        n = syscall3(SYS_READ, 0, (uint64_t)(size_t)buf, (uint64_t)(cap - 1));
+        if (n > 0) break;
+        yield();
+    }
+    while (n > 0 && (buf[n-1] == '\n' || buf[n-1] == '\r')) n--;
+    buf[n] = '\0';
+    if (n > 0) hist_add(buf);
+}
+
+/* Replace the on-screen line and buffer with `src` (used for history recall).
+ * Erases the current `*len` chars, then types `src`. */
+static void replace_line(char *buf, int cap, int *len, const char *src) {
+    while (*len > 0) { write_str("\b \b"); (*len)--; }
+    while (src && *src && *len < cap - 1) {
+        buf[(*len)++] = *src;
+        write_char(*src);
+        src++;
+    }
+}
+
+/* Raw path: char-by-char line editor with echo, backspace, Ctrl+C/U, tab
+ * completion and arrow-key history.  Only used when stdin is a real TTY that
+ * accepted TTY_IOCTL_SET_RAW. */
+static void readline_raw(char *buf, int cap, const char *username, uint32_t uid) {
+    int len = 0;
+    int hist_nav = 0;   /* history depth: 0 = the line being typed */
+
+    for (;;) {
+        char c = read_one_byte();
 
         if (c == '\n' || c == '\r') {
             buf[len] = '\0';
             write_char('\n');
+            if (len > 0) hist_add(buf);
             return;
         }
-
-        if (c == 0x03) {
-            /* Ctrl+C: cancel the current line. */
+        if (c == 0x03) {            /* Ctrl+C: cancel line */
             write_str("^C\n");
             buf[0] = '\0';
             return;
         }
-
-        if (c == 0x15) {
-            /* Ctrl+U: erase entire line by emitting backspace-space-backspace
-             * for each character already typed. */
-            while (len > 0) {
-                write_str("\b \b");
-                len--;
-            }
+        if (c == 0x15) {            /* Ctrl+U: erase whole line */
+            while (len > 0) { write_str("\b \b"); len--; }
+            hist_nav = 0;
             continue;
         }
-
-        if (c == '\t') {
+        if (c == '\t') {            /* Tab: complete command / path */
             tab_complete(buf, &len, username, uid);
             continue;
         }
-
-        if (c == '\x7f' || c == '\b') {
-            /* Backspace: erase last character from display and buffer. */
-            if (len > 0) {
-                write_str("\b \b");
-                len--;
-            }
+        if (c == 0x7f || c == 0x08) { /* Backspace / DEL */
+            if (len > 0) { write_str("\b \b"); len--; }
             continue;
         }
-
-        if (c == '\x1b') {
-            /* Escape sequence: read '[' then the final byte. */
-            char seq[2] = {0, 0};
-            syscall3(SYS_READ, 0, (uint64_t)(size_t)&seq[0], 1);
-            syscall3(SYS_READ, 0, (uint64_t)(size_t)&seq[1], 1);
-            if (seq[0] != '[') continue;
-
-            if (seq[1] == 'A') {
-                /* Arrow up: navigate history backwards. */
-                const char *entry = hist_get(hist_nav + 1);
-                if (!entry) continue;
-                hist_nav++;
-                /* Erase current line and substitute the history entry. */
-                while (len > 0) { write_str("\b \b"); len--; }
-                while (*entry && len < cap - 1) {
-                    buf[len++] = *entry;
-                    write_char(*entry);
-                    entry++;
-                }
-            } else if (seq[1] == 'B') {
-                /* Arrow down: navigate history forwards (toward present). */
-                if (hist_nav == 0) continue;
-                hist_nav--;
-                while (len > 0) { write_str("\b \b"); len--; }
+        if (c == 0x1b) {            /* ESC [ X — arrow keys */
+            char b1 = read_one_byte();
+            if (b1 != '[') continue;
+            char b2 = read_one_byte();
+            if (b2 == 'A') {                       /* Up: older history */
+                const char *e = hist_get(hist_nav + 1);
+                if (e) { hist_nav++; replace_line(buf, cap, &len, e); }
+            } else if (b2 == 'B') {                /* Down: newer history */
                 if (hist_nav > 0) {
-                    const char *entry = hist_get(hist_nav);
-                    if (entry) {
-                        while (*entry && len < cap - 1) {
-                            buf[len++] = *entry;
-                            write_char(*entry);
-                            entry++;
-                        }
-                    }
+                    hist_nav--;
+                    const char *e = hist_nav > 0 ? hist_get(hist_nav) : "";
+                    replace_line(buf, cap, &len, e);
                 }
-                /* hist_nav == 0 means "back to empty current line". */
             }
-            /* Left/right arrows: ignore — cursor movement not yet implemented. */
+            /* Left/Right (C/D): no cursor movement yet — ignore. */
             continue;
         }
-
-        /* Ordinary printable character. */
-        if (c >= 0x20 && c < 0x7f && len < cap - 1) {
+        if (c >= 0x20 && c < 0x7f && len < cap - 1) {  /* printable */
             buf[len++] = c;
             write_char(c);
-            hist_nav = 0;  /* Any new input resets history navigation. */
+            hist_nav = 0;           /* new input abandons history navigation */
         }
+    }
+}
+
+static void readline(char *buf, int cap, const char *username, uint32_t uid) {
+    /* Enter raw mode only for the duration of line editing.  On a real TTY the
+     * ioctl succeeds and the shell owns echo + history; on the GUI terminal's
+     * PTY it returns <0 and we fall back to a cooked line read (the terminal
+     * app provides its own editor).  Cooked mode is always restored before we
+     * return so spawned children (su, cat, ...) get normal line-buffered input. */
+    int raw = (syscall3(SYS_IOCTL, 0, TTY_IOCTL_SET_RAW, 1) == 0);
+    if (raw) {
+        readline_raw(buf, cap, username, uid);
+        syscall3(SYS_IOCTL, 0, TTY_IOCTL_SET_RAW, 0);
+    } else {
+        readline_cooked(buf, cap);
     }
 }
 
@@ -1566,11 +1558,10 @@ void _start(void) {
 
         if (!g_input[0]) continue;
 
-        /* Expand variables before parsing so $? and $HOME work everywhere. */
+        /* Expand variables before parsing so $? and $HOME work everywhere.
+         * (History is recorded inside readline, before expansion.) */
         expand_vars(g_input, g_expanded, sizeof(g_expanded),
                     g_last_exit, g_uid, g_username);
-
-        hist_add(g_input);  /* Store the raw (pre-expansion) line in history. */
 
         parse_input();
         execute_command();

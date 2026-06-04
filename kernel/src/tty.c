@@ -542,7 +542,6 @@ static ssize_t tty_fd_write(void *object, const void *buffer, size_t count) {
 
 static int tty_fd_ioctl(void *object, uint32_t request, uintptr_t arg) {
  struct tty *tty = (struct tty *)object;
- (void)arg;
 
  if (tty == 0) {
  return -SYSCALL_EINVAL;
@@ -551,6 +550,14 @@ static int tty_fd_ioctl(void *object, uint32_t request, uintptr_t arg) {
  switch (request) {
  case TTY_IOCTL_CLEAR:
  tty_reset(tty);
+ return 0;
+ case TTY_IOCTL_SET_RAW:
+ /* Switch between cooked (line-buffered + echo) and raw (immediate,
+  * no echo) input.  Drop any half-typed cooked line so the mode
+  * change starts from a clean slate. */
+ tty->raw_input_mode = (arg != 0) ? 1 : 0;
+ tty->input_length = 0;
+ tty->input[0] = '\0';
  return 0;
  default:
  return -SYSCALL_ENOSYS;
@@ -576,6 +583,7 @@ void tty_init(struct tty *tty) {
  tty->partial_output[0] = '\0';
  tty->revision = 1;
  tty->waiter_pid = 0;
+ tty->raw_input_mode = 0;
  
  /* ANSI/screen mode init */
  tty->cursor_row = 0;
@@ -601,7 +609,10 @@ int tty_handle_keyboard(struct tty *tty, const struct keyboard_state *keyboard) 
  }
  }
 
- if (tty->ansi_mode) {
+ /* Raw delivery: used both for ANSI screen mode and when a userspace line
+  * editor has requested raw input via TTY_IOCTL_SET_RAW.  Bytes are queued
+  * immediately with no local echo and no line buffering. */
+ if (tty->ansi_mode || tty->raw_input_mode) {
  char raw_bytes[32];
  size_t raw_count = 0;
 
