@@ -287,6 +287,19 @@ private:
     float level_lp_   = 0.0f;   // low-pass-filtered audio level (smooth pulsing)
     int   dragging_   = 0;      // 0 none, 1 progress bar, 2 volume slider
 
+    // The waveform is the only part that animates every tick; it gets its own
+    // canvas widget pointing INTO the waveform band of g_canvas, so we can
+    // present just that rectangle (vui_canvas_flush) without repainting the
+    // static chrome. Chrome is redrawn only when chrome_dirty_ is set (state or
+    // the displayed second changed).
+    vui_widget *wave_canvas_ = nullptr;
+    int  wave_x_ = 0, wave_y_ = 0, wave_w_ = 0, wave_h_ = 0;
+    bool chrome_dirty_ = false;
+    bool last_paused_ = false;
+    long last_sec_ = -1;
+    int  tick_count_ = 0;
+    uint32_t wave_row_[CANVAS_MAX_H] = {};  // precomputed gradient per band row
+
     float bar_heights_[MAX_BARS] = {};   // current displayed bar heights
     float bar_peak_[MAX_BARS]    = {};   // per-band running peak (AGC normaliser)
     void  draw_svg_icon(int cx, int cy, const char *svg, uint32_t c);
@@ -339,7 +352,9 @@ private:
     static uint32_t lerp_rgb(uint32_t a, uint32_t b, float t);
 
     // ---- composed pieces ---------------------------------------------------
-    void render();
+    void render();              // full frame (chrome + waveform) — used on resize
+    void render_chrome();       // everything except the waveform band
+    void fill_wave_bg(const Layout &L);  // repaint the gradient under the bars
     void draw_background();
     void draw_album_art(const Layout &L);
     void draw_header(const Layout &L);
@@ -775,11 +790,32 @@ void AudioPlayer::fmt_time(long seconds, char *out) {
 
 void AudioPlayer::render() {
     Layout L = layout();
+    render_chrome();
+    draw_waveform(L);
+}
+
+// Everything except the per-tick waveform band. Drawn once at startup and only
+// when chrome_dirty_ is set (play/pause, seek, volume, or the second changed) —
+// this is where the expensive bits live (full-window gradient, the glow-SVG
+// play button), so keeping it off the per-frame path is the main CPU win.
+void AudioPlayer::render_chrome() {
+    Layout L = layout();
     draw_background();
     draw_header(L);
-    draw_waveform(L);
     draw_progress(L);
     draw_transport(L);
+}
+
+// Repaint just the vertical gradient under the waveform band so the previous
+// frame's bars are erased before the new ones are drawn.
+void AudioPlayer::fill_wave_bg(const Layout &L) {
+    (void)L;
+    int xmax = wave_x_ + wave_w_; if (xmax > win_w_) xmax = win_w_;
+    for (int iy = 0; iy < wave_h_ && wave_y_ + iy < win_h_; ++iy) {
+        uint32_t base = wave_row_[iy];          // precomputed, no per-pixel float
+        uint32_t *row = &g_canvas[(wave_y_ + iy) * CANVAS_MAX_W];
+        for (int x = wave_x_; x < xmax; ++x) row[x] = base;
+    }
 }
 
 // ===========================================================================
@@ -794,7 +830,11 @@ bool AudioPlayer::write_all(const int16_t *pcm, int samples) {
         while (g_paused.load() && !g_stop.load()) vos_sleep_ticks(2);
         int written = audio_write(p, (unsigned)remaining);
         if (written > 0) { p += written; remaining -= (unsigned)written; }
-        else vos_yield();
+        else vos_sleep_ticks(1);   /* ring full: sleep instead of busy-spinning
+                                    * on vos_yield(), which kept a thread always
+                                    * runnable and pinned the CPU near 100%. The
+                                    * ring holds ~185ms, so a 1-tick nap never
+                                    * underruns. */
     }
     return true;
 }
@@ -905,6 +945,11 @@ void AudioPlayer::worker(WorkerArgs *args) {
 // Event handling
 // ===========================================================================
 void AudioPlayer::on_tick() {
+    // The VexUI loop ticks at ~16 Hz; an 8 Hz spectrum looks just as alive and
+    // halves the per-second draw+present+composite cost. Chrome (time/state)
+    // is still checked every other tick, which is plenty for a 1 Hz clock.
+    if ((++tick_count_ & 1) == 0) return;
+
     anim_phase_ += 0.08f;
     // low-pass the live level so the waveform pulse is smooth, not jittery
     int lvl = g_level.load();
@@ -959,8 +1004,26 @@ void AudioPlayer::on_tick() {
         if (bar_heights_[i] < 2.0f) bar_heights_[i] = 2.0f;
     }
 
-    render();
-    if (win_) vui_request_repaint(win_);
+    // Redraw the spectrum band into g_canvas and present ONLY that rectangle —
+    // the static chrome stays in the framebuffer untouched.
+    fill_wave_bg(L);
+    draw_waveform(L);
+    if (wave_canvas_) vui_canvas_flush(win_, wave_canvas_);
+
+    // Chrome (progress fill, time, play/pause icon) only needs repainting when
+    // the displayed second advances or an interaction changed state.
+    long played = g_played.load(), total = g_total.load();
+    int  rate   = g_rate.load(); if (rate <= 0) rate = 44100;
+    long sec    = played / rate;
+    if (sec != last_sec_) { last_sec_ = sec; chrome_dirty_ = true; }
+    bool pz = g_paused.load();
+    if (pz != last_paused_) { last_paused_ = pz; chrome_dirty_ = true; }
+    (void)total;
+    if (chrome_dirty_) {
+        chrome_dirty_ = false;
+        render_chrome();
+        if (win_) vui_request_repaint(win_);
+    }
 }
 
 void AudioPlayer::on_click(int x, int y) {
@@ -970,6 +1033,7 @@ void AudioPlayer::on_click(int x, int y) {
         int dx = x - px, dy = y - py; return dx * dx + dy * dy <= r * r;
     };
 
+    chrome_dirty_ = true;   // any control click changes something the chrome shows
     if (hit(L.play_x, L.ctl_y, L.play_r + 4)) { g_paused.store(!g_paused.load()); return; }
     if (hit(L.prev_x, L.ctl_y, 16))    { g_restart.store(true); g_paused.store(false); return; }
     if (hit(L.next_x, L.ctl_y, 16))    { g_restart.store(true); g_paused.store(false); return; }
@@ -991,6 +1055,7 @@ void AudioPlayer::on_click(int x, int y) {
         dragging_ = 2;
         return;
     }
+    chrome_dirty_ = false;  // click hit nothing interactive
 }
 
 void AudioPlayer::on_mouse_move(int x, int /*y*/) {
@@ -1004,6 +1069,7 @@ void AudioPlayer::on_mouse_move(int x, int /*y*/) {
         g_volume.store(v);
         audio_ioctl(AUDIO_IOCTL_SET_VOLUME, (unsigned)v);
     }
+    chrome_dirty_ = true;   // reflect the drag in the chrome next tick
 }
 
 void AudioPlayer::on_mouse_release(int, int) { dragging_ = 0; }
@@ -1036,8 +1102,27 @@ void AudioPlayer::run(const char *path) {
     if (win_w_ > CANVAS_MAX_W) win_w_ = CANVAS_MAX_W;
     if (win_h_ > CANVAS_MAX_H) win_h_ = CANVAS_MAX_H;
 
-    vui_widget *canvas = vui_canvas_ex(win_, 0, 0, win_w_, win_h_, g_canvas, CANVAS_MAX_W);
-    vui_set_anchor(canvas, VUI_ANCHOR_LEFT | VUI_ANCHOR_RIGHT | VUI_ANCHOR_TOP | VUI_ANCHOR_BOTTOM);
+    // Full-window canvas holds the static chrome (drawn into g_canvas).
+    vui_canvas_ex(win_, 0, 0, win_w_, win_h_, g_canvas, CANVAS_MAX_W);
+
+    // A second canvas covering only the waveform band, pointing INTO g_canvas
+    // at that band's offset. on_tick draws the spectrum here and presents just
+    // this rectangle, leaving the chrome untouched.
+    {
+        Layout L = layout();
+        wave_x_ = L.wave_x0 - 6;
+        wave_y_ = L.wave_cy - L.wave_half - 16;
+        wave_w_ = (L.wave_x1 - L.wave_x0) + 12;
+        wave_h_ = 2 * L.wave_half + 28;
+        if (wave_x_ < 0) wave_x_ = 0;
+        if (wave_y_ < 0) wave_y_ = 0;
+        wave_canvas_ = vui_canvas_ex(win_, wave_x_, wave_y_, wave_w_, wave_h_,
+                                     &g_canvas[wave_y_ * CANVAS_MAX_W + wave_x_],
+                                     CANVAS_MAX_W);
+        for (int iy = 0; iy < wave_h_ && iy < CANVAS_MAX_H; ++iy)
+            wave_row_[iy] = lerp_rgb(COL_BG_TOP, COL_BG_BOT,
+                                     (float)(wave_y_ + iy) / (float)win_h_);
+    }
 
     vui_on_tick(win_, cb_tick);
     vui_on_mouse_click(win_, cb_click);
