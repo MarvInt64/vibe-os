@@ -142,7 +142,8 @@ enum { W_PANEL, W_LABEL, W_BUTTON, W_BAR, W_VBOX, W_HBOX,
        W_PILLBTN,
        W_METRIC,
        W_ICON,     /* bare SVG icon/logo, no chrome (transparent bg)     */
-       W_LISTITEM  /* sidebar row: left icon + label, hover + selected   */
+       W_LISTITEM, /* sidebar row: left icon + label, hover + selected   */
+       W_SLIDER    /* interactive horizontal slider (track + handle)     */
 };
 
 static const vui_theme g_default_theme = {
@@ -217,6 +218,8 @@ struct vui_window {
     int active_menu_idx;
     /* Index of the focused W_INPUT receiving keyboard input; -1 = none. */
     int active_input;
+    /* Index of the W_SLIDER currently being dragged; -1 = none. */
+    int active_slider;
     struct vui_widget widgets[VUI_MAX_WIDGETS];
     int widget_count;
     uint8_t dirty;
@@ -826,6 +829,17 @@ vui_widget *vui_bar(vui_window *w, int x, int y, int width, int height, int max)
     init_margins(wd); w->dirty=1; return wd;
 }
 
+/* Interactive horizontal slider: a thin track with a draggable handle. value
+ * runs 0..max; on_click fires whenever a drag/click changes it. The hit area
+ * is the full widget height, so make it tall enough (~16px) to grab easily. */
+vui_widget *vui_slider(vui_window *w, int x, int y, int width, int height, int max) {
+    vui_widget *wd = new_widget(w, W_SLIDER);
+    if (!wd) return 0;
+    wd->x=x; wd->y=y; wd->w=width; wd->h=height; wd->max=max>0?max:1;
+    wd->value=0; wd->color=VUI_ACCENT;
+    init_margins(wd); w->dirty=1; return wd;
+}
+
 void vui_on_click(vui_widget *b, vui_callback cb){ if(b) b->on_click=cb; }
 void vui_on_submit(vui_widget *b, vui_callback cb){ if(b) b->on_submit=cb; }
 void vui_set_text(vui_widget *wd, const char *t){
@@ -987,6 +1001,37 @@ void vui_on_mouse_move(vui_window *w, vui_mouse_callback cb){ if(w) w->on_mouse_
 void vui_on_mouse_click(vui_window *w, vui_mouse_callback cb){ if(w) w->on_mouse_click=cb; }
 void vui_on_mouse_release(vui_window *w, vui_mouse_callback cb){ if(w) w->on_mouse_release=cb; }
 void vui_request_repaint(vui_window *w){ if(w) w->dirty=1; }
+
+/* Update only one canvas widget's region on screen: copy its pixels into the
+ * window framebuffer and present just that rectangle (SYS_WINDOW_PRESENT_RECT).
+ * Lets an app animate one area (e.g. a visualiser) every frame without a full
+ * repaint of the static chrome around it — the chrome stays in the framebuffer
+ * from its last full repaint and is left untouched. */
+void vui_canvas_flush(vui_window *w, vui_widget *canvas) {
+    if (!w || !canvas || canvas->type != W_CANVAS) return;
+    uint32_t *pixels = (uint32_t *)canvas->user;
+    int stride = canvas->value;
+    if (!pixels || stride <= 0) return;
+    int x0 = canvas->x, y0 = canvas->y, cw = canvas->w, ch = canvas->h;
+    for (int iy = 0; iy < ch; ++iy) {
+        int py = y0 + iy;
+        if (py < 0 || py >= w->height) continue;
+        for (int ix = 0; ix < cw; ++ix) {
+            long di = canvas_index(w, x0 + ix, py);
+            if (di < 0) continue;
+            g_canvas[di] = pixels[iy * stride + ix];
+        }
+    }
+    if (x0 < 0) { cw += x0; x0 = 0; }
+    if (y0 < 0) { ch += y0; y0 = 0; }
+    if (x0 + cw > w->width)  cw = w->width  - x0;
+    if (y0 + ch > w->height) ch = w->height - y0;
+    if (cw <= 0 || ch <= 0) return;
+    sc6(SYS_WINDOW_PRESENT_RECT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas,
+        (uint64_t)w->width, (uint64_t)w->height,
+        ((uint64_t)x0 << 16) | (uint64_t)y0,
+        ((uint64_t)cw << 16) | (uint64_t)ch);
+}
 
 /* =========================================================================
  * Box containers — vui_vbox / vui_hbox
@@ -1720,6 +1765,26 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
             fill_round_rect(w, wd->x, wd->y, fillw, wd->h, r,
                             mix(accent, g_theme.surface, 1u, 4u), accent);
         break; }
+    case W_SLIDER: {
+        /* Thin 4px track centred in the widget box, accent-filled up to the
+         * value, with a round handle. The tall box is just the grab area. */
+        int v = wd->value; if (v < 0) v = 0; if (v > wd->max) v = wd->max;
+        uint32_t accent = wd->color ? wd->color : g_theme.accent;
+        uint32_t track  = glass(mix(g_theme.surface, 0x00ffffffu, 1u, 6u), 180u);
+        int th = 4, ty = wd->y + (wd->h - th) / 2;
+        int fillw = wd->w * v / wd->max;
+        int hx = wd->x + fillw, hy = wd->y + wd->h / 2;
+        int hr = (wd->h / 2) - 1; if (hr < 5) hr = 5;
+        fill_round_rect(w, wd->x, ty, wd->w, th, th / 2, track, track);
+        if (fillw >= th)
+            fill_round_rect(w, wd->x, ty, fillw, th, th / 2, accent, accent);
+        /* handle: filled rounded square (= disc) + faint glow when hovered */
+        if (wd->hover || wd->pressed)
+            fill_round_rect(w, hx - hr - 2, hy - hr - 2, (hr + 2) * 2, (hr + 2) * 2,
+                            hr + 2, glass(accent, 60u), glass(accent, 60u));
+        fill_round_rect(w, hx - hr, hy - hr, hr * 2, hr * 2, hr,
+                        mix(accent, 0x00ffffffu, 1u, 3u), accent);
+        break; }
     }
 }
 
@@ -1796,6 +1861,20 @@ static void draw_dropdown(struct vui_window *w) {
     }
 }
 
+/* Map a mouse x to a slider value and fire on_click if it changed. */
+static void slider_set_from_x(struct vui_window *w, struct vui_widget *wd, int mx) {
+    int rel = mx - wd->x;
+    if (rel < 0) rel = 0;
+    if (rel > wd->w) rel = wd->w;
+    int v = (wd->w > 0) ? (wd->max * rel + wd->w / 2) / wd->w : 0;
+    if (v != wd->value) {
+        wd->value = v;
+        w->dirty = 1;
+        dmg_add(wd->x - 8, wd->y - 8, wd->w + 16, wd->h + 16);
+        if (wd->on_click) wd->on_click(wd);
+    }
+}
+
 static void repaint(struct vui_window *w) {
     int i;
     layout_widgets(w);
@@ -1859,7 +1938,7 @@ vui_window *vui_window_open_inset(const char *title, int width, int height,
     g_win.mouse_x=-1; g_win.mouse_y=-1; g_win.mouse_down=0;
     g_win.clear_color=g_theme.bg;
     g_win.widget_count=0; g_win.dirty=1; g_win.on_tick=0; g_win.on_resize=0; g_win.on_context_menu=0; g_win.on_key=0; g_win.on_scroll=0; g_win.on_mouse_move=0; g_win.on_mouse_click=0; g_win.on_mouse_release=0;
-    g_win.menu_count=0; g_win.active_menu_idx=-1; g_win.active_input=-1;
+    g_win.menu_count=0; g_win.active_menu_idx=-1; g_win.active_input=-1; g_win.active_slider=-1;
     g_win.tooltip_widget=-1; g_win.tooltip_ticks=0;
     return &g_win;
 }
@@ -1984,6 +2063,7 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
             }
             else if (ev.type == EV_MOUSE_UP) {
                 w->mouse_down=0;
+                w->active_slider = -1;          /* release any slider drag */
                 if (w->on_mouse_release) w->on_mouse_release(w, w->mouse_x, w->mouse_y);
             }
             else if (ev.type == EV_CLOSE) { w->open=0; }
@@ -2101,11 +2181,19 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
         int input_clicked = 0;
         for (i = 0; i < w->widget_count; ++i) {
             struct vui_widget *wd = &w->widgets[i];
-            if (wd->type != W_BUTTON && wd->type != W_PILLBTN && wd->type != W_TILE && wd->type != W_TABS && wd->type != W_INPUT && wd->type != W_LISTITEM && wd->type != W_ICON) continue;
+            if (wd->type != W_BUTTON && wd->type != W_PILLBTN && wd->type != W_TILE && wd->type != W_TABS && wd->type != W_INPUT && wd->type != W_LISTITEM && wd->type != W_ICON && wd->type != W_SLIDER) continue;
             uint8_t hov = (uint8_t)(w->active_menu_idx < 0 &&
                                     inside(wd, w->mouse_x, w->mouse_y));
             uint8_t prs = (uint8_t)(hov && w->mouse_down);
             if (hov != wd->hover || prs != wd->pressed) { wd->hover=hov; wd->pressed=prs; w->dirty=1; dmg_add(wd->x, wd->y, wd->w + 24, wd->h + 8); }
+            /* Slider drag: capture on press, follow mouse_x until release even
+             * if it leaves the track vertically. */
+            if (wd->type == W_SLIDER) {
+                if (click_x >= 0 && inside(wd, click_x, click_y))
+                    w->active_slider = i;
+                if (w->active_slider == i && w->mouse_down)
+                    slider_set_from_x(w, wd, w->mouse_x);
+            }
             /* Tooltip: accumulate hover ticks; reset when leaving the widget. */
             if (wd->tooltip[0]) {
                 int idx = (int)(wd - w->widgets);

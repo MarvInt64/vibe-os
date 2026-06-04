@@ -136,6 +136,9 @@ vui_widget *vui_canvas(vui_window *w, int x, int y, int width, int height, vui_u
 vui_widget *vui_canvas_ex(vui_window *w, int x, int y, int width, int height, vui_u32 *pixels, int stride);
 vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels, int active);
 vui_widget *vui_bar(vui_window *w, int x, int y, int width, int height, int max);
+/* Interactive horizontal slider (track + draggable handle). value 0..max;
+ * the on_click callback fires whenever a drag/click changes the value. */
+vui_widget *vui_slider(vui_window *w, int x, int y, int width, int height, int max);
 /* Decorative mini line-graph (sparkline) for metric cards. */
 vui_widget *vui_sparkline(vui_window *w, int x, int y, int width, int height);
 /* Set an integer text scale on a label (1 = normal, 2 = double size, …). */
@@ -212,6 +215,9 @@ static inline void vui_add_menu_item(vui_window *w, const char *label,
     vui_add_dock_item(w, label, cb);
 }
 void vui_request_repaint(vui_window *w);
+/* Present only the given canvas widget's region (no full-window repaint). Use
+ * for high-frame-rate animation of one area while the chrome stays static. */
+void vui_canvas_flush(vui_window *w, vui_widget *canvas);
 
 /* ---- Standard Dialogs --------------------------------------------------- */
 
