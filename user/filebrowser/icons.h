@@ -21,6 +21,11 @@ static const char* SVG_ARROW_UP =
     "<path d=\"M14 21 V8 M8 14 L14 8 L20 14\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
     "</svg>";
 
+static const char* SVG_CHEVRON_DOWN =
+    "<svg width=\"28\" height=\"28\" viewBox=\"0 0 28 28\">"
+    "<path d=\"M6 10 L14 18 L22 10\" stroke=\"currentColor\" stroke-width=\"2\" fill=\"none\" stroke-linecap=\"round\" stroke-linejoin=\"round\"/>"
+    "</svg>";
+
 // NOTE: VibeOS' libsvg does NOT render elliptical-arc ('A') path commands — it
 // collapses them to a straight line. Every "round" icon below is therefore
 // built from cubic curves ('C', supported) or polylines, never arcs.

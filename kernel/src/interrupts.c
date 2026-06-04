@@ -68,31 +68,53 @@ extern void timer_interrupt_stub(void);
 extern void pagefault_stub(void);
 extern void gpfault_stub(void);
 
-/* GP-register snapshot written by pagefault_stub before fault_handler runs.
- * Order: rax, rbx, rcx, rdx, rsi, rdi, rbp (indices 0..6). */
-uint64_t g_fault_regs[16];
+/* GP-register snapshot written by pagefault_stub / gpfault_stub before
+ * fault_handler runs.  Layout matches FREG_* indices in interrupts.h. */
+uint64_t g_fault_regs[FREG_COUNT];
 
 int fault_handler(uint64_t cr2, uint64_t error_code, uint64_t rip, uint64_t vector, uint64_t cs) {
+    const char *name = (vector == 14u) ? "#PF" : (vector == 13u) ? "#GP" : "???";
+
+    /* One-line summary: vector, RIP, CR2, error code, CS. */
     serial_write("CPU EXCEPTION vector=");
     serial_write_hex_u64(vector);
-    serial_write(" cr2=");
-    serial_write_hex_u64(cr2);
-    serial_write(" err=");
-    serial_write_hex_u64(error_code);
-    serial_write(" rip=");
+    serial_write(" (");
+    serial_write(name);
+    serial_write(")  rip=");
     serial_write_hex_u64(rip);
-    serial_write(" cs=");
+    serial_write("  cr2=");
+    serial_write_hex_u64(cr2);
+    serial_write("  err=");
+    serial_write_hex_u64(error_code);
+    serial_write("  cs=");
     serial_write_hex_u64(cs);
-    serial_write(" rbx=");
-    serial_write_hex_u64(g_fault_regs[1]);
-    serial_write(" rbp=");
-    serial_write_hex_u64(g_fault_regs[6]);
+    serial_write("\n");
+
+    /* Full register dump. */
+    serial_write("  rax="); serial_write_hex_u64(g_fault_regs[FREG_RAX]);
+    serial_write("  rbx="); serial_write_hex_u64(g_fault_regs[FREG_RBX]);
+    serial_write("  rcx="); serial_write_hex_u64(g_fault_regs[FREG_RCX]);
+    serial_write("  rdx="); serial_write_hex_u64(g_fault_regs[FREG_RDX]);
+    serial_write("\n");
+    serial_write("  rsi="); serial_write_hex_u64(g_fault_regs[FREG_RSI]);
+    serial_write("  rdi="); serial_write_hex_u64(g_fault_regs[FREG_RDI]);
+    serial_write("  rbp="); serial_write_hex_u64(g_fault_regs[FREG_RBP]);
+    serial_write("  rsp="); serial_write_hex_u64(g_fault_regs[FREG_RSP]);
+    serial_write("\n");
+    serial_write("  r8 ="); serial_write_hex_u64(g_fault_regs[FREG_R8]);
+    serial_write("  r9 ="); serial_write_hex_u64(g_fault_regs[FREG_R9]);
+    serial_write("  r10="); serial_write_hex_u64(g_fault_regs[FREG_R10]);
+    serial_write("  r11="); serial_write_hex_u64(g_fault_regs[FREG_R11]);
+    serial_write("\n");
+    serial_write("  r12="); serial_write_hex_u64(g_fault_regs[FREG_R12]);
+    serial_write("  r13="); serial_write_hex_u64(g_fault_regs[FREG_R13]);
+    serial_write("  r14="); serial_write_hex_u64(g_fault_regs[FREG_R14]);
+    serial_write("  r15="); serial_write_hex_u64(g_fault_regs[FREG_R15]);
+    serial_write("\n");
+    serial_write("  rflags="); serial_write_hex_u64(g_fault_regs[FREG_RFLAGS]);
     serial_write("\n");
 
     if ((cs & 0x03u) == 0x03u) {
-        /* Record rbx/rbp in the persisted journal too (visible via dmesg and
-         * /journal.log) so faults can be diagnosed without a serial capture. */
-        journal_log_hex(JOURNAL_FAULT, 0, "  fault rbx=", g_fault_regs[1]);
         return process_handle_user_fault(vector, rip, cr2, error_code);
     }
     return 0;

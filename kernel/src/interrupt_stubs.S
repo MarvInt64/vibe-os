@@ -178,26 +178,38 @@ syscall_interrupt_stub:
     jmp process_run_slice_return
 
 /* CPU exceptions with an error code (#PF=14, #GP=13). Stack on entry:
- *   [rsp]=error code, [rsp+8]=RIP, [rsp+16]=CS, ...
+ *   [rsp+0]=error code, [rsp+8]=RIP, [rsp+16]=CS,
+ *   [rsp+24]=RFLAGS,    [rsp+32]=user RSP, [rsp+40]=SS
  * Kernel faults still halt. User faults are converted into a process exit. */
 pagefault_stub:
-    /* Snapshot the interrupted general-purpose registers into a global scratch
-     * area for diagnostics (the fault handler logs them). Done with absolute
-     * stores so the existing [rsp]-relative error-code/iret reads are unchanged. */
-    mov [rip + g_fault_regs + 0],  rax
-    mov [rip + g_fault_regs + 8],  rbx
-    mov [rip + g_fault_regs + 16], rcx
-    mov [rip + g_fault_regs + 24], rdx
-    mov [rip + g_fault_regs + 32], rsi
-    mov [rip + g_fault_regs + 40], rdi
-    mov [rip + g_fault_regs + 48], rbp
-    /* Also snapshot the interrupted RIP and user RSP from the CPU-pushed
-     * exception frame so the journal shows a fully consistent fault state
-     * (index 7 = rip, 8 = user rsp). rax is already saved, so reuse it. */
-    mov rax, [rsp + 8]                  /* faulting RIP  */
-    mov [rip + g_fault_regs + 56], rax
-    mov rax, [rsp + 32]                 /* interrupted RSP */
-    mov [rip + g_fault_regs + 64], rax
+    /* Save all 16 GP registers + RFLAGS + fault RIP + user RSP into g_fault_regs.
+     * Layout (indices 0-17):
+     *   0=rax 1=rbx 2=rcx 3=rdx 4=rsi 5=rdi 6=rbp
+     *   7=r8  8=r9  9=r10 10=r11 11=r12 12=r13 13=r14 14=r15
+     *   15=rflags  16=fault_rip  17=fault_rsp
+     * rax is saved first so it can be reused as scratch to read the exception frame. */
+    mov [rip + g_fault_regs +   0], rax
+    mov [rip + g_fault_regs +   8], rbx
+    mov [rip + g_fault_regs +  16], rcx
+    mov [rip + g_fault_regs +  24], rdx
+    mov [rip + g_fault_regs +  32], rsi
+    mov [rip + g_fault_regs +  40], rdi
+    mov [rip + g_fault_regs +  48], rbp
+    mov [rip + g_fault_regs +  56], r8
+    mov [rip + g_fault_regs +  64], r9
+    mov [rip + g_fault_regs +  72], r10
+    mov [rip + g_fault_regs +  80], r11
+    mov [rip + g_fault_regs +  88], r12
+    mov [rip + g_fault_regs +  96], r13
+    mov [rip + g_fault_regs + 104], r14
+    mov [rip + g_fault_regs + 112], r15
+    mov rax, [rsp + 24]                  /* RFLAGS from exception frame */
+    mov [rip + g_fault_regs + 120], rax
+    mov rax, [rsp + 8]                   /* faulting RIP from exception frame */
+    mov [rip + g_fault_regs + 128], rax
+    mov rax, [rsp + 32]                  /* user RSP from exception frame */
+    mov [rip + g_fault_regs + 136], rax
+    /* Set up fault_handler(cr2, error_code, rip, vector, cs) and call it. */
     mov rsi, [rsp]      /* error code */
     mov rdx, [rsp + 8]  /* faulting RIP */
     mov r8, [rsp + 16]  /* CS */
@@ -212,6 +224,28 @@ pagefault_stub:
     jmp .pf_hang
 
 gpfault_stub:
+    /* Identical register save as pagefault_stub — same exception frame layout. */
+    mov [rip + g_fault_regs +   0], rax
+    mov [rip + g_fault_regs +   8], rbx
+    mov [rip + g_fault_regs +  16], rcx
+    mov [rip + g_fault_regs +  24], rdx
+    mov [rip + g_fault_regs +  32], rsi
+    mov [rip + g_fault_regs +  40], rdi
+    mov [rip + g_fault_regs +  48], rbp
+    mov [rip + g_fault_regs +  56], r8
+    mov [rip + g_fault_regs +  64], r9
+    mov [rip + g_fault_regs +  72], r10
+    mov [rip + g_fault_regs +  80], r11
+    mov [rip + g_fault_regs +  88], r12
+    mov [rip + g_fault_regs +  96], r13
+    mov [rip + g_fault_regs + 104], r14
+    mov [rip + g_fault_regs + 112], r15
+    mov rax, [rsp + 24]                  /* RFLAGS from exception frame */
+    mov [rip + g_fault_regs + 120], rax
+    mov rax, [rsp + 8]                   /* faulting RIP from exception frame */
+    mov [rip + g_fault_regs + 128], rax
+    mov rax, [rsp + 32]                  /* user RSP from exception frame */
+    mov [rip + g_fault_regs + 136], rax
     mov rsi, [rsp]
     mov rdx, [rsp + 8]
     mov r8, [rsp + 16]

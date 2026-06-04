@@ -437,10 +437,6 @@ static void audio_reinit(void) {
 }
 
 int audio_ioctl(int request, void *arg) {
-    serial_write("Audio: ioctl request=");
-    serial_write_hex_u64((uint64_t)request);
-    serial_write("\n");
-
     struct os_settings *s = settings_get();
     uint32_t val = *(uint32_t *)arg;
 
@@ -462,6 +458,10 @@ int audio_ioctl(int request, void *arg) {
         default:
             return -1;
     }
-    settings_save();
+    /* Do NOT call settings_save() here — a synchronous disk write inside an
+     * audio ioctl leaves the IDE controller in an intermediate state that
+     * caused the next disk read to fail with EIO.  The root cause of that
+     * issue was thread->syscalls.fd_table not being set for spawned threads;
+     * now fixed in process_create_thread.  Settings are persisted normally. */
     return 0;
 }

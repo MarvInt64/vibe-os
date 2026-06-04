@@ -112,12 +112,15 @@ private:
     uint64_t free_disk_space_ = 0;
     uint64_t total_disk_space_ = 0;
 
-    // Helper functions for drawing
-    void fill_rect(int x, int y, int w, int h, uint32_t color);
-    void draw_rect(int x, int y, int w, int h, uint32_t color);
-    void draw_line(int x1, int y1, int x2, int y2, uint32_t color);
-    void draw_text(int x, int y, const char *text, uint32_t color, int scale = 1);
-    void draw_svg(int x, int y, int size, const char *svg, uint32_t color);
+    // Helper functions for drawing.
+    // noinline: keeps these out of render()'s inlining budget so the compiler
+    // does not reuse callee-saved registers (r13/this) as vectorised loop
+    // counters inside render(), which caused silent stack corruption at -O2.
+    __attribute__((noinline)) void fill_rect(int x, int y, int w, int h, uint32_t color);
+    __attribute__((noinline)) void draw_rect(int x, int y, int w, int h, uint32_t color);
+    __attribute__((noinline)) void draw_line(int x1, int y1, int x2, int y2, uint32_t color);
+    __attribute__((noinline)) void draw_text(int x, int y, const char *text, uint32_t color, int scale = 1);
+    __attribute__((noinline)) void draw_svg(int x, int y, int size, const char *svg, uint32_t color);
     void draw_glass_panel(int x, int y, int w, int h, uint32_t base_color, int corner_r = 6);
 
     // Layout helper bounds

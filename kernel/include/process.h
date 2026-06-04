@@ -71,6 +71,10 @@ struct process_vfs_handle {
     uint8_t used;
     uint8_t kind;
     char path[64];
+    /* Cached ext2 inode number resolved at open() time.  Avoids re-running the
+     * full directory-traversal on every read(), which can leave the IDE
+     * controller in a state that makes the subsequent data-block read fail. */
+    uint32_t cached_ino;
 };
 
 struct process {

@@ -202,6 +202,11 @@ apps: $(DISK_IMG) $(LIBC_A)
 		build/user/vexui.o build/user/svg.o build/user/mp3dec.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/browser.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/browser.elf /bin/browser
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/libimage -Ilib/svg -Ilib/mp3 -c user/audioplayer/audioplayer.cpp -o build/user/audioplayer.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/audioplayer.elf \
+		$(LIBC_CRT0) build/user/audioplayer.o build/user/vexui.o build/user/svg.o build/user/mp3dec.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/audioplayer.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/audioplayer.elf /bin/audioplayer
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/libimage -c user/wallpaper/wallpaper.c -o build/user/wallpaper.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/wallpaper.elf \
 		$(LIBC_CRT0) build/user/wallpaper.o build/user/image.o $(LIBC_A)
@@ -214,6 +219,7 @@ apps: $(DISK_IMG) $(LIBC_A)
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/filebrowser.svg /icons/dock/filebrowser.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/taskmgr.svg /icons/dock/taskmgr.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/terminal.svg /icons/dock/terminal.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/player.svg /icons/dock/player.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/search.svg /icons/search.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/vibeos-logo.svg /icons/vibeos-logo.svg
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/power.svg /icons/power.svg

@@ -23,6 +23,7 @@
  */
 
 #include "alloc.h"
+#include "interrupts.h"
 #include "audio.h"
 #include "clipboard.h"
 #include "string.h"
@@ -52,9 +53,9 @@ uint32_t kernel_current_resolution(void);
 uintptr_t g_kernel_resume_rsp;
 uint64_t g_kernel_resume_result;
 
-/* Fault register snapshot from pagefault_stub (interrupts.c). Indices:
- * 0=rax 1=rbx 2=rcx 3=rdx 4=rsi 5=rdi 6=rbp 7=rip 8=user-rsp. */
-extern uint64_t g_fault_regs[16];
+/* Fault register snapshot from pagefault_stub / gpfault_stub (interrupts.c).
+ * Use the FREG_* indices from interrupts.h to access fields by name. */
+extern uint64_t g_fault_regs[FREG_COUNT];
 
 static struct process g_processes[PROCESS_MAX_COUNT];
 static struct process *g_current_process;
@@ -786,8 +787,18 @@ static ssize_t process_vfs_read(void *object, void *buffer, size_t count) {
     }
 
     if (handle->kind == 1) {
-        /* path-based: user files or ext2 */
-        ssize_t n = vfs_read(handle->path, handle->offset, buffer, count);
+        /* path-based: user files or ext2.
+         * Use the cached inode number to read directly from ext2, bypassing
+         * the path-traversal that would otherwise run on every read() and
+         * leave the IDE controller in a state where the next block read fails.
+         * Fall back to the full path-based read for non-ext2 files (ino == 0). */
+        ssize_t n;
+        if (handle->cached_ino != 0 && vfs_get_ext2() != 0) {
+            n = ext2_read(vfs_get_ext2(), handle->cached_ino,
+                          (uint32_t)handle->offset, count, buffer);
+        } else {
+            n = vfs_read(handle->path, handle->offset, buffer, count);
+        }
         if (n > 0) handle->offset += (size_t)n;
         return n;
     } else {
@@ -1366,6 +1377,10 @@ static int process_create_thread(struct process *parent, uintptr_t entry,
     }
     thread->spawn_arg[0] = '\0';
     process_copy_fd_table(&thread->fd_table, &parent->fd_table);
+    /* Wire the syscall context to this thread's own fd_table.  Without this
+     * fd_read() receives a NULL table and every read() from the thread
+     * returns -1 immediately, silently breaking all file I/O on threads. */
+    thread->syscalls.fd_table = &thread->fd_table;
     process_set_name(thread, parent->name);
 
     /* Diagnostic: a thread shares its parent's address space (cr3) but has its
@@ -1500,18 +1515,26 @@ static int process_open_vfs_from_parent(struct process *process, const char *pat
         return fd;
     }
 
-    /* Try user files and ext2 via vfs_file_exists */
-    if (vfs_file_exists(path)) {
-        handle = process_alloc_vfs_handle(process);
-        if (handle == 0) return -SYSCALL_EMFILE;
-        handle->file = 0;
-        handle->kind = 1;
-        for (i = 0; i + 1 < sizeof(handle->path) && path[i]; ++i)
-            handle->path[i] = path[i];
-        handle->path[i] = '\0';
-        fd = fd_alloc(&process->fd_table, &PROCESS_VFS_FD_OPS, handle, 3);
-        if (fd < 0) { process_release_vfs_handle(handle); return fd; }
-        return fd;
+    /* Single-pass existence check + inode capture: vfs_open_ino() does at most
+     * one ext2 directory traversal, returning the inode number in one call.
+     * The old approach (vfs_file_exists then ext2_lookup_inode) did two
+     * traversals; the second disk read always failed (IDE intermediate state),
+     * leaving cached_ino=0 and causing every subsequent read() to return -1. */
+    {
+        uint32_t ext2_ino = 0u;
+        if (vfs_open_ino(path, &ext2_ino)) {
+            handle = process_alloc_vfs_handle(process);
+            if (handle == 0) return -SYSCALL_EMFILE;
+            handle->file = 0;
+            handle->kind = 1;
+            for (i = 0; i + 1 < sizeof(handle->path) && path[i]; ++i)
+                handle->path[i] = path[i];
+            handle->path[i] = '\0';
+            handle->cached_ino = ext2_ino;
+            fd = fd_alloc(&process->fd_table, &PROCESS_VFS_FD_OPS, handle, 3);
+            if (fd < 0) { process_release_vfs_handle(handle); return fd; }
+            return fd;
+        }
     }
 
     return -SYSCALL_ENOENT;
@@ -2864,13 +2887,50 @@ static void process_clear_pending_tty_wait(struct process *process) {
     process->pending_read_count = 0;
 }
 
+/* Walk the user-space rbp chain and log return addresses to the journal.
+ * The faulting process's CR3 is still active so user addresses are directly
+ * accessible — but every pointer is bounds-checked to prevent a double fault. */
+static void dump_user_backtrace(uint64_t rbp, uint32_t pid) {
+    const uint64_t STACK_LO = 0x21f00000ULL;
+    const uint64_t STACK_HI = 0x22000000ULL;
+    int frame = 0;
+
+    serial_write("  --- backtrace ---\n");
+    while (frame < 24
+           && rbp >= STACK_LO
+           && rbp + 16 <= STACK_HI) {
+        uint64_t parent = *(const uint64_t *)(uintptr_t)rbp;
+        uint64_t ret    = *(const uint64_t *)(uintptr_t)(rbp + 8);
+
+        serial_write("  #");
+        serial_write_hex_u8((uint8_t)frame);
+        serial_write(": rip=");
+        serial_write_hex_u64(ret);
+        serial_write("  rbp=");
+        serial_write_hex_u64(rbp);
+        serial_write("\n");
+
+        journal_log_hex(JOURNAL_FAULT, pid, "  bt rip=", ret);
+        journal_log_hex(JOURNAL_FAULT, pid, "     rbp=", rbp);
+
+        if (parent == 0 || parent <= rbp) break;  /* unwound to bottom */
+        rbp = parent;
+        frame++;
+    }
+}
+
 int process_handle_user_fault(uint64_t vector, uint64_t rip, uint64_t cr2, uint64_t error_code) {
     struct process *process = g_current_process;
     struct desktop_state *desktop;
+    const char *pname;
+    const char *vname;
 
     if (process == 0 || process->state == PROCESS_STATE_EMPTY || process->state == PROCESS_STATE_EXITED) {
         return 0;
     }
+
+    pname = process->name[0] ? process->name : "process";
+    vname = (vector == 14u) ? "#PF" : (vector == 13u) ? "#GP" : "???";
 
     /* First: was any process's kernel stack overflowed? A victim of a neighbour's
      * overflow faults with a corrupted context — checking here names the real
@@ -2884,19 +2944,50 @@ int process_handle_user_fault(uint64_t vector, uint64_t rip, uint64_t cr2, uint6
         }
     }
 
-    serial_write("VIBEOS: terminating user process pid=");
+    /* Structured crash report header. */
+    serial_write("=== PROCESS CRASH: ");
+    serial_write(pname);
+    serial_write(" (pid ");
     serial_write_hex_u64(process->pid);
-    serial_write(" name=");
-    serial_write(process->name[0] ? process->name : "process");
-    serial_write(" after fault vector=");
+    serial_write(") ===\n");
+    serial_write("  vector=");
     serial_write_hex_u64(vector);
-    serial_write(" rip=");
+    serial_write(" (");
+    serial_write(vname);
+    serial_write(")  rip=");
     serial_write_hex_u64(rip);
-    serial_write(" cr2=");
+    serial_write("  cr2=");
     serial_write_hex_u64(cr2);
-    serial_write(" err=");
+    serial_write("  err=");
     serial_write_hex_u64(error_code);
     serial_write("\n");
+
+    /* Full GP register dump from the fault snapshot. */
+    serial_write("  rax="); serial_write_hex_u64(g_fault_regs[FREG_RAX]);
+    serial_write("  rbx="); serial_write_hex_u64(g_fault_regs[FREG_RBX]);
+    serial_write("  rcx="); serial_write_hex_u64(g_fault_regs[FREG_RCX]);
+    serial_write("  rdx="); serial_write_hex_u64(g_fault_regs[FREG_RDX]);
+    serial_write("\n");
+    serial_write("  rsi="); serial_write_hex_u64(g_fault_regs[FREG_RSI]);
+    serial_write("  rdi="); serial_write_hex_u64(g_fault_regs[FREG_RDI]);
+    serial_write("  rbp="); serial_write_hex_u64(g_fault_regs[FREG_RBP]);
+    serial_write("  rsp="); serial_write_hex_u64(g_fault_regs[FREG_RSP]);
+    serial_write("\n");
+    serial_write("  r8 ="); serial_write_hex_u64(g_fault_regs[FREG_R8]);
+    serial_write("  r9 ="); serial_write_hex_u64(g_fault_regs[FREG_R9]);
+    serial_write("  r10="); serial_write_hex_u64(g_fault_regs[FREG_R10]);
+    serial_write("  r11="); serial_write_hex_u64(g_fault_regs[FREG_R11]);
+    serial_write("\n");
+    serial_write("  r12="); serial_write_hex_u64(g_fault_regs[FREG_R12]);
+    serial_write("  r13="); serial_write_hex_u64(g_fault_regs[FREG_R13]);
+    serial_write("  r14="); serial_write_hex_u64(g_fault_regs[FREG_R14]);
+    serial_write("  r15="); serial_write_hex_u64(g_fault_regs[FREG_R15]);
+    serial_write("\n");
+    serial_write("  rflags="); serial_write_hex_u64(g_fault_regs[FREG_RFLAGS]);
+    serial_write("\n");
+
+    /* User-space stack backtrace via the rbp chain. */
+    dump_user_backtrace(g_fault_regs[FREG_RBP], process->pid);
 
     process_clear_pending_tty_wait(process);
     desktop = desktop_active();
@@ -2906,42 +2997,37 @@ int process_handle_user_fault(uint64_t vector, uint64_t rip, uint64_t cr2, uint6
 
     process->exit_code = -SYSCALL_EFAULT;
     process->state = PROCESS_STATE_EXITED;
-    journal_log(JOURNAL_FAULT, process->pid, process->name[0] ? process->name : "process");
+
+    /* Journal entries for post-mortem via dmesg / /journal.log. */
+    journal_log(JOURNAL_FAULT, process->pid, pname);
     journal_log_hex(JOURNAL_FAULT, process->pid, "user fault, killed; rip=", rip);
     journal_log_hex(JOURNAL_FAULT, process->pid, "  cr2=", cr2);
     journal_log_hex(JOURNAL_FAULT, process->pid, "  err=", error_code);
-    /* Full register snapshot at the fault (g_fault_regs from pagefault_stub):
-     * compare the saved context vs. what actually ran to localize where a
-     * register/stack pointer got corrupted. */
-    journal_log_hex(JOURNAL_FAULT, process->pid, "  rbx=", g_fault_regs[1]);
-    journal_log_hex(JOURNAL_FAULT, process->pid, "  rbp=", g_fault_regs[6]);
-    journal_log_hex(JOURNAL_FAULT, process->pid, "  rsp=", g_fault_regs[8]);
-    /* What the scheduler last RESTORED into this process's context before it
-     * ran — if these already differ from a sane value, the kernel corrupted the
-     * saved context; if they were sane, the corruption happened in user space. */
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  rax=", g_fault_regs[FREG_RAX]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  rbx=", g_fault_regs[FREG_RBX]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  rcx=", g_fault_regs[FREG_RCX]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  rdx=", g_fault_regs[FREG_RDX]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  rsi=", g_fault_regs[FREG_RSI]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  rdi=", g_fault_regs[FREG_RDI]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  rbp=", g_fault_regs[FREG_RBP]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  rsp=", g_fault_regs[FREG_RSP]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  r8= ", g_fault_regs[FREG_R8]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  r9= ", g_fault_regs[FREG_R9]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  r10=", g_fault_regs[FREG_R10]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  r11=", g_fault_regs[FREG_R11]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  r12=", g_fault_regs[FREG_R12]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  r13=", g_fault_regs[FREG_R13]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  r14=", g_fault_regs[FREG_R14]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  r15=", g_fault_regs[FREG_R15]);
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  rflags=", g_fault_regs[FREG_RFLAGS]);
+    /* Scheduler context at last dispatch — lets us detect kernel-side corruption. */
     journal_log_hex(JOURNAL_FAULT, process->pid, "  ctx.rbx=", process->context.rbx);
     journal_log_hex(JOURNAL_FAULT, process->pid, "  ctx.rsp=", process->context.rsp);
     journal_log_hex(JOURNAL_FAULT, process->pid, "  ctx.rip=", process->context.rip);
-    /* Dump the words at the top of this process's user stack. The faulting
-     * process's CR3 is still live here, so a guarded read is safe. This reveals
-     * the CORRUPTING BYTES that smashed the return address (e.g. ASCII = a
-     * string overran, 0xAB = kstack poison, page-table-like = a stray PT write,
-     * zeros = a memory_zero overran). */
-    {
-        uint64_t sp = process->context.rsp;
-        if (sp >= 0x21f00000ull && sp + 0x20ull <= 0x22000000ull) {
-            const uint64_t *s = (const uint64_t *)(uintptr_t)sp;
-            journal_log_hex(JOURNAL_FAULT, process->pid, "  [rsp+0]=", s[0]);
-            journal_log_hex(JOURNAL_FAULT, process->pid, "  [rsp+8]=", s[1]);
-            journal_log_hex(JOURNAL_FAULT, process->pid, "  [rsp+16]=", s[2]);
-            journal_log_hex(JOURNAL_FAULT, process->pid, "  [rsp+24]=", s[3]);
-        }
-    }
-    /* Address-space sanity: if the live CR3 differs from this process's own
-     * cr3, the scheduler ran it under the WRONG page tables — a cross-process
-     * corruption smoking gun. Both values are logged so we can compare. */
+    /* Address-space sanity check. */
     journal_log_hex(JOURNAL_FAULT, process->pid, "  cr3 expected=", process->cr3);
-    journal_log_hex(JOURNAL_FAULT, process->pid, "  cr3 actual=", paging_read_cr3());
+    journal_log_hex(JOURNAL_FAULT, process->pid, "  cr3 actual=",   paging_read_cr3());
+
     process_wake_waiter(process);
     g_kernel_resume_result = PROCESS_RUN_EXITED;
     g_current_process = 0;

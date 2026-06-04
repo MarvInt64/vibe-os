@@ -616,6 +616,35 @@ int vfs_file_exists(const char *path) {
     return vfs_stat_path(path, &stat) && stat.kind == VFS_NODE_FILE;
 }
 
+/* Single-traversal open helper: checks existence AND returns ext2 inode number.
+ * Returns 1 if the file exists; *ino_out = inode (0 for embedded/user files). */
+int vfs_open_ino(const char *path, uint32_t *ino_out) {
+    const struct vfs_file *embedded;
+    struct vfs_user_file *uf;
+
+    if (ino_out) *ino_out = 0u;
+    if (path == 0) return 0;
+
+    /* Embedded files: in ROM, no disk I/O, inode = 0 */
+    embedded = vfs_lookup(path);
+    if (embedded != 0) return 1;
+
+    /* Ext2 files: one directory traversal, capture the inode */
+    if (g_ext2 != 0) {
+        uint32_t ino = ext2_lookup_inode(g_ext2, path);
+        if (ino != 0) {
+            if (ino_out) *ino_out = ino;
+            return 1;
+        }
+    }
+
+    /* User (in-memory) files: no disk I/O, inode = 0 */
+    uf = find_user_file(path);
+    if (uf != 0) return 1;
+
+    return 0;
+}
+
 ssize_t vfs_read(const char *path, size_t offset, void *buffer, size_t count) {
     const struct vfs_file *file;
     struct vfs_user_file *uf;

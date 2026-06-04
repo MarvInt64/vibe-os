@@ -38,6 +38,7 @@ extern init_fn __init_array_end[];
 extern init_fn __fini_array_start[];
 extern init_fn __fini_array_end[];
 extern int main(int argc, char *argv[]) __attribute__((weak));
+extern int _Z4mainiPPc(int argc, char **argv) __attribute__((weak)); /* clang++ freestanding: int main(int, char**) */
 extern int _Z4mainv(void) __attribute__((weak));  /* clang++ freestanding: int main() */
 extern void __cxa_finalize(void *dso);
 
@@ -92,8 +93,13 @@ void __attribute__((noreturn)) _start(void) {
     argv[argc] = NULL;
 
     run_init_array();
-    if (main) code = main(argc, argv);
-    else if (_Z4mainv) code = _Z4mainv();
+    int (*volatile p_main)(int, char*[]) = main;
+    int (*volatile p_Z4mainiPPc)(int, char**) = _Z4mainiPPc;
+    int (*volatile p_Z4mainv)(void) = _Z4mainv;
+
+    if (p_main) code = p_main(argc, argv);
+    else if (p_Z4mainiPPc) code = p_Z4mainiPPc(argc, argv);
+    else if (p_Z4mainv) code = p_Z4mainv();
     else code = 127;
     __cxa_finalize(0);
     run_fini_array();

@@ -118,6 +118,8 @@ FileBrowser::~FileBrowser() {
 }
 
 void FileBrowser::init() {
+    instance_ = this;
+    canvas_pixels_ = g_canvas_pixels;
     // Populate Sidebar items
     sidebar_count_ = 0;
     sidebar_items_[sidebar_count_++] = {"FAVORITES", "", "", true};
@@ -204,6 +206,7 @@ void FileBrowser::refresh_files() {
     uint64_t size = 0;
 
     for (uint32_t idx = 0; idx < 256; idx++) {
+        if (entry_count_ >= 256) break;
         name[0] = '\0';
         int result = readdir_entry_ex(current_path_, idx, name, sizeof(name), &kind, &size);
         if (result <= 0) break;
@@ -534,6 +537,7 @@ void FileBrowser::get_detail_rect(int &x, int &y, int &w, int &h) {
 }
 
 void FileBrowser::render() {
+    if (!win_ || !canvas_pixels_) return;   // window not yet open
     // 1. Clear background of listing window
     fill_rect(0, 0, win_w_, win_h_, 0x0020384fu);
 
@@ -979,8 +983,13 @@ void FileBrowser::on_click(int x, int y) {
 
                     if (fe.kind == 2) { // Folder
                         navigate(target_path, true);
-                    } else { // File - launch editor!
-                        vos_spawn_arg("/bin/edit", target_path);
+                    } else { // File - launch editor or player!
+                        const char *ext = strrchr(fe.name, '.');
+                        if (ext && strcmp(ext, ".mp3") == 0) {
+                            vos_spawn_arg("/bin/audioplayer", target_path);
+                        } else {
+                            vos_spawn_arg("/bin/edit", target_path);
+                        }
                     }
                 } else {
                     selected_index_ = clicked_item;
@@ -1009,7 +1018,12 @@ void FileBrowser::on_click(int x, int y) {
                         if (fe.kind == 2) {
                             navigate(target_path, true);
                         } else {
-                            vos_spawn_arg("/bin/edit", target_path);
+                            const char *ext = strrchr(fe.name, '.');
+                            if (ext && strcmp(ext, ".mp3") == 0) {
+                                vos_spawn_arg("/bin/audioplayer", target_path);
+                            } else {
+                                vos_spawn_arg("/bin/edit", target_path);
+                            }
                         }
                     } else {
                         selected_index_ = clicked_item;
@@ -1298,12 +1312,17 @@ void FileBrowser::search_changed(const char *text) {
 // up event callbacks, then hand control to the VexUI loop (which never returns).
 // ---------------------------------------------------------------------------
 void FileBrowser::run() {
+    instance_ = this;
+    canvas_pixels_ = g_canvas_pixels;
+
     win_ = vui_window_open("Files", win_w_, win_h_);
     if (!win_) return;
 
     // Adopt the real (possibly clamped) window size before laying anything out.
     win_w_ = vui_window_width(win_);
     win_h_ = vui_window_height(win_);
+    if (win_w_ > BROWSER_MAX_W) win_w_ = BROWSER_MAX_W;
+    if (win_h_ > BROWSER_MAX_H) win_h_ = BROWSER_MAX_H;
 
     // A full-window canvas hosts the hand-rendered file list, breadcrumbs,
     // preview and status bar. Created first so the toolbar/sidebar widgets,

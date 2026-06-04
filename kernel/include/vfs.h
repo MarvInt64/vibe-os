@@ -41,6 +41,10 @@ ssize_t vfs_write(const char *path, size_t offset, const void *data, size_t coun
 ssize_t vfs_read_user(const char *path, size_t offset, void *buffer, size_t count);
 ssize_t vfs_read(const char *path, size_t offset, void *buffer, size_t count);
 int vfs_file_exists(const char *path);
+/* Like vfs_file_exists but also returns the ext2 inode number in *ino_out
+ * (0 for embedded / user files).  Performs exactly one directory traversal so
+ * callers can cache the inode without a second lookup. */
+int vfs_open_ino(const char *path, uint32_t *ino_out);
 ssize_t vfs_write_all(const char *path, const void *data, size_t count);
 
 /* Change permission bits (mode & 0777) on a file/directory.

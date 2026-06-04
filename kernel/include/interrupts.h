@@ -32,6 +32,28 @@ struct interrupt_frame {
     uint64_t ss;
 };
 
+/* Named indices into g_fault_regs[] — must match the save order in
+ * interrupt_stubs.S (pagefault_stub / gpfault_stub). */
+#define FREG_RAX    0
+#define FREG_RBX    1
+#define FREG_RCX    2
+#define FREG_RDX    3
+#define FREG_RSI    4
+#define FREG_RDI    5
+#define FREG_RBP    6
+#define FREG_R8     7
+#define FREG_R9     8
+#define FREG_R10    9
+#define FREG_R11   10
+#define FREG_R12   11
+#define FREG_R13   12
+#define FREG_R14   13
+#define FREG_R15   14
+#define FREG_RFLAGS 15
+#define FREG_RIP   16
+#define FREG_RSP   17
+#define FREG_COUNT 18
+
 void interrupts_init(void);
 void interrupt_restore_user_context(const struct interrupt_frame *frame);
 int process_run_slice(const struct interrupt_frame *frame);

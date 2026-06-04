@@ -1904,7 +1904,7 @@ int vui_file_dialog(const char *title, const char *initial_path, char *out_path,
     arg[ai++] = ';';
     scopy(arg + ai, res_file, 256 - ai);
 
-    emit("vui_file_dialog: spawning /bin/filedialog with arg: ");
+    emit("vui_file_dialog: spawning /bin/filebrowser with arg: ");
     emit(arg);
     emit("\n");
 
@@ -1912,7 +1912,7 @@ int vui_file_dialog(const char *title, const char *initial_path, char *out_path,
     sc1(SYS_UNLINK, (uint64_t)(size_t)res_file);
 
     /* Spawn the dialog app */
-    int child = (int)sc2(SYS_PROCESS_SPAWN, (uint64_t)(size_t)"/bin/filedialog", (uint64_t)(size_t)arg);
+    int child = (int)sc2(SYS_PROCESS_SPAWN, (uint64_t)(size_t)"/bin/filebrowser", (uint64_t)(size_t)arg);
     if (child <= 0) {
         emit("vui_file_dialog: spawn failed\n");
         return 0;
