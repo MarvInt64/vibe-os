@@ -292,7 +292,8 @@ private:
     // present just that rectangle (vui_canvas_flush) without repainting the
     // static chrome. Chrome is redrawn only when chrome_dirty_ is set (state or
     // the displayed second changed).
-    vui_widget *wave_canvas_ = nullptr;
+    vui_widget *wave_canvas_ = nullptr;  // waveform band, flushed every tick
+    vui_widget *bg_canvas_   = nullptr;  // full window, flushed on chrome change
     int  wave_x_ = 0, wave_y_ = 0, wave_w_ = 0, wave_h_ = 0;
     bool chrome_dirty_ = false;
     bool last_paused_ = false;
@@ -1022,7 +1023,10 @@ void AudioPlayer::on_tick() {
     if (chrome_dirty_) {
         chrome_dirty_ = false;
         render_chrome();
-        if (win_) vui_request_repaint(win_);
+        // Present the whole window via the region path (not vui_request_repaint)
+        // so window_dirty stays clear and the waveform's per-tick region present
+        // keeps taking the kernel's immediate path.
+        if (bg_canvas_) vui_canvas_flush(win_, bg_canvas_);
     }
 }
 
@@ -1102,8 +1106,12 @@ void AudioPlayer::run(const char *path) {
     if (win_w_ > CANVAS_MAX_W) win_w_ = CANVAS_MAX_W;
     if (win_h_ > CANVAS_MAX_H) win_h_ = CANVAS_MAX_H;
 
-    // Full-window canvas holds the static chrome (drawn into g_canvas).
-    vui_canvas_ex(win_, 0, 0, win_w_, win_h_, g_canvas, CANVAS_MAX_W);
+    // Full-window canvas holds the static chrome (drawn into g_canvas). Kept so
+    // chrome updates can be presented via vui_canvas_flush too (never a full
+    // vui_request_repaint, which would set window_dirty and force every region
+    // present into the kernel's deferred path — that pinned the waveform to the
+    // ~1 Hz chrome cadence).
+    bg_canvas_ = vui_canvas_ex(win_, 0, 0, win_w_, win_h_, g_canvas, CANVAS_MAX_W);
 
     // A second canvas covering only the waveform band, pointing INTO g_canvas
     // at that band's offset. on_tick draws the spectrum here and presents just
