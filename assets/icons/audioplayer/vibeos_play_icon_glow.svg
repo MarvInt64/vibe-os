@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none">
+  <defs>
+    <radialGradient id="bgGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(64 64) rotate(90) scale(52)">
+      <stop offset="0" stop-color="#4DA3FF" stop-opacity="0.10"/>
+      <stop offset="0.72" stop-color="#4DA3FF" stop-opacity="0.04"/>
+      <stop offset="1" stop-color="#4DA3FF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ringStroke" x1="30" y1="24" x2="98" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7CC7FF" stop-opacity="0.95"/>
+      <stop offset="0.55" stop-color="#4DA3FF" stop-opacity="1"/>
+      <stop offset="1" stop-color="#9B7CFF" stop-opacity="0.88"/>
+    </linearGradient>
+    <linearGradient id="ringInner" x1="64" y1="28" x2="64" y2="100" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#EAF2FA" stop-opacity="0.26"/>
+      <stop offset="1" stop-color="#EAF2FA" stop-opacity="0.04"/>
+    </linearGradient>
+    <linearGradient id="playFill" x1="52" y1="44" x2="80" y2="84" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F3F8FD" stop-opacity="0.98"/>
+      <stop offset="0.65" stop-color="#D9E9F8" stop-opacity="0.96"/>
+      <stop offset="1" stop-color="#BED8F3" stop-opacity="0.92"/>
+    </linearGradient>
+    <filter id="outerGlow" x="10" y="10" width="108" height="108" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#4DA3FF" flood-opacity="0.22"/>
+      <feDropShadow dx="0" dy="0" stdDeviation="2" flood-color="#7CC7FF" flood-opacity="0.24"/>
+    </filter>
+    <filter id="playGlow" x="34" y="34" width="60" height="60" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="0" stdDeviation="3" flood-color="#4DA3FF" flood-opacity="0.16"/>
+    </filter>
+  </defs>
+
+  <circle cx="64" cy="64" r="52" fill="url(#bgGlow)"/>
+
+  <g filter="url(#outerGlow)">
+    <circle cx="64" cy="64" r="32.5" fill="none" stroke="url(#ringStroke)" stroke-width="2.5"/>
+    <circle cx="64" cy="64" r="28.5" fill="none" stroke="url(#ringInner)" stroke-width="1" opacity="0.55"/>
+  </g>
+
+  <g filter="url(#playGlow)">
+    <path d="M55 46.5C55 45.3161 56.3223 44.6034 57.3162 45.2544L79.7039 59.9217C80.6122 60.517 81.1582 61.5327 81.1582 62.6188C81.1582 63.7049 80.6122 64.7206 79.7039 65.3159L57.3162 79.9832C56.3223 80.6342 55 79.9215 55 78.7376V46.5Z" fill="url(#playFill)"/>
+  </g>
+</svg>

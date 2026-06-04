@@ -34,6 +34,7 @@ static constexpr int CANVAS_MAX_H = 480;
 static constexpr int DEFAULT_W    = 720;
 static constexpr int DEFAULT_H    = 460;
 static constexpr int MAX_BARS     = 160;    // waveform bar slots
+static constexpr int BTN_SVG_SZ   = 128;    // play/pause glow SVG render size
 
 static uint32_t g_canvas[CANVAS_MAX_W * CANVAS_MAX_H];
 
@@ -66,26 +67,66 @@ static const char* SVG_NEXT =
     "</svg>";
 
 // Arc-free repeat icon: two arrows forming a loop with sharp corners.
+// Repeat: a horizontal loop with rounded corners + two arrowheads. libsvg has
+// no arc support, so the rounded corners are cubic-bezier quarter circles.
 static const char* SVG_REPEAT =
     "<svg viewBox=\"0 0 24 24\">"
-    "<path d=\"M17 1L21 5L17 9 M3 5H20L21 6V12\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
-    "<path d=\"M7 23L3 19L7 15 M21 19H4L3 18V12\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
+    "<path d=\"M17 1L21 5L17 9\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
+    "<path d=\"M3 11V9C3 6.79 4.79 5 7 5H21\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
+    "<path d=\"M7 23L3 19L7 15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
+    "<path d=\"M21 13V15C21 17.21 19.21 19 17 19H3\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
     "</svg>";
 
-// Arc-free speaker icon: cone + two cubic bezier wave arcs replacing the
-// original arc commands that VibeOS's svg.c cannot render.
+// Speaker (lucide volume-2): cone + two concentric sound-wave arcs. Now that
+// svg.c renders elliptical arcs, these use the original A commands directly.
 static const char* SVG_SPEAKER =
     "<svg viewBox=\"0 0 24 24\">"
     "<path d=\"M11 5L6 9H2v6h4l5 4V5Z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
-    "<path d=\"M15.54 8.46C18 8.46 18 15.54 15.54 15.54\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
-    "<path d=\"M19.07 4.93C23 8.22 23 15.78 19.07 19.07\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
+    "<path d=\"M15.54 8.46a5 5 0 0 1 0 7.07\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
+    "<path d=\"M19.07 4.93a10 10 0 0 1 0 14.14\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
     "</svg>";
 
-// Arc-free heart icon: purely line-based polygon approximation. No A/a commands.
+// Heart (lucide): the classic two-arc outline, rendered via real arc support.
 static const char* SVG_HEART =
     "<svg viewBox=\"0 0 24 24\">"
-    "<path d=\"M12 21C12 21 3 15 3 9C3 6.2 5.2 4 8 4C10 4 11.4 4.8 12 6C12.6 4.8 14 4 16 4C18.8 4 21 6.2 21 9C21 15 12 21 12 21Z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
+    "<path d=\"M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"/>"
     "</svg>";
+
+// Play/pause buttons: the designer's glow SVG (radial bg glow, gradient ring,
+// feDropShadow halo, gradient-filled glyph). Now that svg.c renders radial
+// gradients + feDropShadow these draw exactly as authored. The pause variant
+// reuses the same defs/ring and swaps the triangle for two bars.
+static const char* SVG_DEFS =
+    "<defs>"
+    "<radialGradient id=\"bgGlow\" cx=\"0\" cy=\"0\" r=\"1\" gradientUnits=\"userSpaceOnUse\" gradientTransform=\"translate(64 64) scale(52)\">"
+      "<stop offset=\"0\" stop-color=\"#4DA3FF\" stop-opacity=\"0.10\"/>"
+      "<stop offset=\"0.72\" stop-color=\"#4DA3FF\" stop-opacity=\"0.04\"/>"
+      "<stop offset=\"1\" stop-color=\"#4DA3FF\" stop-opacity=\"0\"/>"
+    "</radialGradient>"
+    "<linearGradient id=\"ringStroke\" x1=\"30\" y1=\"24\" x2=\"98\" y2=\"104\" gradientUnits=\"userSpaceOnUse\">"
+      "<stop offset=\"0\" stop-color=\"#7CC7FF\"/>"
+      "<stop offset=\"0.55\" stop-color=\"#4DA3FF\"/>"
+      "<stop offset=\"1\" stop-color=\"#9B7CFF\"/>"
+    "</linearGradient>"
+    "<linearGradient id=\"playFill\" x1=\"52\" y1=\"44\" x2=\"80\" y2=\"84\" gradientUnits=\"userSpaceOnUse\">"
+      "<stop offset=\"0\" stop-color=\"#F3F8FD\"/>"
+      "<stop offset=\"1\" stop-color=\"#BED8F3\"/>"
+    "</linearGradient>"
+    "<filter id=\"outerGlow\">"
+      "<feDropShadow dx=\"0\" dy=\"0\" stdDeviation=\"7\" flood-color=\"#4DA3FF\" flood-opacity=\"0.55\"/>"
+    "</filter>"
+    "</defs>"
+    "<circle cx=\"64\" cy=\"64\" r=\"52\" fill=\"url(#bgGlow)\"/>"
+    "<g filter=\"url(#outerGlow)\">"
+      "<circle cx=\"64\" cy=\"64\" r=\"32.5\" fill=\"none\" stroke=\"url(#ringStroke)\" stroke-width=\"2.5\"/>"
+    "</g>";
+
+// Glyphs assembled with SVG_DEFS at runtime (see draw_play_pause).
+static const char* SVG_PLAY_GLYPH =
+    "<path d=\"M55 46.5C55 45.32 56.32 44.6 57.32 45.25L79.7 59.92C80.61 60.52 81.16 61.53 81.16 62.62C81.16 63.7 80.61 64.72 79.7 65.32L57.32 79.98C56.32 80.63 55 79.92 55 78.74Z\" fill=\"url(#playFill)\"/>";
+static const char* SVG_PAUSE_GLYPH =
+    "<rect x=\"53\" y=\"47\" width=\"8\" height=\"34\" fill=\"url(#playFill)\"/>"
+    "<rect x=\"67\" y=\"47\" width=\"8\" height=\"34\" fill=\"url(#playFill)\"/>";
 
 static const char* SVG_DOTS = 
     "<svg viewBox=\"0 0 24 24\">"
@@ -178,8 +219,10 @@ static inline float ap_exp2(float x) {
 // ───────────────────────────────────────────────────────────────────────────
 // Palette (0x00RRGGBB; the canvas is opaque so the alpha byte is unused)
 // ───────────────────────────────────────────────────────────────────────────
-static constexpr uint32_t COL_BG_TOP   = 0x0e1c34;  // background gradient (top)
-static constexpr uint32_t COL_BG_BOT   = 0x070f1e;  // background gradient (bottom)
+// Background gradient harmonised with the VexUI window chrome (theme bg
+// 0x15273c) so the canvas no longer reads as a different blue from the frame.
+static constexpr uint32_t COL_BG_TOP   = 0x001a3050;  // background gradient (top)
+static constexpr uint32_t COL_BG_BOT   = 0x00102338;  // background gradient (bottom)
 static constexpr uint32_t COL_PANEL    = 0x18273f;  // raised glass panels
 static constexpr uint32_t COL_PANEL_HI = 0x2b3d5e;  // panel top highlight line
 static constexpr uint32_t COL_TRACK    = 0x223047;  // empty slider / progress track
@@ -244,7 +287,8 @@ private:
     float level_lp_   = 0.0f;   // low-pass-filtered audio level (smooth pulsing)
     int   dragging_   = 0;      // 0 none, 1 progress bar, 2 volume slider
 
-    float bar_heights_[MAX_BARS] = {};
+    float bar_heights_[MAX_BARS] = {};   // current displayed bar heights
+    float bar_peak_[MAX_BARS]    = {};   // per-band running peak (AGC normaliser)
     void  draw_svg_icon(int cx, int cy, const char *svg, uint32_t c);
 
     // ---- computed layout (recomputed each render from win_w_/win_h_) -------
@@ -593,8 +637,9 @@ void AudioPlayer::draw_header(const Layout &L) {
     draw_icon_dots(L.menu_x, L.icon_y + 6, COL_TEXT_DIM);
 }
 
-// The hero element: a mirrored bar waveform with a left→right colour gradient,
-// a brighter "played" region, a subtle level-driven pulse and sparkle dots.
+// The hero element: a mirrored bar waveform with a position colour gradient
+// (cyan → violet → blue, the magenta peak biased centre-right like the mockup)
+// and sparkle dots over the tallest bars.
 void AudioPlayer::draw_waveform(const Layout &L) {
     const int x0 = L.wave_x0, x1 = L.wave_x1, cy = L.wave_cy;
     const int width = x1 - x0;
@@ -602,36 +647,27 @@ void AudioPlayer::draw_waveform(const Layout &L) {
     int bars = width / step; if (bars > MAX_BARS) bars = MAX_BARS;
     const int barw = 4;
 
-    long played = g_played.load(), total = g_total.load();
-    float prog = total > 0 ? (float)played / (float)total : 0.0f;
-    prog = ap_clamp(prog, 0.0f, 1.0f);
-    int playhead = (int)(prog * bars);
-
-    float pulse = 0.85f + 0.15f * (level_lp_ / 100.0f);   // gentle global breath
-
     for (int i = 0; i < bars; ++i) {
-        float p = (float)i / (bars - 1);
-        float h_val = bar_heights_[i];
-        int half = (int)(h_val * pulse);
+        float p = (bars > 1) ? (float)i / (float)(bars - 1) : 0.0f;
+        int half = (int)bar_heights_[i];
         if (half < 2) half = 2;
         if (half > L.wave_half) half = L.wave_half;
 
-        // position-based colour: cyan → blue → violet
-        uint32_t col = p < 0.5f ? lerp_rgb(COL_WAVE_L, COL_WAVE_M, p * 2.0f)
-                                : lerp_rgb(COL_WAVE_M, COL_WAVE_R, (p - 0.5f) * 2.0f);
-        bool played_bar = i <= playhead;
-        int alpha = played_bar ? 255 : 90;             // dim the not-yet-played part
-        if (!played_bar) col = lerp_rgb(col, COL_BG_BOT, 0.35f);
+        // Position gradient: cyan → magenta peak (~65% across) → blue, matching
+        // the reference's left-cyan / centre-violet / right-blue colouring.
+        uint32_t col = (p < 0.65f)
+            ? lerp_rgb(COL_WAVE_L, COL_WAVE_R, p / 0.65f)
+            : lerp_rgb(COL_WAVE_R, COL_WAVE_M, (p - 0.65f) / 0.35f);
 
         int bx = x0 + i * step;
-        round_rect(bx, cy - half, barw, half * 2, barw / 2, col, alpha);
+        round_rect(bx, cy - half, barw, half * 2, barw / 2, col, 255);
 
-        // sparkle dots above tall, already-played bars
-        if (played_bar && h_val > 15.0f) {
+        // sparkle dots above the tallest bars for a touch of life
+        if (half > 16) {
             float r = hash01(i * 7 + 1);
             if (r > 0.5f) {
-                int sy = cy - half - 4 - (int)(r * 10.0f);
-                int a  = 120 + (int)(hash01(i * 3) * 110.0f);
+                int sy = cy - half - 4 - (int)(r * 9.0f);
+                int a  = 110 + (int)(hash01(i * 3) * 110.0f);
                 blend(bx + barw / 2, sy, COL_ACCENT_HI, a);
                 blend(bx + barw / 2, sy - 1, COL_ACCENT_HI, a / 2);
             }
@@ -681,30 +717,26 @@ void AudioPlayer::draw_transport(const Layout &L) {
     disc(L.vol_x0 + vw, L.vol_y, 4.0f, COL_ACCENT_HI, 255);
 }
 
-// Large circular play/pause button: soft outer glow, translucent accent fill,
-// a bright accent ring and a crisp, button-sized glyph drawn natively (the old
-// 24px SVG glyph looked tiny and lost inside the 54px circle).
+// Play/pause button: render the designer's glow SVG (radial bg glow, gradient
+// ring, feDropShadow halo, gradient glyph) at button size and blit it centred.
+// The SVG is assembled from the shared defs + the play or pause glyph.
 void AudioPlayer::draw_play_pause(int cx, int cy, int r) {
-    disc(cx, cy, r + 6.0f, COL_ACCENT, 55);            // outer glow halo
-    disc(cx, cy, (float)r, 0x123a63, 220);             // glassy blue fill
-    disc(cx, cy, (float)r, COL_ACCENT, 40);            // accent tint on top
-    ring(cx, cy, (float)r, 2.6f, COL_ACCENT_HI, 255);  // bright accent ring
+    static uint32_t buf[BTN_SVG_SZ * BTN_SVG_SZ];
+    char svg[1600];
+    snprintf(svg, sizeof svg, "<svg viewBox=\"0 0 128 128\">%s%s</svg>",
+             SVG_DEFS, g_paused.load() ? SVG_PLAY_GLYPH : SVG_PAUSE_GLYPH);
 
-    if (g_paused.load()) {
-        // Play triangle, optically centred (nudged right) and sized to the button.
-        int xL = cx - (int)(r * 0.26f);
-        int xR = cx + (int)(r * 0.46f);
-        int yT = cy - (int)(r * 0.44f);
-        int yB = cy + (int)(r * 0.44f);
-        tri(xL, yT, xL, yB, xR, cy, COL_TEXT);
-    } else {
-        // Pause: two rounded bars.
-        int bw  = (int)(r * 0.26f); if (bw < 3) bw = 3;
-        int bh  = (int)(r * 0.92f);
-        int gap = (int)(r * 0.30f);
-        round_rect(cx - gap - bw, cy - bh / 2, bw, bh, bw / 2, COL_TEXT, 255);
-        round_rect(cx + gap,      cy - bh / 2, bw, bh, bw / 2, COL_TEXT, 255);
+    svg_render_rgba(svg, buf, BTN_SVG_SZ, 0xffffff);
+
+    int x0 = cx - BTN_SVG_SZ / 2, y0 = cy - BTN_SVG_SZ / 2;
+    for (int iy = 0; iy < BTN_SVG_SZ; ++iy) {
+        for (int ix = 0; ix < BTN_SVG_SZ; ++ix) {
+            uint32_t px = buf[iy * BTN_SVG_SZ + ix];
+            int a = (px >> 24) & 0xff;
+            if (a > 0) blend(x0 + ix, y0 + iy, px & 0xffffff, a);
+        }
     }
+    (void)r;
 }
 
 void AudioPlayer::draw_icon_shuffle(int cx, int cy, uint32_t c) {
@@ -878,53 +910,52 @@ void AudioPlayer::on_tick() {
     int lvl = g_level.load();
     level_lp_ += ((float)lvl - level_lp_) * 0.25f;
 
-    // Update spectrum heights
     Layout L = layout();
     const int step = 6;
     int bars = (L.wave_x1 - L.wave_x0) / step;
     if (bars > MAX_BARS) bars = MAX_BARS;
+    if (bars < 2)        bars = 2;
 
-    // Compute FFT on the last 256 mono samples
+    // Frequency spectrum.  Hann-window the most recent 256 mono samples, FFT,
+    // and map the bins onto the bars with a logarithmic axis (bin = 2^(7t)).
     ap_complex x[256];
     for (int i = 0; i < 256; ++i) {
-        float w = 0.5f * (1.0f - ap_cos(2.0f * 3.14159265f * i / 255.0f));
-        float val = (float)g_vis_samples[512 - 256 + i] / 32768.0f;
+        float w   = 0.5f * (1.0f - ap_cos(2.0f * 3.14159265f * i / 255.0f));
+        float val = (float)g_vis_samples[256 + i] / 32768.0f;
         x[i] = ap_complex(val * w, 0.0f);
     }
     ap_fft(x, 256);
-
     float mags[128];
-    for (int i = 0; i < 128; ++i) {
-        float power = x[i].r * x[i].r + x[i].i * x[i].i;
-        mags[i] = ap_sqrt(power);
-    }
+    for (int i = 0; i < 128; ++i)
+        mags[i] = ap_sqrt(x[i].r * x[i].r + x[i].i * x[i].i);
 
-    // Map the 128 FFT bins onto the bars with a TRUE logarithmic frequency axis
-    // (bin = 2^(7t), so t=0 → bin 1, t=1 → bin 128).  The old cubic curve dumped
-    // ~20 bars onto bin 1 alone, pinning the whole left half at full height so it
-    // looked frozen; a log axis spreads bass across few bars and treble across
-    // many, exactly like a real analyser, so every bar now reacts.
+    // Per-band AGC: each bar tracks its own slowly-decaying peak and is drawn
+    // relative to it.  This is what stops the bass bars (huge raw magnitude)
+    // from pinning the left half at full height and looking frozen — every band
+    // now swings through its own full range, so highs and lows are visible
+    // across the whole spectrum.
     for (int i = 0; i < bars; ++i) {
-        float t   = (bars > 1) ? (float)i / (float)(bars - 1) : 0.0f;
-        float freq = ap_exp2(t * 7.0f);                  // 1 .. 128
-        int   idx  = (int)freq;
-        if (idx < 1)   idx = 1;
-        if (idx > 126) idx = 126;
+        float t    = (bars > 1) ? (float)i / (float)(bars - 1) : 0.0f;
+        float freq = ap_exp2(t * 7.0f);                 // 1 .. 128
+        int   idx  = (int)freq; if (idx < 1) idx = 1; if (idx > 126) idx = 126;
         float frac = freq - (float)idx;
         float mag  = mags[idx] * (1.0f - frac) + mags[idx + 1] * frac;
 
-        // Gentle pink-noise-style tilt: highs are naturally quieter, so lift them
-        // a little, but nowhere near enough to starve the bass bars on the left.
-        float eq       = 1.0f + t * 1.6f;
-        float target_h = mag * 420.0f * eq;
-        if (target_h > L.wave_half) target_h = L.wave_half;
+        // running peak with slow decay (per band), floored so silence ≠ noise
+        float pk = bar_peak_[i] * 0.992f;
+        if (mag > pk) pk = mag;
+        if (pk < 0.0025f) pk = 0.0025f;
+        bar_peak_[i] = pk;
 
-        // Smooth visual physics (fast rise, slow decay).
-        if (target_h > bar_heights_[i]) {
-            bar_heights_[i] = bar_heights_[i] * 0.35f + target_h * 0.65f;
-        } else {
-            bar_heights_[i] = bar_heights_[i] * 0.85f + target_h * 0.15f;
-        }
+        float norm = mag / pk;                          // 0 .. 1, self-scaled
+        if (norm > 1.0f) norm = 1.0f;
+        float target_h = (0.10f + 0.90f * norm) * (float)L.wave_half;
+
+        // fast rise, slow fall for a lively but smooth meter
+        if (target_h > bar_heights_[i])
+            bar_heights_[i] = bar_heights_[i] * 0.4f + target_h * 0.6f;
+        else
+            bar_heights_[i] = bar_heights_[i] * 0.78f + target_h * 0.22f;
         if (bar_heights_[i] < 2.0f) bar_heights_[i] = 2.0f;
     }
 
