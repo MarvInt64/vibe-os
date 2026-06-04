@@ -121,7 +121,7 @@ int main(int argc, char *argv[]) {
         int samples;
         while ((samples = mp3dec_decode(&dec, pcm, &sr, &ch, &br)) > 0) {
             if (first_frame) {
-                printf("mp3play: %d Hz, %d ch, %d kbps\n", sr, ch, br / 1000);
+                printf("mp3play: %d Hz, %d ch, %d kbps\n", sr, ch, br);
                 /* Configure the AC97 to the file's sample rate so playback
                  * pitch is correct.  The driver supports variable-rate audio;
                  * without this a 44.1 kHz file would play ~9% too fast on the

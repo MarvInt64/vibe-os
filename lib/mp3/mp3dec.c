@@ -106,11 +106,29 @@ static float mp3_pow2f(float x) {
     return e.f;
 }
 
-/* General powf: only used as mp3_powf(2, x) in the decoder, so this wrapper
- * covers the base-2 case directly. */
+/* log2f via IEEE 754 exponent split + polynomial on the [1,2) mantissa.
+ * Accurate to < 1e-6 for positive inputs. */
+static float mp3_log2f(float x) {
+    if (x <= 0.0f) return 0.0f;
+    union { float f; unsigned int u; } v;
+    v.f = x;
+    int e = (int)((v.u >> 23) & 0xFF) - 127;      /* base-2 exponent */
+    v.u = (v.u & 0x007FFFFFu) | 0x3F800000u;       /* mantissa → [1,2) */
+    float m = v.f;
+    float p = -1.7417939f + (2.8212026f + (-1.4699568f
+              + (0.4477645f - 0.0560816f * m) * m) * m) * m;
+    return p + (float)e;
+}
+
+/* General powf: base^exp = 2^(exp * log2(base)).
+ * The decoder calls this both as mp3_powf(2, x) AND as mp3_powf(|is|, 4/3)
+ * for requantization, so it MUST honour the base.  An earlier version ignored
+ * the base and always returned 2^exp, which collapsed every spectral
+ * coefficient to 2^(4/3) ≈ 2.52 and produced near-silent, wrong output. */
 static float mp3_powf(float base, float exp) {
-    (void)base; /* always called as mp3_powf(2.0f, ...) */
-    return mp3_pow2f(exp);
+    if (base == 2.0f) return mp3_pow2f(exp);   /* common fast path */
+    if (base <= 0.0f) return 0.0f;
+    return mp3_pow2f(exp * mp3_log2f(base));
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1367,9 +1385,12 @@ static int mp3_huffman_decode_quad(bitreader_t *br, int table_idx,
 }
 
 /* Decode all 576 spectral lines for one granule/channel.
- * Fills is[576].  Returns 0 on success. */
+ * Fills is[576].  'max_bit' is the absolute bit position (pos*8+bit) at which
+ * the Huffman data for this granule ends (= part2_3 end); the count1 region
+ * must stop there, otherwise it over-reads into the next granule's data and
+ * produces spurious huge coefficients.  Returns 0 on success. */
 static int mp3_huffman_decode(bitreader_t *br, const granule_info_t *g,
-                               int is[576])
+                               int is[576], int max_bit)
 {
     int i;
     for (i = 0; i < 576; i++) is[i] = 0;
@@ -1389,10 +1410,13 @@ static int mp3_huffman_decode(bitreader_t *br, const granule_info_t *g,
         is[i+1] = y;
     }
 
-    /* Count1 region: decode quads until bits exhausted or 576 lines filled. */
+    /* Count1 region: decode quads until the part2_3 bit budget is exhausted or
+     * 576 lines are filled.  Bounding by max_bit (not just br_avail) is
+     * essential — the reader spans the whole reservoir, so without this the
+     * loop would keep decoding garbage past this granule's data. */
     int cnt1_tab = g->count1table_select ? 33 : 32;
     i = bv_end;
-    while (i <= 572 && br_avail(br) > 0) {
+    while (i <= 572 && (br->pos * 8 + br->bit) < max_bit) {
         int v=0,w=0,x=0,y=0;
         mp3_huffman_decode_quad(br, cnt1_tab, &v, &w, &x, &y);
         if (i < 576) is[i]   = v;
@@ -1879,95 +1903,26 @@ int mp3dec_decode(mp3dec_t *dec, int16_t *out,
             dec->res_len = (int)sizeof(dec->reservoir);
     }
 
-    /* ── 4. Decode granules ─────────────────────────────────────────────── */
-    /* We produce PCM for 2 granules × 576 samples = 1152 per channel. */
-    int16_t pcm_out[2304]; /* max stereo output */
+    /* ── 4. Decode granules ─────────────────────────────────────────────── *
+     * Two passes are avoided: we decode each granule/channel's spectrum into
+     * xr_all[gr][ch], apply joint-stereo across both channels of a granule,
+     * then run IMDCT + synthesis per channel. */
+    int16_t pcm_out[2304]; /* max stereo output (2 gr × 576 × 2 ch) */
     memset(pcm_out, 0, sizeof(pcm_out));
 
-    int scalefac_l[2][2][22];   /* [gr][ch][sfb] */
-    int scalefac_s[2][2][3][13];/* [gr][ch][win][sfb] */
+    int scalefac_l[2][2][22];    /* [gr][ch][sfb] */
+    int scalefac_s[2][2][3][13]; /* [gr][ch][win][sfb] */
     memset(scalefac_l, 0, sizeof(scalefac_l));
     memset(scalefac_s, 0, sizeof(scalefac_s));
 
     bitreader_t mbr;
     br_init(&mbr, main_buf, main_len);
 
-    int gr, ch;
-    for (gr = 0; gr < 2; gr++) {
-        for (ch = 0; ch < hdr.channels; ch++) {
-            const granule_info_t *g = &si.gr[gr][ch];
-
-            /* Save start position so we can enforce part2_3_length. */
-            int bits_start = (mbr.pos * 8 + mbr.bit);
-
-            /* Decode scale factors */
-            mp3_decode_scalefactors(&mbr, &si, gr, ch,
-                                     scalefac_l[gr][ch],
-                                     scalefac_s[gr][ch]);
-
-            /* For granule 1, copy bands flagged by scfsi from granule 0. */
-            if (gr == 1) {
-                int sfb;
-                for (sfb = 0; sfb < 22; sfb++) {
-                    int sci = (sfb < 6) ? 0 : (sfb < 11) ? 1 :
-                              (sfb < 16) ? 2 : 3;
-                    if (si.scfsi[ch][sci]) {
-                        scalefac_l[1][ch][sfb] = scalefac_l[0][ch][sfb];
-                    }
-                }
-            }
-
-            /* Huffman decode — limit reader to part2_3_length bits */
-            int bits_sf = (mbr.pos * 8 + mbr.bit) - bits_start;
-            int bits_huff = g->part2_3_length - bits_sf;
-            if (bits_huff < 0) bits_huff = 0;
-
-            /* Create sub-reader for Huffman data */
-            bitreader_t hbr = mbr;
-            int avail = br_avail(&hbr);
-            if (bits_huff > avail) bits_huff = avail;
-
-            int is[576];
-            mp3_huffman_decode(&hbr, g, is);
-
-            /* Advance main reader by part2_3_length bits total */
-            int target = bits_start + g->part2_3_length;
-            int cur    = mbr.pos * 8 + mbr.bit;
-            if (target > cur) br_skip(&mbr, target - cur);
-
-            /* Requantize */
-            float xr[576];
-            memset(xr, 0, sizeof(xr));
-            mp3_requantize(is, g, scalefac_l[gr][ch], scalefac_s[gr][ch],
-                            hdr.sr_idx, xr);
-
-            /* Store in temporary per-granule per-channel array */
-            /* (Used below for stereo processing) */
-        }
-
-        /* Joint stereo — process both channels together */
-        if (hdr.channels == 2 && (hdr.ms_stereo || hdr.is_stereo)) {
-            /* We need both channels' xr arrays; refactor needed for this.
-             * For now: stereo is handled inside the loop below after re-decode.
-             * This is a simplification — full MS stereo requires simultaneous
-             * access to both channels' frequency data.  We handle it inline. */
-        }
-
-        /* IMDCT, alias reduction, overlap-add, synth per channel */
-        /* NOTE: We run the full pipeline per channel using locally scoped
-         * variables.  The granule-level decode above was a probe; we now
-         * redo it properly with per-channel state. */
-    }
-
-    /* ── Full pipeline (proper implementation) ──────────────────────────── */
-    /* Reset main_buf reader for actual decode pass. */
-    br_init(&mbr, main_buf, main_len);
-
     /* Per-channel working buffers for xr (frequency-domain samples). */
     float xr_all[2][2][576]; /* [gr][ch][line] */
     memset(xr_all, 0, sizeof(xr_all));
-    memset(scalefac_l, 0, sizeof(scalefac_l));
-    memset(scalefac_s, 0, sizeof(scalefac_s));
+
+    int gr, ch;
 
     for (gr = 0; gr < 2; gr++) {
         for (ch = 0; ch < hdr.channels; ch++) {
@@ -1986,20 +1941,17 @@ int mp3dec_decode(mp3dec_t *dec, int16_t *out,
                 }
             }
 
-            int bits_sf = mbr.pos * 8 + mbr.bit - bits_start;
-            int bits_huff = g->part2_3_length - bits_sf;
-            if (bits_huff < 0) bits_huff = 0;
-            (void)bits_huff;
-
             int is[576];
-            mp3_huffman_decode(&mbr, g, is);
+            /* Huffman data ends at part2_3_length bits past the granule start. */
+            int huff_end = bits_start + g->part2_3_length;
+            mp3_huffman_decode(&mbr, g, is, huff_end);
 
-            int target = bits_start + g->part2_3_length;
-            int cur    = mbr.pos * 8 + mbr.bit;
-            if (target > cur) br_skip(&mbr, target - cur);
+            int cur = mbr.pos * 8 + mbr.bit;
+            if (huff_end > cur) br_skip(&mbr, huff_end - cur);
 
             mp3_requantize(is, g, scalefac_l[gr][ch], scalefac_s[gr][ch],
                             hdr.sr_idx, xr_all[gr][ch]);
+
         }
 
         /* Joint stereo (after both channels are decoded) */
@@ -2027,26 +1979,22 @@ int mp3dec_decode(mp3dec_t *dec, int16_t *out,
             float pcm_raw[576];
             mp3_synth(sb_samples, 0, dec->fifo[ch], &dec->fifo_pos, pcm_raw);
 
-            /* Clip and write to output (interleaved L,R) */
+
+            /* Scale normalized [-1,1] synthesis output to signed 16-bit, clip,
+             * and write interleaved L,R.  The requantization + filterbank keep
+             * samples in roughly [-1,1]; 32767 maps that to full-scale PCM. */
             int i;
             int out_base = gr * 576 * hdr.channels;
-            if (hdr.channels == 1) {
-                for (i = 0; i < 576; i++) {
-                    float s = pcm_raw[i];
-                    if (s >  32767.0f) s =  32767.0f;
-                    if (s < -32768.0f) s = -32768.0f;
-                    pcm_out[out_base + i] = (int16_t)s;
-                }
-            } else {
-                for (i = 0; i < 576; i++) {
-                    float s = pcm_raw[i];
-                    if (s >  32767.0f) s =  32767.0f;
-                    if (s < -32768.0f) s = -32768.0f;
-                    pcm_out[out_base + i * 2 + ch] = (int16_t)s;
-                }
+            int stride   = (hdr.channels == 1) ? 1 : 2;
+            for (i = 0; i < 576; i++) {
+                float s = pcm_raw[i] * 32767.0f;
+                if (s >  32767.0f) s =  32767.0f;
+                if (s < -32768.0f) s = -32768.0f;
+                pcm_out[out_base + i * stride + (stride == 1 ? 0 : ch)] = (int16_t)s;
             }
         }
     }
+
 
     /* ── 5. Advance input buffer past this frame ────────────────────────── */
     dec->buf_pos += hdr.frame_size;
