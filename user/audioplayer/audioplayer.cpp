@@ -271,7 +271,7 @@ private:
     vui_window *win_ = nullptr;
     char  path_[256] = {};
 
-    vui_widget *wave_canvas_ = nullptr;   // the only hand-drawn surface
+    vui_widget *wave_canvas_ = nullptr;   // the spectrum
     vui_widget *title_lbl_ = nullptr, *artist_lbl_ = nullptr, *meta_lbl_ = nullptr;
     vui_widget *time_l_lbl_ = nullptr, *time_r_lbl_ = nullptr;
 
@@ -618,7 +618,7 @@ void AudioPlayer::update_chrome() {
     bool pz = g_paused.load();
     if (pz != last_paused_) {
         last_paused_ = pz;
-        vui_set_icon_svg(play_ic_, glow_svg(pz));   // play glyph when paused
+        vui_set_icon_svg(play_ic_, glow_svg(pz));    // play glyph when paused
     }
 
     int br = g_bitrate.load();
@@ -670,9 +670,9 @@ void AudioPlayer::run(const char *path) {
     artist_lbl_ = vui_label(win_, 142, 70, "VibeWave");        vui_set_color(artist_lbl_, COL_TEXT_DIM);
     meta_lbl_   = vui_label(win_, 142, 96, "MP3");             vui_set_color(meta_lbl_, COL_TEXT_DIM);
 
-    vui_widget *heart = vui_image(win_, W - 66, 34, 24);
+    vui_widget *heart = vui_image(win_, W - 70, 32, 28);
     vui_set_icon_svg(heart, SVG_HEART);  vui_set_color(heart, COL_TEXT_DIM);
-    vui_widget *dots  = vui_image(win_, W - 34, 34, 24);
+    vui_widget *dots  = vui_image(win_, W - 38, 32, 28);
     vui_set_icon_svg(dots, SVG_DOTS);    vui_set_color(dots, COL_TEXT_DIM);
 
     // --- waveform canvas (its own buffer; stride == width) ----------------
@@ -692,19 +692,23 @@ void AudioPlayer::run(const char *path) {
 
     // --- transport row ----------------------------------------------------
     int cy = H - 92;
-    shuffle_ic_ = vui_image(win_, W / 2 - 176, cy - 14, 28);
+    shuffle_ic_ = vui_image(win_, W / 2 - 178, cy - 15, 30);
     vui_set_icon_svg(shuffle_ic_, SVG_SHUFFLE); vui_set_color(shuffle_ic_, COL_TEXT_DIM); vui_on_click(shuffle_ic_, cb_shuffle);
-    vui_widget *prev = vui_image(win_, W / 2 - 96, cy - 14, 28);
+    vui_widget *prev = vui_image(win_, W / 2 - 98, cy - 15, 30);
     vui_set_icon_svg(prev, SVG_PREV); vui_set_color(prev, COL_TEXT); vui_on_click(prev, cb_prev);
-    play_ic_ = vui_image(win_, W / 2 - 30, cy - 30, 60);
+
+    // Play/pause: the designer glow SVG as a normal W_ICON. VexUI now
+    // supersamples icon SVGs, so the thin ring + drop-shadow stay crisp.
+    play_ic_ = vui_image(win_, W / 2 - 44, cy - 44, 88);
     vui_set_icon_svg(play_ic_, glow_svg(false)); vui_on_click(play_ic_, cb_play);
-    vui_widget *next = vui_image(win_, W / 2 + 68, cy - 14, 28);
+
+    vui_widget *next = vui_image(win_, W / 2 + 68, cy - 15, 30);
     vui_set_icon_svg(next, SVG_NEXT); vui_set_color(next, COL_TEXT); vui_on_click(next, cb_next);
-    repeat_ic_ = vui_image(win_, W / 2 + 148, cy - 14, 28);
+    repeat_ic_ = vui_image(win_, W / 2 + 148, cy - 15, 30);
     vui_set_icon_svg(repeat_ic_, SVG_REPEAT); vui_set_color(repeat_ic_, COL_TEXT_DIM); vui_on_click(repeat_ic_, cb_repeat);
 
     // --- volume -----------------------------------------------------------
-    vui_widget *spk = vui_image(win_, W - 150, cy - 14, 28);
+    vui_widget *spk = vui_image(win_, W - 152, cy - 15, 30);
     vui_set_icon_svg(spk, SVG_SPEAKER); vui_set_color(spk, COL_TEXT_DIM);
     volume_ = vui_slider(win_, W - 112, cy - 8, 72, 16, 100);
     vui_set_value(volume_, g_volume.load()); vui_on_click(volume_, cb_vol);
