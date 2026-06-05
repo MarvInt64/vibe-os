@@ -636,12 +636,12 @@ void FileBrowser::fill_rect(int x, int y, int w, int h, uint32_t color) {
      * the inner loop from ~600k iterations to win_h_ row-level operations. */
     if (x == 0 && w == win_w_) {
         for (int iy = y; iy < y + h; ++iy) {
-            uint32_t *row = &canvas_pixels_[iy * BROWSER_MAX_W];
+            uint32_t *row = &canvas_pixels_[iy * win_w_];
             for (int ix = 0; ix < win_w_; ++ix) row[ix] = color;
         }
     } else {
         for (int iy = y; iy < y + h; ++iy) {
-            uint32_t *row = &canvas_pixels_[iy * BROWSER_MAX_W];
+            uint32_t *row = &canvas_pixels_[iy * win_w_];
             for (int ix = x; ix < x + w; ++ix) {
                 row[ix] = color;
             }
@@ -653,14 +653,14 @@ void FileBrowser::draw_rect(int x, int y, int w, int h, uint32_t color) {
     if (w <= 0 || h <= 0) return;
     for (int ix = x; ix < x + w; ++ix) {
         if (ix >= 0 && ix < win_w_) {
-            if (y >= 0 && y < win_h_) canvas_pixels_[y * BROWSER_MAX_W + ix] = color;
-            if (y + h - 1 >= 0 && y + h - 1 < win_h_) canvas_pixels_[(y + h - 1) * BROWSER_MAX_W + ix] = color;
+            if (y >= 0 && y < win_h_) canvas_pixels_[y * win_w_ + ix] = color;
+            if (y + h - 1 >= 0 && y + h - 1 < win_h_) canvas_pixels_[(y + h - 1) * win_w_ + ix] = color;
         }
     }
     for (int iy = y + 1; iy < y + h - 1; ++iy) {
         if (iy >= 0 && iy < win_h_) {
-            if (x >= 0 && x < win_w_) canvas_pixels_[iy * BROWSER_MAX_W + x] = color;
-            if (x + w - 1 >= 0 && x + w - 1 < win_w_) canvas_pixels_[iy * BROWSER_MAX_W + x + w - 1] = color;
+            if (x >= 0 && x < win_w_) canvas_pixels_[iy * win_w_ + x] = color;
+            if (x + w - 1 >= 0 && x + w - 1 < win_w_) canvas_pixels_[iy * win_w_ + x + w - 1] = color;
         }
     }
 }
@@ -671,7 +671,7 @@ void FileBrowser::draw_line(int x1, int y1, int x2, int y2, uint32_t color) {
     int err = dx + dy, e2;
     while (true) {
         if (x1 >= 0 && x1 < win_w_ && y1 >= 0 && y1 < win_h_) {
-            canvas_pixels_[y1 * BROWSER_MAX_W + x1] = color;
+            canvas_pixels_[y1 * win_w_ + x1] = color;
         }
         if (x1 == x2 && y1 == y2) break;
         e2 = 2 * err;
@@ -683,11 +683,9 @@ void FileBrowser::draw_line(int x1, int y1, int x2, int y2, uint32_t color) {
 void FileBrowser::draw_text(int x, int y, const char *text, uint32_t color, int scale) {
     if (!text || !*text) return;
     if (scale < 1) scale = 1; else if (scale > 3) scale = 3;
-    // The kernel uses the "buffer width" argument as the row stride (pitch) when
-    // writing glyphs. Our framebuffer is allocated at BROWSER_MAX_W, NOT win_w_,
-    // so we MUST pass the real stride here — otherwise text shears diagonally
-    // relative to the rest of the canvas (which is blitted at BROWSER_MAX_W).
-    vos_text_draw(canvas_pixels_, BROWSER_MAX_W, win_h_, x, y, text, color, scale);
+    // The kernel uses the "buffer width" argument as the row stride (pitch)
+    // when writing glyphs, so we pass win_w_ (the window stride).
+    vos_text_draw(canvas_pixels_, win_w_, win_h_, x, y, text, color, scale);
 }
 
 void FileBrowser::draw_svg(int x, int y, int size, const char *svg, uint32_t color) {
@@ -698,7 +696,7 @@ void FileBrowser::draw_svg(int x, int y, int size, const char *svg, uint32_t col
     for (int iy = 0; iy < size; ++iy) {
         int py = y + iy;
         if (py < 0 || py >= win_h_) continue;
-        uint32_t *row = &canvas_pixels_[py * BROWSER_MAX_W];
+        uint32_t *row = &canvas_pixels_[py * win_w_];
         uint32_t *src_row = &svg_buf[iy * size];
         for (int ix = 0; ix < size; ++ix) {
             int px = x + ix;
@@ -733,7 +731,7 @@ void FileBrowser::draw_glass_panel(int x, int y, int w, int h, uint32_t base_col
         if (x0 < 0) x0 = 0;
         if (x1 > win_w_) x1 = win_w_;
         
-        uint32_t *row = &canvas_pixels_[py * BROWSER_MAX_W];
+        uint32_t *row = &canvas_pixels_[py * win_w_];
         for (int px = x0; px < x1; ++px) {
             uint32_t bg = row[px];
             uint32_t br = (base_color >> 16) & 255;
