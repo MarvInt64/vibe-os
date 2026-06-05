@@ -52,6 +52,13 @@ struct cpu {
      * own copy is what will let the APs run their own processes. */
     struct process *current;       /* process currently running on this CPU */
     uint32_t        sched_cursor;  /* round-robin position for this CPU      */
+
+    /* Scheduler park/resume slot for this CPU (was the global
+     * g_kernel_resume_rsp/result). The assembly in interrupt_stubs.S reads
+     * these GS-relative at fixed offsets — keep them here and in sync with the
+     * CPU_RESUME_* offsets there (checked by _Static_assert in cpu.c). */
+    unsigned long   resume_rsp;     /* parked scheduler kernel stack pointer  */
+    unsigned long   resume_result;  /* run-result code handed back to caller  */
 };
 
 /* Claim the next per-CPU slot for the calling CPU, record its APIC id, and

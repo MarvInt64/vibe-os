@@ -25,6 +25,13 @@
 #include "cpu.h"
 #include "spinlock.h"
 
+/* The park/resume assembly (interrupt_stubs.S) reads these fields GS-relative
+ * at hard-coded offsets; fail the build loudly if the struct layout drifts. */
+_Static_assert(__builtin_offsetof(struct cpu, resume_rsp) == 48,
+               "CPU_RESUME_RSP in interrupt_stubs.S must match");
+_Static_assert(__builtin_offsetof(struct cpu, resume_result) == 56,
+               "CPU_RESUME_RESULT in interrupt_stubs.S must match");
+
 #define IA32_GS_BASE 0xC0000101u
 
 static struct cpu g_cpus[CPU_MAX];
@@ -56,6 +63,8 @@ unsigned cpu_register(unsigned apic_id) {
     c->allocs = 0;
     c->current = (struct process *)0;
     c->sched_cursor = 0;
+    c->resume_rsp = 0;
+    c->resume_result = 0;
 
     /* Point this CPU's GS base at its struct so this_cpu() resolves via gs:0. */
     write_gs_base((uint64_t)(uintptr_t)c);

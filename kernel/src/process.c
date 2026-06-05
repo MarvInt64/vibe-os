@@ -51,8 +51,11 @@ struct desktop_state *desktop_active(void);
 void kernel_request_resolution(uint32_t width, uint32_t height);
 uint32_t kernel_current_resolution(void);
 
-uintptr_t g_kernel_resume_rsp;
-uint64_t g_kernel_resume_result;
+/* The scheduler park/resume slot is per-CPU (struct cpu); the assembly reads it
+ * GS-relative. These macros keep the C call sites unchanged — on the boot CPU
+ * they resolve to cpu 0's fields, and each AP gets its own once it schedules. */
+#define g_kernel_resume_rsp    (this_cpu()->resume_rsp)
+#define g_kernel_resume_result (this_cpu()->resume_result)
 
 /* Fault register snapshot from pagefault_stub / gpfault_stub (interrupts.c).
  * Use the FREG_* indices from interrupts.h to access fields by name. */

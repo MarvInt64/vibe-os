@@ -19,8 +19,11 @@
 .extern syscall_handle_interrupt
 .extern timer_handle_interrupt
 .extern fault_handler
-.extern g_kernel_resume_rsp
-.extern g_kernel_resume_result
+/* The scheduler's park/resume slot is per-CPU: it lives in this CPU's struct
+ * cpu, reached through the GS base. These offsets must match struct cpu in
+ * cpu.h (guarded by _Static_assert in cpu.c). */
+.set CPU_RESUME_RSP, 48
+.set CPU_RESUME_RESULT, 56
 .extern g_fault_regs
 
 interrupt_load_runtime_tables:
@@ -122,12 +125,12 @@ process_run_slice:
     push r13
     push r14
     push r15
-    mov qword ptr [rip + g_kernel_resume_rsp], rsp
+    mov qword ptr gs:[CPU_RESUME_RSP], rsp
     jmp interrupt_restore_user_context
 
 process_run_slice_return:
-    mov rsp, qword ptr [rip + g_kernel_resume_rsp]
-    mov rax, qword ptr [rip + g_kernel_resume_result]
+    mov rsp, qword ptr gs:[CPU_RESUME_RSP]
+    mov rax, qword ptr gs:[CPU_RESUME_RESULT]
     pop r15
     pop r14
     pop r13
@@ -171,8 +174,8 @@ process_block_current:
     push r14
     push r15
     mov qword ptr [rdi], rsp                       /* park process kernel rsp */
-    mov rsp, qword ptr [rip + g_kernel_resume_rsp] /* back to scheduler stack  */
-    mov rax, qword ptr [rip + g_kernel_resume_result]
+    mov rsp, qword ptr gs:[CPU_RESUME_RSP] /* back to scheduler stack  */
+    mov rax, qword ptr gs:[CPU_RESUME_RESULT]
     pop r15
     pop r14
     pop r13
@@ -197,7 +200,7 @@ process_resume_blocked:
     push r13
     push r14
     push r15
-    mov qword ptr [rip + g_kernel_resume_rsp], rsp /* save scheduler stack */
+    mov qword ptr gs:[CPU_RESUME_RSP], rsp /* save scheduler stack */
     mov rsp, rdi                                   /* load parked process stack */
     pop r15
     pop r14
