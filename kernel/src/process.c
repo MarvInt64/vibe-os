@@ -26,6 +26,7 @@
 #include "interrupts.h"
 #include "audio.h"
 #include "clipboard.h"
+#include "cpu.h"
 #include "string.h"
 #include "elf.h"
 #include "ext2_fs.h"
@@ -2214,11 +2215,36 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         out->process_count = process_loaded_count();
         out->process_max = PROCESS_MAX_COUNT;
         out->app_window_max = MAX_USER_APPS;
+        out->cpu_count = cpu_count();
         out->heap_used_bytes = kmalloc_get_used();
         out->heap_total_bytes = kmalloc_get_total();
         process_write_user_string(out->version, sizeof(out->version), VERSION_STRING);
         process_write_user_string(out->build, sizeof(out->build), __DATE__ " " __TIME__);
         frame->rax = 0;
+        return 0;
+    }
+
+    if (number == SYS_CPU_INFO) {
+        struct cpu_info_snapshot *buf = (struct cpu_info_snapshot *)(uintptr_t)frame->rdi;
+        unsigned max = (unsigned)frame->rsi;
+        if (buf == 0 || max == 0) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+            return 0;
+        }
+        unsigned n = cpu_count();
+        if (n > max) n = max;
+        for (unsigned i = 0; i < n; ++i) {
+            struct cpu *c = cpu_get(i);
+            struct cpu_info_snapshot snap;
+            snap.index   = c->index;
+            snap.apic_id = c->apic_id;
+            snap.ticks   = c->ticks;
+            snap.allocs  = c->allocs;
+            /* Write the snapshot into the user buffer (kernel can access
+             * user memory directly while the process's page tables are active). */
+            memcpy(buf + i, &snap, sizeof(snap));
+        }
+        frame->rax = (uint64_t)n;
         return 0;
     }
 

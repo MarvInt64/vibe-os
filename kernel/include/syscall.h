@@ -121,7 +121,11 @@ enum syscall_number {
 	 * LEN: no args.  Returns current clipboard length in bytes. */
 	SYS_CLIPBOARD_SET = 61,
 	SYS_CLIPBOARD_GET = 62,
-	SYS_CLIPBOARD_LEN = 63
+	SYS_CLIPBOARD_LEN = 63,
+	/* Query per-CPU information (SMP). rdi = struct cpu_info_snapshot* buf (user),
+	 * rsi = max entries (capacity). Fills buf with up to max entries and returns
+	 * the number of CPUs written (<= max), or <0 on failure. */
+	SYS_CPU_INFO = 64
 };
 
 struct system_info_snapshot {
@@ -130,10 +134,19 @@ struct system_info_snapshot {
     uint32_t process_count;
     uint32_t process_max;
     uint32_t app_window_max;
+    uint32_t cpu_count;
     uint64_t heap_used_bytes;
     uint64_t heap_total_bytes;
     char version[16];
     char build[32];
+};
+
+/* Per-CPU snapshot returned by SYS_CPU_INFO. */
+struct cpu_info_snapshot {
+    uint32_t index;      /* 0 = BSP, 1..N = APs                */
+    uint32_t apic_id;    /* Local APIC ID                      */
+    uint64_t ticks;      /* local timer tick count             */
+    uint64_t allocs;     /* successful kmalloc/kfree cycles    */
 };
 
 enum syscall_error {

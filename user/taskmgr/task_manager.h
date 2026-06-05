@@ -49,6 +49,9 @@ private:
     /* Called as the user types in the search box → re-filter the process list. */
     static void on_search_cb(vui_widget *self);
 
+    /* Called when a tab is clicked → switch between PROCESSES and PERFORMANCE. */
+    static void on_tab_cb(vui_widget *self);
+
     /* Called by the VexUI event loop roughly 18 times per second.
      * Triggers a data refresh once every 18 ticks (~1 s). */
     static void on_tick_cb(vui_window *win);
@@ -71,4 +74,21 @@ private:
      * compute delta-CPU (current utilisation) instead of lifetime fraction. */
     unsigned long prev_runtime_[VUI_PROCESS_MAX] = {};
     unsigned long prev_uptime_ = 0; /* uptime_ticks at the last refresh */
+
+    /* --- Per-CPU (SMP) --------------------------------------------------- */
+    static constexpr int kMaxCpus = 8;
+    vui_widget *tabs_              = nullptr; /* PROCESSES | PERFORMANCE       */
+    vui_widget *headers_          = nullptr; /* process-table column header box */
+    vui_widget *header_cells_[6]  = {};      /* the six header labels          */
+    vui_widget *perf_title_       = nullptr; /* "PER-CORE UTILISATION" header */
+    int      cpu_count_           = 1;
+    /* One row per core on the PERFORMANCE tab: a label + a utilisation bar.
+     * (Named core_* to avoid clashing with the cpu_label_ metric card above.) */
+    vui_widget *core_label_[kMaxCpus] = {};
+    vui_widget *core_bar_[kMaxCpus]   = {};
+
+    /* Build the per-core widgets and toggle the two tab views. */
+    void build_perf_panel();
+    void update_perf_panel(unsigned long total_cpu_tenths);
+    void apply_tab_visibility();
 };

@@ -33,12 +33,27 @@ struct vos_system_info {
     uint32_t process_count;
     uint32_t process_max;
     uint32_t app_window_max;
+    uint32_t cpu_count;
     uint64_t heap_used_bytes;
     uint64_t heap_total_bytes;
     char version[16];
     char build[32];
 };
 int vos_system_info(struct vos_system_info *out);
+
+/* Per-CPU info for multi-core utilisation display. */
+struct vos_cpu_info {
+    uint32_t index;
+    uint32_t apic_id;
+    uint64_t ticks;
+    uint64_t allocs;
+};
+
+/* Fill `buf` with up to `max` per-CPU snapshots. Returns the number of CPUs
+ * written, or <0 on error. */
+static inline int vos_cpu_info(struct vos_cpu_info *buf, int max) {
+    return (int)__sc2(SYS_CPU_INFO, (uint64_t)(size_t)buf, (uint64_t)(unsigned)max);
+}
 
 /* ---- threads ----
  * Threads share the caller's address space. fn runs as fn(arg) on a freshly

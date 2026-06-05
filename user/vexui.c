@@ -896,6 +896,7 @@ void vui_set_int(vui_widget *wd, int v){
 }
 int vui_get_int(vui_widget *wd){ return wd ? wd->value : 0; }
 void vui_set_value(vui_widget *wd, int v){ if(!wd||wd->value==v)return; wd->value=v; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
+int  vui_get_value(vui_widget *wd){ return wd ? wd->value : 0; }
 void vui_set_color(vui_widget *wd, vui_u32 c){ if(!wd||wd->color==c)return; wd->color=c; dmg_add(wd->x,wd->y,wd->w,wd->h); g_win.dirty=1; }
 /* Shared SVG icon storage. Widgets reference a slot by index instead of each
  * carrying a large inline buffer (logos can be a couple of KB). */
@@ -1715,14 +1716,21 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         }
         break; }
     case W_PILL: {
-        /* Glass dock surface: real alpha at the rounded edges and a subtle
-         * border so it reads cleanly over both wallpaper and windows. */
+        /* Frosted glass dock surface: highly translucent so wallpaper and
+         * windows bleed through naturally, with a bright top reflection that
+         * sells the glass illusion. */
         uint32_t fill = wd->color ? wd->color : g_theme.surface;
-        uint32_t bd = mix(fill, 0x00cfe2f5u, 1u, 3u);
+        uint32_t bd = mix(fill, 0x00ffffffu, 1u, 8u);
         int r = 14;
         if (r > wd->h / 2) r = wd->h / 2;
-        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, r, argb(fill, 238u), bd);
-        rect(w, wd->x + r, wd->y + 1, wd->w - 2 * r, 1, argb(0x00ffffffu, 44u));
+        /* Body — glassmorphism: translucent enough for depth, opaque enough
+         * for the muted color to read as a surface. */
+        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, r, argb(fill, 210u), bd);
+        /* Sharp top reflection — the key glass-candy detail. */
+        rect(w, wd->x + r - 2, wd->y + 2, wd->w - 2 * (r - 2), 1, argb(0x00ffffffu, 110u));
+        rect(w, wd->x + r + 2, wd->y + 3, wd->w - 2 * (r + 2), 1, argb(0x00ffffffu, 55u));
+        /* Soft bottom edge shadow — anchors the pill against the screen edge. */
+        rect(w, wd->x + r, wd->y + wd->h - 2, wd->w - 2 * r, 1, argb(0x00000000u, 35u));
         break; }
     case W_METRIC: {
         /* Self-contained metric card: title + big value + sub-label + a chart

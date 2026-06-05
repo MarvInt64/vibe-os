@@ -77,7 +77,8 @@ enum {
      * LEN: (no args)                   → current clipboard length */
     SYS_CLIPBOARD_SET = 61,
     SYS_CLIPBOARD_GET = 62,
-    SYS_CLIPBOARD_LEN = 63
+    SYS_CLIPBOARD_LEN = 63,
+    SYS_CPU_INFO      = 64
 };
 
 /* Unused argument registers are explicitly zeroed: the kernel inspects rdi/rsi/

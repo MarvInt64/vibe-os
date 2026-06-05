@@ -45,8 +45,9 @@ void TaskManager::build_ui() {
     vui_set_color(status_label_, VUI_ACCENT);
 
     /* ---- Navigation/search strip ---------------------------------------- */
-    auto *tabs = vui_tabs(window_, 16, 112, 400, "PROCESSES|SYSTEM|SERVICES|NETWORK", 0);
-    vui_set_anchor(tabs, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
+    tabs_ = vui_tabs(window_, 16, 112, 400, "PROCESSES|PERFORMANCE|SYSTEM|NETWORK", 0);
+    vui_set_anchor(tabs_, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP);
+    vui_on_click(tabs_, on_tab_cb);   /* switch between the table and the per-core view */
 
     search_ = vui_input(window_, 422, 113, 202, "Search processes...");
     vui_set_icon_svg_path(search_, "/icons/search.svg");
@@ -56,6 +57,7 @@ void TaskManager::build_ui() {
     /* Process table: no bordered panel (the reference has none) — just a
      * header row, a thin underline, then the rows on the window surface. ---- */
     auto *headers = vui_hbox(window_, 30, 164, 580, 16);
+    headers_ = headers;
     vui_set_anchor(headers, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
     vui_set_gap(headers, Layout::kRowGap);
     vui_set_padding(headers, Layout::kRowPadding);
@@ -86,6 +88,12 @@ void TaskManager::build_ui() {
     vui_set_size(h_action, Layout::kKillWidth, 0);
     vui_box_add(headers, h_action);
 
+    /* Keep references so the header row can be hidden on the PERFORMANCE tab
+     * (each widget draws based on its own visible flag, boxes don't cascade). */
+    header_cells_[0] = h_name;  header_cells_[1] = h_user;
+    header_cells_[2] = h_state; header_cells_[3] = h_cpu;
+    header_cells_[4] = h_mem;   header_cells_[5] = h_action;
+
 
     /* Process-rows VBox — fills the remaining panel area on all sides. */
     rows_vbox_ = vui_vbox(window_, 30, 188, 580, 210);
@@ -99,6 +107,77 @@ void TaskManager::build_ui() {
      * packed into them top-down each refresh (see refresh()). */
     for (int i = 0; i < kRows; ++i)
         rows_[i].init(window_, rows_vbox_, i, on_kill_cb);
+
+    /* Build the (initially hidden) per-core PERFORMANCE view and show the
+     * default tab's widgets. */
+    build_perf_panel();
+    apply_tab_visibility();
+}
+
+/* ---- PERFORMANCE tab: one labelled utilisation bar per CPU core ---------- */
+void TaskManager::build_perf_panel() {
+    /* How many cores to show comes from the kernel; clamp to our widget pool. */
+    struct vos_system_info info{};
+    vos_system_info(&info);
+    cpu_count_ = (int)info.cpu_count;
+    if (cpu_count_ < 1) cpu_count_ = 1;
+    if (cpu_count_ > kMaxCpus) cpu_count_ = kMaxCpus;
+
+    perf_title_ = vui_label(window_, 30, 150, "PER-CORE UTILISATION");
+    vui_set_color(perf_title_, VUI_TEXT_DIM);
+
+    /* Lay the cores out as rows: label on the left, a wide bar on the right. */
+    for (int i = 0; i < cpu_count_; ++i) {
+        int y = 184 + i * 40;
+        core_label_[i] = vui_label(window_, 30, y, "CPU");
+        core_bar_[i]   = vui_bar(window_, 150, y, 470, 16, 100);
+        vui_set_anchor(core_bar_[i], VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
+        vui_set_color(core_bar_[i], VUI_ACCENT);
+    }
+}
+
+/* Show the widgets for the selected tab and hide the others. */
+void TaskManager::apply_tab_visibility() {
+    bool perf = tabs_ && vui_get_value(tabs_) == 1;   /* 0=PROCESSES, 1=PERFORMANCE */
+
+    /* Process-table view. */
+    vui_set_visible(headers_, perf ? 0 : 1);
+    for (int i = 0; i < 6; ++i) vui_set_visible(header_cells_[i], perf ? 0 : 1);
+    vui_set_visible(rows_vbox_, perf ? 0 : 1);
+    vui_set_visible(search_, perf ? 0 : 1);
+    if (perf) for (int r = 0; r < kRows; ++r) rows_[r].hide();
+
+    /* Per-core view. */
+    vui_set_visible(perf_title_, perf ? 1 : 0);
+    for (int i = 0; i < cpu_count_; ++i) {
+        vui_set_visible(core_label_[i], perf ? 1 : 0);
+        vui_set_visible(core_bar_[i],   perf ? 1 : 0);
+    }
+}
+
+/* Fill the per-core bars. All processes currently run on the boot CPU, so it
+ * carries the whole system load; the APs are online but idle until the
+ * scheduler runs on them, so they read 0%. */
+void TaskManager::update_perf_panel(unsigned long total_cpu_tenths) {
+    struct vos_cpu_info ci[kMaxCpus] = {};
+    int n = vos_cpu_info(ci, kMaxCpus);
+    if (n < 1) n = 1;
+
+    for (int i = 0; i < cpu_count_ && i < n; ++i) {
+        StringBuilder<32> lbl;
+        lbl.append("CPU").append((int)ci[i].index);
+        lbl.append(ci[i].index == 0 ? "  boot" : "  AP");
+        vui_set_text(core_label_[i], lbl.c_str());
+
+        int util = (ci[i].index == 0) ? (int)(total_cpu_tenths / 10) : 0;
+        if (util > 100) util = 100;
+        vui_set_value(core_bar_[i], util);
+    }
+}
+
+void TaskManager::on_tab_cb(vui_widget *) {
+    s_instance_->apply_tab_visibility();
+    s_instance_->refresh();
 }
 
 /* ---- Private — data refresh -------------------------------------------- */
@@ -119,6 +198,7 @@ void TaskManager::refresh() {
     unsigned long total_mem = 0;
     unsigned long total_cpu_tenths = 0;
     int row = 0;   /* pack active processes into the top rows (no gaps) */
+    bool perf = tabs_ && vui_get_value(tabs_) == 1;   /* PERFORMANCE tab active */
 
     struct vos_system_info info{};
     vos_system_info(&info);
@@ -170,12 +250,12 @@ void TaskManager::refresh() {
 
         /* The search box only filters which ROWS are shown. */
         if (query[0] && !name_matches(p.name, query)) continue;
-        if (row < kRows)
+        if (!perf && row < kRows)        /* rows hidden on the PERFORMANCE tab */
             rows_[row++].update(p, cpu_tenths);
         total_cpu_tenths += cpu_tenths;
     }
     prev_uptime_ = info.uptime_ticks;
-    for (int r = row; r < kRows; ++r) rows_[r].hide();
+    for (int r = row; r < kRows; ++r) rows_[r].hide();   /* perf: row==0 → all hidden */
 
     unsigned int pmax = info.process_max ? info.process_max
                                          : static_cast<unsigned int>(VUI_PROCESS_MAX);
@@ -223,6 +303,9 @@ void TaskManager::refresh() {
         vui_set_metric(status_label_, t, info.version[0] ? info.version : "VibeOS");
     }
     (void)ready; (void)sleeping; (void)total_mem;
+
+    /* Per-core bars on the PERFORMANCE tab. */
+    if (perf) update_perf_panel(total_cpu_tenths);
 }
 
 void TaskManager::set_status(const char *text, vui_u32 color) {

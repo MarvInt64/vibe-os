@@ -165,6 +165,7 @@ void vui_set_text(vui_widget *wgt, const char *text);
 void vui_set_int(vui_widget *wgt, int value);          /* label: show a number */
 int  vui_get_int(vui_widget *wgt);
 void vui_set_value(vui_widget *wgt, int value);        /* bar: progress value */
+int  vui_get_value(vui_widget *wgt);                   /* read value (e.g. selected tab) */
 void vui_set_color(vui_widget *wgt, vui_u32 color);
 /* Assign a compact stroked SVG icon to a tile-style widget. The renderer
  * supports the icon subset VexUI uses: rect, circle and path strokes. */
