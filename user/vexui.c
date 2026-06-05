@@ -410,7 +410,14 @@ static void blend_put(struct vui_window *w,int x,int y,vui_u32 c,int a){
     if (a>=255){ g_canvas[i]=c; return; }
     {
         vui_u32 *d=&g_canvas[i];
-        if (*d == w->clear_color) {
+        /* Only keep the per-pixel alpha (so the compositor can blend the window
+         * over the desktop) when the window is actually translucent, i.e. its
+         * clear colour is the transparent sentinel. For an OPAQUE window the
+         * compositor ignores the alpha byte, so writing argb(c,a) for an
+         * anti-aliased edge pixel shows full-opaque colour — no AA, leaving
+         * icon/shape edges jagged on the solid background. There we must bake
+         * the AA in by blending the colour over the solid background. */
+        if (*d == w->clear_color && w->clear_color == VUI_COLOR_TRANSPARENT) {
             *d = argb(c, (unsigned)a);
             return;
         }
@@ -1962,6 +1969,7 @@ vui_window *vui_window_open(const char *title, int width, int height) {
 }
 
 void vui_quit(vui_window *w){ if(w) w->open=0; }
+void vui_clear_focus(vui_window *w) { if (w) { w->active_input = -1; w->dirty = 1; } }
 int vui_window_id(vui_window *w){ return w ? w->id : -1; }
 
 int vui_file_dialog(const char *title, const char *initial_path, char *out_path, int out_cap, int save_mode) {
