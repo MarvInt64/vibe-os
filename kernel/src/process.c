@@ -1507,18 +1507,73 @@ static int process_spawn_named_from_parent(struct process *parent, const char *n
     }
 }
 
+/*
+ * Resolve a possibly-relative path against the process CWD into a full
+ * absolute path stored in resolved[0..cap-1].  Always NUL-terminates.
+ * Returns 0 if the result fits; returns -1 if it would overflow.
+ *
+ * Embedded VFS files (the /bin/ ELFs baked into the kernel image) are never
+ * opened through the CWD and always use absolute paths.  We still call
+ * process_open_vfs_from_parent for every open(), so the CWD resolution
+ * happens here too — it is harmless because vfs_lookup() does an exact-match
+ * scan against the embedded table and simply won't find a match for the
+ * resolved variant.
+ */
+static int process_resolve_path(const struct process *process,
+                                const char *path,
+                                char *resolved, size_t cap) {
+    size_t i;
+
+    if (path == 0 || resolved == 0 || cap == 0) return -1;
+
+    /* Absolute paths are used as-is. */
+    if (path[0] == '/') {
+        for (i = 0; i + 1 < cap && path[i]; ++i)
+            resolved[i] = path[i];
+        resolved[i] = '\0';
+        return (path[i] == '\0') ? 0 : -1;
+    }
+
+    /* Relative path: prepend the process CWD. */
+    i = 0;
+    while (i + 1 < cap && process->cwd[i]) {
+        resolved[i] = process->cwd[i];
+        ++i;
+    }
+    if (i + 1 >= cap) return -1;
+
+    /* Ensure a single '/' separator. */
+    if (i > 0 && resolved[i - 1] != '/') {
+        resolved[i++] = '/';
+    }
+
+    /* Append the relative path component(s). */
+    while (i + 1 < cap && *path) {
+        resolved[i++] = *path++;
+    }
+    resolved[i] = '\0';
+    return (*path == '\0') ? 0 : -1;
+}
+
 static int process_open_vfs_from_parent(struct process *process, const char *path) {
     const struct vfs_file *file;
     struct process_vfs_handle *handle;
     int fd;
     size_t i;
+    char resolved[256];  /* matches process->cwd max */
 
     if (process == 0 || path == 0) {
         return -SYSCALL_EINVAL;
     }
 
+    /* Resolve relative paths against the process CWD so that spawned children
+     * (cat, editor, …) can open files with paths relative to the working
+     * directory they inherited from their parent. */
+    if (process_resolve_path(process, path, resolved, sizeof(resolved)) != 0)
+        return -SYSCALL_ENAMETOOLONG;
+
     /* Try embedded files first */
-    file = vfs_lookup(path);
+    file = vfs_lookup(resolved);
     if (file != 0) {
         handle = process_alloc_vfs_handle(process);
         if (handle == 0) return -SYSCALL_EMFILE;
@@ -1537,13 +1592,13 @@ static int process_open_vfs_from_parent(struct process *process, const char *pat
      * leaving cached_ino=0 and causing every subsequent read() to return -1. */
     {
         uint32_t ext2_ino = 0u;
-        if (vfs_open_ino(path, &ext2_ino)) {
+        if (vfs_open_ino(resolved, &ext2_ino)) {
             handle = process_alloc_vfs_handle(process);
             if (handle == 0) return -SYSCALL_EMFILE;
             handle->file = 0;
             handle->kind = 1;
-            for (i = 0; i + 1 < sizeof(handle->path) && path[i]; ++i)
-                handle->path[i] = path[i];
+            for (i = 0; i + 1 < sizeof(handle->path) && resolved[i]; ++i)
+                handle->path[i] = resolved[i];
             handle->path[i] = '\0';
             handle->cached_ino = ext2_ino;
             fd = fd_alloc(&process->fd_table, &PROCESS_VFS_FD_OPS, handle, 3);
@@ -1942,18 +1997,21 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 
     if (number == SYS_STAT) {
         char path[64];
-        uint64_t kind = 0;
-        uint64_t size = 0;
-        int result;
+        char resolved[256];
 
         if (!process_copy_user_string(path, sizeof(path), (const char *)(uintptr_t)frame->rdi)) {
             frame->rax = (uint64_t)(-SYSCALL_EINVAL);
             return 0;
         }
 
+        if (process_resolve_path(process, path, resolved, sizeof(resolved)) != 0) {
+            frame->rax = (uint64_t)(-SYSCALL_ENAMETOOLONG);
+            return 0;
+        }
+
         {
             struct vfs_stat st;
-            if (!vfs_stat_path(path, &st)) {
+            if (!vfs_stat_path(resolved, &st)) {
                 frame->rax = (uint64_t)(-SYSCALL_ENOENT);
                 return 0;
             }
@@ -1970,6 +2028,7 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 
     if (number == SYS_READDIR) {
         char path[64];
+        char resolved[256];
         uint64_t kind = 0;
         uint64_t size = 0;
         int result;
@@ -1979,7 +2038,12 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             return 0;
         }
 
-        result = process_readdir_path(path, (uint32_t)frame->rsi, (char *)(uintptr_t)frame->rdx, (size_t)frame->r10, &kind, &size);
+        if (process_resolve_path(process, path, resolved, sizeof(resolved)) != 0) {
+            frame->rax = (uint64_t)(-SYSCALL_ENAMETOOLONG);
+            return 0;
+        }
+
+        result = process_readdir_path(resolved, (uint32_t)frame->rsi, (char *)(uintptr_t)frame->rdx, (size_t)frame->r10, &kind, &size);
         frame->rax = (uint64_t)result;
         frame->rdx = kind;
         frame->r8 = size;
@@ -2535,39 +2599,54 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 
 	if (number == SYS_CREAT) {
 		char path[64];
+		char resolved[256];
 		if (!process_copy_user_string(path, sizeof(path), (const char *)(uintptr_t)frame->rdi)) {
 			frame->rax = (uint64_t)(-SYSCALL_EINVAL);
 			return 0;
 		}
+		if (process_resolve_path(process, path, resolved, sizeof(resolved)) != 0) {
+			frame->rax = (uint64_t)(-SYSCALL_ENAMETOOLONG);
+			return 0;
+		}
 		serial_write("SYS_CREAT: path=");
-		serial_write(path);
+		serial_write(resolved);
 		serial_write("\n");
-		int result = vfs_create(path);
+		int result = vfs_create(resolved);
 		if (result < 0) {
 			frame->rax = (uint64_t)result;
 		} else {
-			frame->rax = (uint64_t)process_open_vfs_from_parent(process, path);
+			frame->rax = (uint64_t)process_open_vfs_from_parent(process, resolved);
 		}
 		return 0;
 	}
 
 	if (number == SYS_UNLINK) {
 		char path[64];
+		char resolved[256];
 		if (!process_copy_user_string(path, sizeof(path), (const char *)(uintptr_t)frame->rdi)) {
 			frame->rax = (uint64_t)(-SYSCALL_EINVAL);
 			return 0;
 		}
-		frame->rax = (uint64_t)vfs_unlink(path);
+		if (process_resolve_path(process, path, resolved, sizeof(resolved)) != 0) {
+			frame->rax = (uint64_t)(-SYSCALL_ENAMETOOLONG);
+			return 0;
+		}
+		frame->rax = (uint64_t)vfs_unlink(resolved);
 		return 0;
 	}
 
 	if (number == SYS_MKDIR) {
 		char path[64];
+		char resolved[256];
 		if (!process_copy_user_string(path, sizeof(path), (const char *)(uintptr_t)frame->rdi)) {
 			frame->rax = (uint64_t)(-SYSCALL_EINVAL);
 			return 0;
 		}
-		frame->rax = (uint64_t)vfs_mkdir(path);
+		if (process_resolve_path(process, path, resolved, sizeof(resolved)) != 0) {
+			frame->rax = (uint64_t)(-SYSCALL_ENAMETOOLONG);
+			return 0;
+		}
+		frame->rax = (uint64_t)vfs_mkdir(resolved);
 		return 0;
 	}
 
@@ -2583,15 +2662,20 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 
 	if (number == SYS_WRITE_FILE) {
 		char path[64];
+		char resolved[256];
 		const void *buf;
 		size_t size;
 		if (!process_copy_user_string(path, sizeof(path), (const char *)(uintptr_t)frame->rdi)) {
 			frame->rax = (uint64_t)(-SYSCALL_EINVAL);
 			return 0;
 		}
+		if (process_resolve_path(process, path, resolved, sizeof(resolved)) != 0) {
+			frame->rax = (uint64_t)(-SYSCALL_ENAMETOOLONG);
+			return 0;
+		}
 		buf = (const void *)(uintptr_t)frame->rsi;
 		size = (size_t)frame->rdx;
-		frame->rax = (uint64_t)vfs_write_all(path, buf, size);
+		frame->rax = (uint64_t)vfs_write_all(resolved, buf, size);
 		return 0;
 	}
 
