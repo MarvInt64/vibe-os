@@ -110,8 +110,30 @@ def main():
         f.seek(root_blk * BS)
         f.write(bytes(dir_blk))
 
+    # Seed the standard directory skeleton so apps have somewhere to write.
+    # /home/user is the default working directory for the GUI apps (the file
+    # dialog, text editor, …); without it, saves into /home/user fail because
+    # ext2_create does not create missing parent directories. /tmp backs the
+    # file-dialog result hand-off. Reuse ext2_put's writer to avoid duplicating
+    # the directory-allocation logic here.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "ext2_put", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ext2_put.py"))
+    ext2_put = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ext2_put)
+
+    fs = ext2_put.Ext2(path)
+    def ensure(parent_ino, name):
+        ino = fs.dir_find(parent_ino, name)
+        return ino if ino else fs.mkdir(parent_ino, name)
+    home = ensure(EXT2_ROOT, "home")
+    ensure(home, "user")
+    ensure(EXT2_ROOT, "tmp")
+    fs.flush_meta()
+
     print(f"format_disk: formatted {path} ({disk_size//1024//1024} MB, "
-          f"{blocks_count} blocks, {inodes_count} inodes, first_data={first_data})")
+          f"{blocks_count} blocks, {inodes_count} inodes, first_data={first_data}); "
+          f"seeded /home/user, /tmp")
 
 if __name__ == "__main__":
     main()
