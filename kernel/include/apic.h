@@ -50,4 +50,10 @@ void lapic_eoi(void);
 /* This CPU's Local APIC ID. */
 uint8_t lapic_id(void);
 
+/* Software-enable the Local APIC of the calling CPU (used by APs at bring-up). */
+void lapic_enable_this_cpu(void);
+
+/* Send an IPI (INIT / STARTUP / etc.) to another CPU's Local APIC. */
+void lapic_send_ipi(uint8_t dest_apic_id, uint32_t icr_low);
+
 #endif

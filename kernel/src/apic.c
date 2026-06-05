@@ -33,6 +33,9 @@
 #define LAPIC_REG_EOI   0x0B0   /* end-of-interrupt (write 0)                 */
 #define LAPIC_REG_SVR   0x0F0   /* spurious interrupt vector register         */
 #define LAPIC_REG_TPR   0x080   /* task priority register                     */
+#define LAPIC_REG_ICR_LOW  0x300 /* interrupt command register, low dword     */
+#define LAPIC_REG_ICR_HIGH 0x310 /* interrupt command register, high dword    */
+#define LAPIC_ICR_DELIVERY_PENDING (1u << 12)
 #define LAPIC_SVR_ENABLE 0x100  /* SVR bit 8: software-enable the Local APIC  */
 #define LAPIC_SPURIOUS_VECTOR 0xFF
 
@@ -101,6 +104,26 @@ uint8_t lapic_id(void) {
 
 int apic_is_active(void) { return g_apic_active; }
 
+/* Software-enable the Local APIC of the CPU currently executing. Shared by the
+ * BSP (apic_init) and every AP (ap_main): globally enable via the MSR, then set
+ * the spurious vector + software-enable bit and accept all interrupt
+ * priorities. Relies on g_lapic_base having been discovered by apic_init. */
+void lapic_enable_this_cpu(void) {
+    wrmsr(IA32_APIC_BASE_MSR, rdmsr(IA32_APIC_BASE_MSR) | APIC_BASE_GLOBAL_ENABLE);
+    mmio_write(g_lapic_base, LAPIC_REG_SVR, LAPIC_SVR_ENABLE | LAPIC_SPURIOUS_VECTOR);
+    mmio_write(g_lapic_base, LAPIC_REG_TPR, 0);
+}
+
+/* Send an inter-processor interrupt to a specific Local APIC. icr_low carries
+ * the delivery mode / vector (e.g. INIT or STARTUP); the destination goes in
+ * the high register. Spins until the APIC reports the IPI was delivered. */
+void lapic_send_ipi(uint8_t dest_apic_id, uint32_t icr_low) {
+    mmio_write(g_lapic_base, LAPIC_REG_ICR_HIGH, (uint32_t)dest_apic_id << 24);
+    mmio_write(g_lapic_base, LAPIC_REG_ICR_LOW, icr_low);
+    while (mmio_read(g_lapic_base, LAPIC_REG_ICR_LOW) & LAPIC_ICR_DELIVERY_PENDING)
+        __asm__ volatile("pause");
+}
+
 int apic_init(void) {
     if (acpi_init() != 0) {
         serial_write("APIC: no ACPI/MADT, staying on 8259 PIC\n");
@@ -118,11 +141,8 @@ int apic_init(void) {
         return -1;
     }
 
-    /* 1. Globally enable the Local APIC via its MSR, then software-enable it
-     *    and point spurious interrupts at vector 0xFF. */
-    wrmsr(IA32_APIC_BASE_MSR, rdmsr(IA32_APIC_BASE_MSR) | APIC_BASE_GLOBAL_ENABLE);
-    mmio_write(g_lapic_base, LAPIC_REG_SVR, LAPIC_SVR_ENABLE | LAPIC_SPURIOUS_VECTOR);
-    mmio_write(g_lapic_base, LAPIC_REG_TPR, 0);   /* accept all priorities */
+    /* 1. Software-enable this (boot) CPU's Local APIC; spurious -> vector 0xFF. */
+    lapic_enable_this_cpu();
 
     uint8_t bsp_id = lapic_id();
 

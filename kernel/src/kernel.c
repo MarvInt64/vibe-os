@@ -30,6 +30,7 @@
 #include "ide.h"
 #include "input.h"
 #include "interrupts.h"
+#include "smp.h"
 #include "journal.h"
 #include "multiboot2.h"
 #include "net.h"
@@ -443,6 +444,10 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
   journal_log(JOURNAL_INFO, 0, "VibeOS kernel boot");
   journal_log(JOURNAL_APP, 0, "kernel inputdiag wheel-restored v4");
   process_init();
+
+  /* Bring the application processors online (they park for now; the scheduler
+   * still runs only on the boot CPU). No-op on single-CPU / no-APIC systems. */
+  smp_boot_aps();
 
   /* Bring up the network card (best effort; networking stays optional). */
   serial_write("VIBEOS: Initializing network...\n");
