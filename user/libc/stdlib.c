@@ -93,3 +93,8 @@ int rand(void) {
 void srand(unsigned int seed) {
     g_rand_seed = seed;
 }
+
+size_t malloc_usable_size(void *ptr) {
+    return (size_t)umalloc_usable_size(ptr);
+}
+

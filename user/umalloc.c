@@ -259,3 +259,10 @@ void *urealloc(void *ptr, umsize_t size) {
 
 umsize_t umalloc_used(void) { return g_used; }
 umsize_t umalloc_capacity(void) { return g_capacity; }
+
+umsize_t umalloc_usable_size(const void *ptr) {
+    if (!ptr) return 0;
+    struct block *b = block_of((void *)ptr);
+    return b->size;
+}
+

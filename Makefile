@@ -122,13 +122,22 @@ $(LIBC_A): $(LIBC_DEPS)
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/libc/string.c -o build/user/libc/string.o
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/libc/stdlib.c -o build/user/libc/stdlib.o
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/libc/stdio.c  -o build/user/libc/stdio.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/libc/math.S   -o build/user/libc/math.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/libc/setjmp.S -o build/user/libc/setjmp.o
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -c user/libc/cxxabi.cpp -o build/user/libc/cxxabi.o
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/umalloc.c     -o build/user/libc/umalloc.o
-	$(UAR) rcs $(LIBC_A) build/user/libc/sys.o build/user/libc/string.o build/user/libc/stdlib.o build/user/libc/stdio.o build/user/libc/cxxabi.o build/user/libc/umalloc.o
+	$(UAR) rcs $(LIBC_A) build/user/libc/sys.o build/user/libc/string.o build/user/libc/stdlib.o build/user/libc/stdio.o build/user/libc/cxxabi.o build/user/libc/umalloc.o build/user/libc/math.o build/user/libc/setjmp.o
 
 libc: $(LIBC_A)
 
 apps: $(DISK_IMG) $(LIBC_A)
+	@# If the disk is unformatted (ext2 magic absent) — i.e. a fresh
+	@# `make newdisk` chain — format it now so we can install apps
+	@# without a QEMU round-trip. The kernel's on-disk format is identical
+	@# (format_disk.py mirrors ext2_format() in kernel/src/ext2_fs.c).
+	@if [ "$$(python3 -c "import struct; d=open('$(DISK_IMG)','rb'); d.seek(0x438); print(struct.unpack('<H', d.read(2))[0])")" != "61395" ]; then \
+	    python3 scripts/format_disk.py $(DISK_IMG); \
+	fi
 	@mkdir -p build/user
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ilib/svg -c lib/svg/svg.c -o build/user/svg.o
 	$(UCC) $(UCFLAGS) -Ilib/svg -c user/vexui.c -o build/user/vexui.o
@@ -193,13 +202,20 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Iuser/libimage -Ithird_party/stb -c user/libimage/image.c  -o build/user/image.o
 	$(CC)  $(ASFLAGS)                             -c user/browser/font_data.S  -o build/user/font_data.o
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -c user/browser/layout_engine.cpp -o build/user/browser_layout_engine.o
-	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -Iuser/libimage -Ilib/svg -Ilib/mp3 -c user/browser/browser.cpp       -o build/user/browser_main.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ithird_party/quickjs -DCONFIG_VERSION="\"2025-01-05\"" -c third_party/quickjs/quickjs.c -o build/user/quickjs.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ithird_party/quickjs -c third_party/quickjs/cutils.c -o build/user/quickjs_cutils.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ithird_party/quickjs -c third_party/quickjs/dtoa.c -o build/user/quickjs_dtoa.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ithird_party/quickjs -c third_party/quickjs/libregexp.c -o build/user/quickjs_libregexp.o
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ithird_party/quickjs -c third_party/quickjs/libunicode.c -o build/user/quickjs_libunicode.o
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/browser -Iuser/libimage -Ilib/svg -Ilib/mp3 -Ithird_party/quickjs -c user/browser/browser.cpp       -o build/user/browser_main.o
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ilib/mp3 -c lib/mp3/mp3dec.c -o build/user/mp3dec.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/browser.elf \
 		$(LIBC_CRT0) build/user/browser_main.o build/user/browser_layout_engine.o \
 		build/user/weblayout.o build/user/dom.o build/user/css.o \
 		build/user/appfont.o build/user/image.o build/user/font_data.o \
-		build/user/vexui.o build/user/svg.o build/user/mp3dec.o $(LIBC_A)
+		build/user/vexui.o build/user/svg.o build/user/mp3dec.o \
+		build/user/quickjs.o build/user/quickjs_cutils.o build/user/quickjs_dtoa.o \
+		build/user/quickjs_libregexp.o build/user/quickjs_libunicode.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/browser.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/browser.elf /bin/browser
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -Iuser/libimage -Ilib/svg -Ilib/mp3 -c user/audioplayer/audioplayer.cpp -o build/user/audioplayer.o
@@ -335,6 +351,7 @@ apps: $(DISK_IMG) $(LIBC_A)
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/mp3play.elf /bin/mp3play
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/music/becorbal-town.mp3 /music/becorbal-town.mp3
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/music/player.html /music/player.html
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/test.html /test.html
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/audiocfg.c -o build/user/audiocfg.o
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/audiocfg.elf \
 		$(LIBC_CRT0) build/user/audiocfg.o build/user/libc.a

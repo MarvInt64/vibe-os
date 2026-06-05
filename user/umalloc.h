@@ -26,6 +26,8 @@ void *urealloc(void *ptr, umsize_t size);
 /* Diagnostics / coarse control. */
 umsize_t umalloc_used(void);      /* bytes currently handed out (payload, rounded) */
 umsize_t umalloc_capacity(void);  /* total arena size */
+umsize_t umalloc_usable_size(const void *ptr);
+
 
 #ifdef __cplusplus
 }

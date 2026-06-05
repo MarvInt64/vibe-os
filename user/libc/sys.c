@@ -27,8 +27,10 @@
 #include <errno.h>
 #include <vibeos.h>
 #include <time.h>
+#include <sys/time.h>
 #include <sys/syscall.h>
 #include <sys/stat.h>
+
 
 int errno = 0;
 
@@ -137,7 +139,7 @@ static void thread_trampoline(void *raw) {
 
 int vos_thread_create(void (*fn)(void *), void *arg, int stack_size) {
     if (fn == 0) { errno = EINVAL; return -1; }
-    if (stack_size <= 0) stack_size = 64 * 1024;
+    if (stack_size <= 0) stack_size = 512 * 1024;
 
     unsigned char *stack = (unsigned char *)malloc((unsigned long)stack_size);
     struct vos_thread_tcb *tcb =
@@ -402,3 +404,71 @@ size_t clipboard_get(char *buf, size_t cap) {
 size_t clipboard_len(void) {
     return (size_t)__sc0(SYS_CLIPBOARD_LEN);
 }
+
+int gettimeofday(struct timeval *tv, void *tz) {
+    (void)tz;
+    if (!tv) { errno = EFAULT; return -1; }
+    tv->tv_sec = time(0);
+    tv->tv_usec = 0;
+    return 0;
+}
+
+struct tm *localtime_r(const time_t *timep, struct tm *r) {
+    if (!timep || !r) return 0;
+    time_t t = *timep;
+    r->tm_gmtoff = 0;
+    r->tm_zone = "UTC";
+    r->tm_isdst = 0;
+
+    long long days = t / 86400;
+    long long rem = t % 86400;
+    if (rem < 0) {
+        days--;
+        rem += 86400;
+    }
+    r->tm_hour = rem / 3600;
+    r->tm_min = (rem % 3600) / 60;
+    r->tm_sec = rem % 60;
+    r->tm_wday = (days + 4) % 7;
+    if (r->tm_wday < 0) r->tm_wday += 7;
+
+    long long qc_cycles = days / 146097;
+    long long qc_rem = days % 146097;
+    if (qc_rem < 0) {
+        qc_cycles--;
+        qc_rem += 146097;
+    }
+    long long c_cycles = qc_rem / 36524;
+    long long c_rem = qc_rem % 36524;
+    if (c_cycles == 4) {
+        c_cycles = 3;
+        c_rem += 36524;
+    }
+    long long q_cycles = c_rem / 1461;
+    long long q_rem = c_rem % 1461;
+    long long y_in_q = q_rem / 365;
+    long long y_rem = q_rem % 365;
+    if (y_in_q == 4) {
+        y_in_q = 3;
+        y_rem += 365;
+    }
+    long long year = 1970 + qc_cycles * 400 + c_cycles * 100 + q_cycles * 4 + y_in_q;
+    r->tm_year = (int)(year - 1900);
+    
+    int leap = (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
+    r->tm_yday = (int)y_rem;
+
+    static const int mon_lengths[2][12] = {
+        { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 },
+        { 31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
+    };
+    int m = 0;
+    while (y_rem >= mon_lengths[leap][m]) {
+        y_rem -= mon_lengths[leap][m];
+        m++;
+    }
+    r->tm_mon = m;
+    r->tm_mday = (int)(y_rem + 1);
+    return r;
+}
+

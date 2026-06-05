@@ -24,6 +24,10 @@ void  srand(unsigned int seed);
 void  exit(int code) __attribute__((noreturn));
 void  abort(void) __attribute__((noreturn));
 
+#define alloca __builtin_alloca
+size_t malloc_usable_size(void *ptr);
+
+
 static inline double atof(const char *s) {
     double r = 0, f = 1; int neg = 0; const char *p = s;
     while (*p == ' ') ++p;
