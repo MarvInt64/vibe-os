@@ -43,6 +43,11 @@ public:
     void navigate(const char *path, bool push_history = true);
     void refresh_files();
     void render();
+    void render_chrome();  /* toolbar, sidebar, breadcrumbs, status bar */
+    void render_list();    /* file rows, scrollbar, detail panel       */
+    bool chrome_dirty_ = true;
+
+    void flush();  /* vui_canvas_flush instead of full repaint */
 
     // Event handlers (canvas region: file list, scrollbar, breadcrumbs).
     void on_click(int x, int y, uint32_t buttons);
@@ -63,6 +68,11 @@ public:
     void search_changed(const char *text);
     void create_new_folder();
 
+    // Open the currently selected file (or navigate into a folder) using the
+    // file-type association config. Called from double-click, context menu,
+    // and the detail-panel Open button.
+    void open_selected();
+
     // Dialog action-bar handlers (invoked from VexUI widget callbacks).
     void dialog_accept();   // confirm the current selection / typed filename
     void dialog_cancel();   // abort without a result
@@ -77,6 +87,7 @@ private:
     // VexUI clamps windows to VUI_MAX_W/H (900x640); win_w_/win_h_ are set from
     // the real window size after open, never assumed.
     vui_window *win_ = nullptr;
+    vui_widget *canvas_ = nullptr;   /* full-window canvas, flushed via vui_canvas_flush */
     uint32_t *canvas_pixels_ = nullptr;
     int win_w_ = 900;
     int win_h_ = 640;
@@ -125,6 +136,20 @@ private:
 
     // Detail panel Open button (VexUI widget, created in build_widgets)
     vui_widget *open_file_btn_ = nullptr;
+
+    // File type associations (loaded from /etc/filetypes + user override)
+    struct FileTypeEntry {
+        char ext[16];
+        char action[8];   // "exec", "open", "edit"
+        char program[64]; // "-" for exec, otherwise path to handler
+    };
+    FileTypeEntry filetypes_[64];
+    int filetype_count_ = 0;
+    void load_filetypes();
+    /* Look up the action for a filename. Returns true and fills *program
+     * if the extension is known; otherwise returns false. */
+    bool resolve_file_action(const char *filename, char *action_out, int action_cap,
+                             char *program_out, int prog_cap);
 
     // File lists
     FileEntry entries_[256];
