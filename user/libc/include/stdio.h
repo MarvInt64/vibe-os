@@ -3,7 +3,6 @@
 #include <stddef.h>
 #include <stdarg.h>
 #include <stdint.h>
-#include <sys/types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -78,12 +77,6 @@ int     fprintf(FILE *fp, const char *fmt, ...);
 int     vfprintf(FILE *fp, const char *fmt, va_list ap);
 /* sscanf — minimal stub: %d %s %f only */
 int sscanf(const char *str, const char *fmt, ...);
-
-/* sprintf — output to string (unbounded, caller must ensure buffer is large enough) */
-int sprintf(char *buf, const char *fmt, ...);
-
-/* getline — read a line from a FILE stream into a malloc'd buffer */
-ssize_t getline(char **lineptr, size_t *n, FILE *stream);
 
 #ifdef __cplusplus
 }
