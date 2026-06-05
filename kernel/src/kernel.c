@@ -245,8 +245,8 @@ static void cli_write_kernel_text(const char *text) {
 
 /* Desired desktop resolution; changeable at runtime via the `display` tool.
  * Clamped to the statically-allocated backbuffer max (1920x1080). */
-static uint32_t g_req_width = 1024u;
-static uint32_t g_req_height = 768u;
+static uint32_t g_req_width = 1440u;
+static uint32_t g_req_height = 900u;
 static volatile int g_resolution_change_requested = 0;
 
 void kernel_cxx_init(void);
@@ -342,8 +342,7 @@ static void start_desktop_scene_apps(void) {
         return;
     }
     (void)process_spawn_path("/bin/wallpaper", 0, 0, g_desktop_uid, g_desktop_uid);
-    (void)process_spawn_path("/bin/doom", 0, 0, g_desktop_uid, g_desktop_uid);  /* TEMP load */
-    (void)process_spawn_path("/bin/doom", 0, 0, g_desktop_uid, g_desktop_uid);  /* TEMP load */
+
     g_desktop_scene_started = 1;
 }
 
