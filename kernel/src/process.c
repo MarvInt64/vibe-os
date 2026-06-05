@@ -2407,9 +2407,8 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         struct desktop_state *d = desktop_active();
         if (d == 0) { frame->rax = 0; return 0; }
         int cw = 0, ch = 0;
-        serial_write("BIND_FB called\n");
         uint32_t *storage = desktop_window_get_storage(d, (int)frame->rdi, &cw, &ch);
-        if (!storage || cw <= 0 || ch <= 0) { serial_write("BIND_FB: FAILED no storage\n"); frame->rax = 0; return 0; }
+        if (!storage || cw <= 0 || ch <= 0) { frame->rax = 0; return 0; }
         size_t bytes = (size_t)cw * (size_t)ch * 4u;
         size_t npages = (bytes + 0xFFFul) >> 12;
         /* Use the dedicated FB mapping region (below the stack) so we never
@@ -2419,7 +2418,6 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         uintptr_t vaddr = process->fb_next_vaddr;
         if (vaddr + bytes > PROCESS_FB_REGION_BASE + PROCESS_FB_REGION_BYTES) {
             frame->rax = 0; return 0;  /* FB region exhausted */
-        serial_write("BIND_FB: region exhausted\n");
         }
         uintptr_t phys  = (uintptr_t)storage;
         uint64_t *pt = process->user_page_tables;
@@ -2428,9 +2426,6 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             size_t entry_idx = (((vaddr + (i << 12)) - PROCESS_USER_BASE) >> 12) & 0x1FFu;
             pt[table_idx * 512u + entry_idx] = (phys + (i << 12)) | 0x07u;
         }
-        serial_write("BIND_FB: OK vaddr=");
-        serial_write_hex_u64(vaddr);
-        serial_write("\n");
         process->fb_vaddr  = vaddr;
         process->fb_win_id = (uint32_t)frame->rdi;
         process->fb_next_vaddr = vaddr + bytes;
