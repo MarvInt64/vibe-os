@@ -365,6 +365,7 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
   int presented_cursor_x;
   int presented_cursor_y;
   uint32_t seen_cli_revision = 0;
+  uint32_t vga_blink_counter = 0;
   int window_manager_active = 0;
 
   serial_init();
@@ -509,9 +510,16 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
         if (!window_manager_active) {
             (void)tty_handle_keyboard(&g_cli_tty, &keyboard);
             run_result = process_run_ready_slice();
+            ++vga_blink_counter;
+            /* Toggle the cursor every ~30 main-loop iterations (~0.4 s) so the
+             * VGA console blinks even when no new output is being produced. */
+            int cursor_on = ((vga_blink_counter / 30) & 1) == 0;
             if (g_cli_tty.revision != seen_cli_revision) {
-                vga_text_render_tty(&g_cli_tty);
+                vga_text_render_tty_blink(&g_cli_tty, cursor_on);
                 seen_cli_revision = g_cli_tty.revision;
+            } else if ((vga_blink_counter % 30) == 0) {
+                /* Idle: re-blit the screen to toggle the cursor visibility. */
+                vga_text_render_tty_blink(&g_cli_tty, cursor_on);
             }
             if (process_take_window_manager_request()) {
                 window_manager_active = start_window_manager(&presented_cursor_x, &presented_cursor_y);

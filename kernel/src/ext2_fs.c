@@ -106,10 +106,19 @@ int ext2_write_inode(struct ext2_filesystem *fs, uint32_t inode_num) {
     uint32_t inode_block_num;
     uint32_t inode_offset;
     uint8_t *block;
+    uint32_t bb_blks;
 
     if (inode_num == 0 || inode_num > fs->superblock.inodes_count) return -1;
 
-    inode_block_num = 4 + ((inode_num - 1) * sizeof(struct ext2_inode)) / fs->superblock.block_size;
+    /* it_start depends on the block-bitmap size which scales with blocks_count
+     * (8 blocks of bitmap per 64k blocks). The previous `4 +` assumed a 1-block
+     * bitmap (≤8k blocks); on 64MB disks (8 bitmap blocks, it_start=11) it
+     * wrote inodes back to data blocks, silently corrupting /etc whenever a
+     * later inode was created. */
+    bb_blks = (fs->superblock.blocks_count + 8u * fs->superblock.block_size - 1u)
+              / (8u * fs->superblock.block_size);
+    inode_block_num = 2u + bb_blks + 1u
+                      + ((inode_num - 1) * sizeof(struct ext2_inode)) / fs->superblock.block_size;
     inode_offset = ((inode_num - 1) * sizeof(struct ext2_inode)) % fs->superblock.block_size;
 
     block = (uint8_t *)kmalloc(fs->superblock.block_size);
@@ -280,6 +289,31 @@ int ext2_format(struct ext2_filesystem *fs, struct ramdisk_device *device) {
     ext2_mkdir(fs, "/bin", 0755);
     ext2_mkdir(fs, "/etc", 0755);
 
+    /* Seed /etc with the system identity files so they exist from the very
+     * first boot — id/whoami/su look at /etc/passwd and would fall back to
+     * "user" forever otherwise. The content is hard-coded here (no host-side
+     * install needed); any later `edit /etc/passwd` and Save overwrites it
+     * because the inode is on the persistent ext2 partition. */
+    {
+        static const char seed_passwd[] = "root:x:0:0:Root:/root:/bin/sh\n";
+        static const char seed_group[]  = "root:x:0:\n";
+        static const char seed_host[]   = "vibeos\n";
+        static const char seed_issue[]  = "VibeOS \\r (kernel \\v)\\n\\n";
+
+        struct { const char *path; const char *data; uint16_t mode; } seeds[] = {
+            { "/etc/passwd", seed_passwd, 0644 },
+            { "/etc/group",  seed_group,  0644 },
+            { "/etc/hostname", seed_host, 0644 },
+            { "/etc/issue",  seed_issue,  0644 },
+        };
+        for (size_t i = 0; i < sizeof(seeds) / sizeof(seeds[0]); ++i) {
+            uint32_t ino = ext2_create(fs, seeds[i].path, seeds[i].mode);
+            if (ino != 0) {
+                ext2_write(fs, ino, 0, strlen(seeds[i].data), seeds[i].data);
+            }
+        }
+    }
+
     return 0;
 }
 
@@ -427,8 +461,11 @@ int ext2_mount(struct ext2_filesystem *fs, struct ramdisk_device *device) {
     serial_write_hex_u64(fs->superblock.block_size);
     serial_write("\n");
 
+    /* Load the full inode table — the previous 128-inode cap made
+     * ext2_alloc_inode_num()'s output unusable past index 128 and left later
+     * inodes as zeros in memory (so /etc/passwd and /etc/shadow, which the
+     * host-side ext2_put.py placed in high inodes, appeared missing). */
     uint32_t max_inodes_to_read = fs->superblock.inodes_count;
-    if (max_inodes_to_read > 128) max_inodes_to_read = 128;
 
     serial_write("EXT2: loading max_inodes=");
     serial_write_hex_u64(max_inodes_to_read);

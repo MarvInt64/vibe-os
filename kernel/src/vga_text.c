@@ -52,6 +52,10 @@ void vga_text_write_message(const char *text, uint8_t color) {
 }
 
 void vga_text_render_tty(const struct tty *tty) {
+    vga_text_render_tty_blink(tty, 1);
+}
+
+void vga_text_render_tty_blink(const struct tty *tty, int cursor_visible) {
     int start_line = 0;
     int max_lines = VGA_TEXT_ROWS - 1;
     int row = 0;
@@ -72,7 +76,8 @@ void vga_text_render_tty(const struct tty *tty) {
             }
         }
 
-        if (tty->cursor_row >= 0 && tty->cursor_row < VGA_TEXT_ROWS &&
+        if (cursor_visible &&
+            tty->cursor_row >= 0 && tty->cursor_row < VGA_TEXT_ROWS &&
             tty->cursor_col >= 0 && tty->cursor_col < VGA_TEXT_COLUMNS) {
             uint8_t color = (tty->screen_attr[tty->cursor_row][tty->cursor_col] & TTY_ATTR_INVERSE) ? 0x0fu : 0x70u;
             char c = tty->screen[tty->cursor_row][tty->cursor_col];
@@ -108,7 +113,7 @@ void vga_text_render_tty(const struct tty *tty) {
         vga_put_at((int)i + 2, VGA_TEXT_ROWS - 1, input_line[i], 0x0fu);
     }
 
-    if (out + 2 < VGA_TEXT_COLUMNS) {
+    if (cursor_visible && out + 2 < VGA_TEXT_COLUMNS) {
         vga_put_at((int)out + 2, VGA_TEXT_ROWS - 1, '_', 0x0fu);
     }
 }

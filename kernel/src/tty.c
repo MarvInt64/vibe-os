@@ -106,16 +106,24 @@ static void tty_queue_raw_input(struct tty *tty, const char *data, size_t count)
 
 static void tty_append_output_char(struct tty *tty, char c) {
  if (c == '\r') {
- return;
+  return;
  }
 
  if (c == '\n') {
- tty_flush_partial_line(tty);
- return;
+  tty_flush_partial_line(tty);
+  return;
+ }
+
+ if (c == '\b') {
+  if (tty->partial_length > 0) {
+   tty->partial_length--;
+   tty->partial_output[tty->partial_length] = '\0';
+  }
+  return;
  }
 
  if (tty->partial_length + 1 >= TTY_MAX_LINE_CHARS) {
- tty_flush_partial_line(tty);
+  tty_flush_partial_line(tty);
  }
 
  tty->partial_output[tty->partial_length++] = c;
@@ -466,26 +474,38 @@ static ssize_t tty_fd_read(void *object, void *buffer, size_t count) {
  return 0;
  }
 
+ /* When a cooked line becomes ready, drain it into the raw ring (with a
+  * trailing '\n') so partial reads can pick it up byte-by-byte. The old
+  * code copied `count-1` chars and unconditionally appended '\n', which
+  * meant a 1-byte read got '\n' first and lost the rest of the line —
+  * `su` (and any other char-by-char reader) would then see an empty
+  * password and reject it. */
  tty_commit_input_line(tty);
 
  to_copy = tty->cooked_length;
- if (to_copy + 1 > count) {
- to_copy = count - 1;
+ if (to_copy + 1 > sizeof(tty->raw_input)) {
+ to_copy = sizeof(tty->raw_input) - 1;
  }
-
  for (size_t i = 0; i < to_copy; ++i) {
- out[i] = tty->cooked_line[i];
+ tty->raw_input[i] = tty->cooked_line[i];
  }
- if (to_copy < count) {
- out[to_copy++] = '\n';
- }
+ tty->raw_input[to_copy] = '\n';
+ tty->raw_length = to_copy + 1;
 
  tty->line_ready = 0;
  tty->cooked_length = 0;
  tty->cooked_line[0] = '\0';
- tty->raw_length = 0;
- tty->raw_input[0] = '\0';
  tty->waiter_pid = 0;
+
+ /* Now fall through to the raw path which honours `count`. */
+ to_copy = tty->raw_length;
+ if (to_copy > (size_t)count) {
+ to_copy = count;
+ }
+ for (size_t i = 0; i < to_copy; ++i) {
+ out[i] = tty->raw_input[i];
+ }
+ tty_raw_input_shift_left(tty, to_copy);
  return (ssize_t)to_copy;
 }
 
