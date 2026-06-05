@@ -75,6 +75,15 @@ static long sc1(unsigned long n, unsigned long a0) {
     return ret;
 }
 
+static long sc2(unsigned long n, unsigned long a0, unsigned long a1) {
+    long ret;
+    __asm__ volatile("int $0x80"
+                     : "=a"(ret)
+                     : "a"(n), "D"(a0), "S"(a1)
+                     : "rcx", "r11", "memory");
+    return ret;
+}
+
 /* ---- Database lookup helpers ---------------------------------------------- */
 
 #define MAX_LINE     256
@@ -264,6 +273,23 @@ int main(int argc, char **argv) {
     if (ret < 0) {
         fprintf(stderr, "su: cannot set uid %d (error %ld)\n", target_uid, -ret);
         return 1;
+    }
+
+    /* Spawn a new shell running as the target user so subsequent commands
+     * in this terminal inherit the new uid — matching the expectation that
+     * "su marvin" switches the active session.  The original shell is the
+     * parent and will reap this child. */
+    {
+        extern int vos_spawn(const char *path);
+        int shell_pid = vos_spawn("/bin/sh");
+        if (shell_pid > 0) {
+            /* Wait for the child shell to finish before returning to the
+             * parent shell (so the terminal session stays alive). */
+            sc2(6 /* SYS_WAITPID */, (unsigned long)shell_pid, 0);
+        } else {
+            fprintf(stderr, "su: cannot spawn shell\n");
+            return 1;
+        }
     }
 
     return 0;
