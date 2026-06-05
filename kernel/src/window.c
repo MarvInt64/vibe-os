@@ -1953,7 +1953,6 @@ static void compose_user_app_direct(struct desktop_state *desktop,
         draw_window_frame(desktop, dest, window, focused);
     }
 
-    /* Blit content_storage directly to the backbuffer content region. */
     stride = desktop->user_apps[s].data_width;
     if (stride <= 0) stride = desktop->user_apps[s].content_width;
     cw = stride;
@@ -1963,6 +1962,23 @@ static void compose_user_app_direct(struct desktop_state *desktop,
 
     abs_cx = window->x + ctx.content_x;   /* screen-absolute content origin */
     abs_cy = window->y + ctx.content_y;
+
+    /* Fill the content area with the theme surface color so that
+     * uninitialised canvas pixels show as dark chrome instead of a
+     * magenta flash while the app loads. */
+    {
+        int fill_x0 = abs_cx, fill_y0 = abs_cy;
+        int fill_x1 = abs_cx + cw, fill_y1 = abs_cy + ch;
+        if (fill_x0 < 0) fill_x0 = 0;
+        if (fill_y0 < 0) fill_y0 = 0;
+        if (fill_x1 > (int)dest->width)  fill_x1 = (int)dest->width;
+        if (fill_y1 > (int)dest->height) fill_y1 = (int)dest->height;
+        for (int fy = fill_y0; fy < fill_y1; ++fy) {
+            uint32_t *frow = (uint32_t *)((uint8_t *)dest->base + (uint32_t)fy * dest->pitch);
+            for (int fx = fill_x0; fx < fill_x1; ++fx)
+                frow[fx] = g_chrome_theme.surface;
+        }
+    }
 
     for (row = 0; row < ch; ++row) {
         int py = abs_cy + row;
