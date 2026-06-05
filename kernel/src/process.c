@@ -731,6 +731,7 @@ static void process_setup_context(struct process *process) {
     /* A freshly set-up process is never mid-syscall: clear any stale parked
      * kernel stack left over from a previous tenant of this slot. */
     process->kresume_rsp = 0;
+    process->running_on_cpu = -1;   /* not running on any CPU yet */
     process->context.rax = 0;
     process->context.rbx = 0;
     process->context.rcx = 0;
@@ -1109,6 +1110,12 @@ static struct process *process_pick_next_ready(void) {
         uint32_t slot = (g_scheduler_cursor + attempt) % PROCESS_MAX_COUNT;
         struct process *p = &g_processes[slot];
 
+        /* Skip a process already running on another CPU — never dispatch the
+         * same one to two cores at once. */
+        if (p->running_on_cpu != -1) {
+            continue;
+        }
+
         if (p->state == PROCESS_STATE_READY ||
             (p->state == PROCESS_STATE_WAITING_IO && p->kresume_rsp != 0)) {
             g_scheduler_cursor = (slot + 1u) % PROCESS_MAX_COUNT;
@@ -1160,6 +1167,7 @@ void process_init(void) {
         g_processes[i].kernel_stack_top =
             (uintptr_t)(g_kernel_stacks[i] + PROCESS_KERNEL_STACK_SIZE);
         g_processes[i].kresume_rsp = 0;
+        g_processes[i].running_on_cpu = -1;
         g_processes[i].is_thread = 0;
         process_reset_vfs_handles(&g_processes[i]);
         g_processes[i].cwd[0] = '/';
@@ -1371,6 +1379,7 @@ static int process_create_thread(struct process *parent, uintptr_t entry,
     thread->kernel_stack_top =
         (uintptr_t)(g_kernel_stacks[slot] + PROCESS_KERNEL_STACK_SIZE);
     thread->kresume_rsp = 0;
+    thread->running_on_cpu = -1;
 
     /* Identity + scheduling state. */
     thread->pid             = ++g_next_pid;
@@ -1749,6 +1758,7 @@ int process_run_ready_slice(void) {
 
     g_current_process = process;
     process->state = PROCESS_STATE_RUNNING;
+    process->running_on_cpu = (int32_t)this_cpu()->index;   /* claim for this CPU */
     ++process->switch_count;
     paging_load_cr3(process->cr3);   /* activate this process's private address space */
 
@@ -1770,6 +1780,7 @@ int process_run_ready_slice(void) {
         result = process_run_slice(&process->context);
     }
     fpu_save(process->fpu_state);             /* save whatever it left behind */
+    process->running_on_cpu = -1;             /* released by this CPU */
     /* Count scheduling quanta for the task manager's CPU metric.
      * The timer-interrupt handler already incremented runtime_ticks when it
      * preempted this process (and left a trace in preempt_count).  For slices

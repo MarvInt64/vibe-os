@@ -137,6 +137,10 @@ struct process {
     /* Effective user/group ID. 0 = root (all access). */
     uint32_t uid;
     uint32_t gid;
+    /* CPU index currently executing this process, or -1 if not running. The
+     * scheduler on each CPU sets this before dispatching and clears it after,
+     * so the picker never hands the same process to two cores at once. */
+    int32_t running_on_cpu;
     /* x87+SSE state, saved/restored across context switches (FXSAVE/FXRSTOR).
      * 16-byte aligned as the instructions require. */
     uint8_t fpu_state[512] __attribute__((aligned(16)));

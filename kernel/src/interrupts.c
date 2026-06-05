@@ -133,6 +133,11 @@ static struct idt_entry g_idt[256] __attribute__((aligned(16)));
 static struct tss64 g_tss;
 static uint8_t g_interrupt_stack[16384] __attribute__((aligned(16)));
 
+/* The TSS each CPU loaded, indexed by cpu index, so interrupt_set_kernel_stack
+ * updates the rsp0 of the CPU it runs on. Slot 0 (the boot CPU) is the global
+ * g_tss set up in interrupts_init; APs point at their own g_cpu_tss entry. */
+static struct tss64 *g_cpu_active_tss[CPU_MAX];
+
 /* The boot CPU's GDT/IDT descriptors, kept so application processors can load
  * the same tables when they come online (see interrupts_ap_load_tables). */
 static struct descriptor_ptr g_gdt_desc;
@@ -221,6 +226,8 @@ void interrupts_init(void) {
     g_idt_desc.limit = (uint16_t)(sizeof(g_idt) - 1u);
     g_idt_desc.base = (uint64_t)(uintptr_t)g_idt;
 
+    g_cpu_active_tss[0] = &g_tss;   /* boot CPU uses the global TSS */
+
     interrupt_load_runtime_tables(&g_gdt_desc, &g_idt_desc, TSS_SELECTOR);
     timer_init();
 
@@ -258,6 +265,7 @@ void interrupts_setup_ap_cpu(unsigned index) {
     tss->rsp0 = stack ? (uintptr_t)(stack + AP_RSP0_STACK_SIZE) : 0;
     tss->iomap_base = (uint16_t)sizeof(*tss);
     set_tss_descriptor(gdt, tss);
+    g_cpu_active_tss[index] = tss;   /* so interrupt_set_kernel_stack finds it */
 
     struct descriptor_ptr gdt_desc;
     gdt_desc.limit = (uint16_t)(sizeof(g_cpu_gdt[index]) - 1u);
@@ -274,5 +282,10 @@ void interrupts_setup_ap_cpu(unsigned index) {
  * kernel stack. This is what lets a process be suspended in the middle of a
  * blocking syscall without another process clobbering its kernel frames. */
 void interrupt_set_kernel_stack(uintptr_t rsp0_top) {
-    g_tss.rsp0 = rsp0_top;
+    /* Update the rsp0 of the CPU we are running on, so a process dispatched on
+     * an AP takes its traps on the AP's TSS, not the boot CPU's. */
+    unsigned idx = this_cpu()->index;
+    struct tss64 *tss = (idx < CPU_MAX && g_cpu_active_tss[idx])
+                        ? g_cpu_active_tss[idx] : &g_tss;
+    tss->rsp0 = rsp0_top;
 }
