@@ -134,10 +134,8 @@ static void smp_report(void) {
 }
 
 void smp_boot_aps(void) {
-    /* Register the boot CPU as cpu 0 and point its GS base at its per-CPU
-     * struct, so this_cpu() works on the BSP too and APs claim slots 1, 2, ... */
-    cpu_register(apic_is_active() ? lapic_id() : 0);
-
+    /* The boot CPU was already registered as cpu 0 in kernel_main (its GS base
+     * must be set before the scheduler runs); APs claim slots 1, 2, ... here. */
     if (!apic_is_active()) {
         serial_write("SMP: APIC inactive, not starting APs\n");
         return;

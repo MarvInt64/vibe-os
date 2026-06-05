@@ -58,9 +58,16 @@ uint64_t g_kernel_resume_result;
 extern uint64_t g_fault_regs[FREG_COUNT];
 
 static struct process g_processes[PROCESS_MAX_COUNT];
-static struct process *g_current_process;
 static uint32_t g_next_pid;
-static uint32_t g_scheduler_cursor;
+
+/* The "current process" and round-robin cursor are now per-CPU (struct cpu),
+ * reached through this_cpu(). These macros keep the existing call sites
+ * unchanged: on the boot CPU they resolve to cpu 0's fields, i.e. identical
+ * behaviour to the former globals, while leaving room for each AP to schedule
+ * independently. (The kernel resume slot above stays global for now because
+ * only the boot CPU runs the scheduler; it becomes per-CPU with AP dispatch.) */
+#define g_current_process  (this_cpu()->current)
+#define g_scheduler_cursor (this_cpu()->sched_cursor)
 static uint8_t g_window_manager_requested;
 uint32_t g_desktop_uid = 0;  /* uid to assign to desktop-spawned apps */
 #define PROCESS_IMAGE_ALLOC_QUARANTINE_CAP 64u

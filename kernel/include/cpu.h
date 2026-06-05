@@ -38,12 +38,20 @@
 
 #define CPU_MAX 32
 
+struct process;   /* forward declaration: the scheduler's running process */
+
 struct cpu {
     struct cpu   *self;     /* points at this struct; lives at gs:0  */
     unsigned      index;    /* 0 = boot CPU, then 1, 2, ...          */
     unsigned      apic_id;  /* Local APIC ID                         */
     volatile unsigned long ticks;   /* Local APIC timer ticks on this CPU    */
     volatile unsigned long allocs;  /* successful kmalloc/kfree cycles done  */
+
+    /* Per-CPU scheduler state. Currently only the boot CPU schedules, so on
+     * one CPU these behave exactly like the old globals; giving every CPU its
+     * own copy is what will let the APs run their own processes. */
+    struct process *current;       /* process currently running on this CPU */
+    uint32_t        sched_cursor;  /* round-robin position for this CPU      */
 };
 
 /* Claim the next per-CPU slot for the calling CPU, record its APIC id, and

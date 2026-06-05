@@ -31,6 +31,8 @@
 #include "input.h"
 #include "interrupts.h"
 #include "smp.h"
+#include "cpu.h"
+#include "apic.h"
 #include "journal.h"
 #include "multiboot2.h"
 #include "net.h"
@@ -439,6 +441,12 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
 
   vga_text_clear(0x1fu);
   interrupts_init();
+
+  /* Register the boot CPU as cpu 0 and program its GS base before anything
+   * uses this_cpu() — the scheduler's per-CPU current/cursor fields are reached
+   * through it from process_init() onward. */
+  cpu_register(apic_is_active() ? lapic_id() : 0);
+
   settings_init();
   journal_init();
   journal_log(JOURNAL_INFO, 0, "VibeOS kernel boot");
