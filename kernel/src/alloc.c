@@ -26,7 +26,14 @@
 #include "string.h"
 #include "paging.h"
 #include "tty.h"
+#include "spinlock.h"
 #include <stddef.h>
+
+/* The kernel heap is shared by every CPU, so the free-list walk in kmalloc /
+ * kfree must be serialised. irqsave is used so a heap access from an interrupt
+ * handler on a CPU already holding the lock in process context cannot deadlock
+ * against itself. */
+static spinlock_t g_heap_lock = SPINLOCK_INIT;
 
 /*
  * Simple header for each allocated block
@@ -85,7 +92,7 @@ void kmalloc_init(uintptr_t heap_start, size_t heap_size) {
  * @param size: Number of bytes to allocate
  * @return Pointer to allocated memory or NULL on failure
  */
-void *kmalloc(size_t size) {
+static void *kmalloc_locked(size_t size) {
     alloc_header_t *curr;
 
     /* Align size to 8 bytes for better performance */
@@ -134,7 +141,7 @@ void *kmalloc(size_t size) {
  * Mark block as free and coalesce with adjacent free blocks
  * @param ptr: Pointer to memory to free
  */
-void kfree(void *ptr) {
+static void kfree_locked(void *ptr) {
     alloc_header_t *block;
     alloc_header_t *curr;
 
@@ -170,6 +177,23 @@ void kfree(void *ptr) {
     }
 }
 
+/* ---- public, SMP-safe entry points -------------------------------------- *
+ * Thin wrappers that take the heap lock around the (unchanged) allocator core,
+ * so any CPU may allocate or free concurrently. */
+
+void *kmalloc(size_t size) {
+    unsigned long flags = spin_lock_irqsave(&g_heap_lock);
+    void *p = kmalloc_locked(size);
+    spin_unlock_irqrestore(&g_heap_lock, flags);
+    return p;
+}
+
+void kfree(void *ptr) {
+    unsigned long flags = spin_lock_irqsave(&g_heap_lock);
+    kfree_locked(ptr);
+    spin_unlock_irqrestore(&g_heap_lock, flags);
+}
+
 /*
  * Get total free memory in heap
  * @return Number of free bytes
@@ -177,6 +201,7 @@ void kfree(void *ptr) {
 size_t kmalloc_get_free(void) {
     alloc_header_t *curr;
     size_t free_bytes = 0;
+    unsigned long flags = spin_lock_irqsave(&g_heap_lock);
 
     curr = g_heap_start;
     while (curr != NULL) {
@@ -189,6 +214,7 @@ size_t kmalloc_get_free(void) {
         curr = curr->next;
     }
 
+    spin_unlock_irqrestore(&g_heap_lock, flags);
     return free_bytes;
 }
 

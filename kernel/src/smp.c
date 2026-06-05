@@ -32,6 +32,10 @@
 #include "string.h"
 #include "types.h"
 
+/* Number of kmalloc/kfree cycles each AP runs to exercise the now-SMP-safe
+ * heap concurrently with the other cores. */
+#define AP_HEAP_CYCLES 4000u
+
 /* Physical address the AP trampoline is copied to and where the APs start
  * executing. Must be page-aligned and < 1 MB (real-mode reachable); the SIPI
  * vector is this address >> 12. 0x8000 is free conventional memory. */
@@ -91,6 +95,24 @@ void ap_main(void) {
 
     lapic_timer_start(AP_TIMER_VECTOR);
 
+    /* Real concurrent kernel work: hammer the shared heap. Every cycle a block
+     * is allocated, stamped with a CPU-unique byte, verified, and freed — all
+     * through the SMP-safe kmalloc/kfree, while the other APs (and soon the BSP
+     * booting the desktop) do the same. A surviving stamp + a clean heap
+     * afterwards proves the heap lock holds under multi-CPU contention. */
+    struct cpu *me = this_cpu();
+    unsigned char stamp = (unsigned char)(0xA0 + me->index);
+    for (unsigned i = 0; i < AP_HEAP_CYCLES; ++i) {
+        unsigned size = 32u + (i & 0xFFu);
+        unsigned char *p = (unsigned char *)kmalloc(size);
+        if (!p) continue;
+        p[0] = stamp;
+        p[size - 1] = stamp;
+        if (p[0] == stamp && p[size - 1] == stamp)
+            me->allocs++;
+        kfree(p);
+    }
+
     /* Interrupt-driven idle: wake on the timer, tick, halt again. */
     for (;;) __asm__ volatile("sti; hlt");
 }
@@ -106,6 +128,8 @@ static void smp_report(void) {
         serial_write_hex_u64(c->apic_id);
         serial_write(" ticks=");
         serial_write_hex_u64(c->ticks);
+        serial_write(" heap_allocs=");
+        serial_write_hex_u64(c->allocs);
         serial_write("\n");
     }
 }

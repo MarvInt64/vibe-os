@@ -53,6 +53,7 @@ unsigned cpu_register(unsigned apic_id) {
     c->index = idx;
     c->apic_id = apic_id;
     c->ticks = 0;
+    c->allocs = 0;
 
     /* Point this CPU's GS base at its struct so this_cpu() resolves via gs:0. */
     write_gs_base((uint64_t)(uintptr_t)c);
