@@ -21,6 +21,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <sys/syscall.h>
+#include <sys/ioctl.h>
 
 /* Fixed canvas stride (matches vexui's VUI_MAX_W) so the backing buffer's row
  * pitch never depends on the live window width — the same trick the browser
@@ -65,6 +66,7 @@ private:
 
     bool dirty_ = true;
     int  blink_counter_ = 0;
+    int  raw_ticks_ = 0;      /* poll raw_mode every 8 ticks */
 };
 
 Terminal *Terminal::instance = nullptr;
@@ -113,14 +115,44 @@ void Terminal::send_line() {
 void Terminal::on_key(unsigned int key) {
     static int escape_state = 0; // 0=none, 1=ESC, 2=ESC+[
 
-    if (key == 0x03) {                 /* Ctrl+C */
-        if (master_fd_ >= 0) vos_pty_interrupt(master_fd_);
-        line_len_ = 0;
-        echo('\n');
-        if (dirty_) repaint();
-        return;
+    /* If the PTY is in raw mode (e.g. nano running), forward every
+     * keystroke directly to the process without line buffering. */
+    if (master_fd_ >= 0) {
+        uint32_t raw = 0;
+        ioctl(master_fd_, TTY_IOCTL_GET_RAW, &raw);
+        if (raw) {
+            /* Build the byte(s) to send */
+            char buf[8]; int n = 0;
+
+            if (key == 0x03) {           /* Ctrl+C → interrupt */
+                vos_pty_interrupt(master_fd_);
+                return;
+            }
+            if (key == '\n' || key == '\r') {
+                buf[n++] = '\r';
+            } else if (key == 0x08 || key == 0x7f) {
+                buf[n++] = 0x7f;          /* DEL / Backspace */
+            } else if (key == 0x1b) {
+                buf[n++] = 0x1b;          /* ESC */
+            } else if (key == 0x09) {
+                buf[n++] = '\t';
+            } else if (key >= 0x20 && key < 0x7f) {
+                buf[n++] = (char)key;
+            } else {
+                /* Arrow keys → ANSI escape sequences */
+                switch (key) {
+                    case 0x106: /* Up    */ buf[0]=0x1b; buf[1]='['; buf[2]='A'; n=3; break;
+                    case 0x107: /* Down  */ buf[0]=0x1b; buf[1]='['; buf[2]='B'; n=3; break;
+                    case 0x108: /* Right */ buf[0]=0x1b; buf[1]='['; buf[2]='C'; n=3; break;
+                    case 0x109: /* Left  */ buf[0]=0x1b; buf[1]='['; buf[2]='D'; n=3; break;
+                    default: return; /* unknown key, skip */
+                }
+            }
+            if (n > 0) write(master_fd_, buf, (size_t)n);
+            return;
+        }
     }
-    
+
     // Simple state machine for ANSI escape codes (ESC + [ + code)
     if (escape_state == 0 && key == 0x1b) {
         escape_state = 1;

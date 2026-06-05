@@ -18,7 +18,9 @@ enum tty_ioctl_request {
  /* Raw input mode: deliver keyboard bytes immediately (no line buffering)
   * and suppress local echo, so a line editor in userspace can handle
   * editing/history itself.  arg != 0 enables, arg == 0 restores cooked mode. */
- TTY_IOCTL_SET_RAW = 2
+ TTY_IOCTL_SET_RAW = 2,
+ /* Query raw mode: places current raw_input_mode (0 or 1) at *arg. */
+ TTY_IOCTL_GET_RAW = 3
 };
 
 /* Character attributes */

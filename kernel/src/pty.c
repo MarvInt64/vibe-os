@@ -43,6 +43,7 @@ struct pty {
     struct pty_ring in;    /* master -> slave (process stdin)  */
     struct pty_ring out;   /* slave  -> master (process stdout) */
     uint8_t used;
+    uint8_t raw_mode;      /* 1 = raw (forward all keys), 0 = cooked */
 };
 
 static struct pty g_ptys[PTY_POOL_SIZE];
@@ -149,14 +150,35 @@ static ssize_t pty_slave_write(void *object, const void *buffer, size_t count) {
     return (ssize_t)ring_write(&pty->out, (const unsigned char *)buffer, count);
 }
 
+/* pty_ioctl — handle TTY ioctls on both master and slave.
+ * SET_RAW toggles raw input mode on the PTY so the terminal emulator
+ * can read the flag and forward keystrokes directly. */
+#include "tty.h"
+static int pty_ioctl(void *object, uint32_t request, uintptr_t arg) {
+    struct pty *pty = (struct pty *)object;
+    if (pty == 0) return -SYSCALL_EINVAL;
+    switch (request) {
+        case TTY_IOCTL_SET_RAW:
+            pty->raw_mode = (arg != 0) ? 1 : 0;
+            return 0;
+        case TTY_IOCTL_GET_RAW:
+            if (arg != 0) { *(uint32_t *)arg = pty->raw_mode ? 1 : 0; return 0; }
+            return -SYSCALL_EINVAL;
+        case TTY_IOCTL_CLEAR:
+            return 0;
+        default:
+            return -SYSCALL_ENOSYS;
+    }
+}
+
 const struct fd_ops PTY_MASTER_FD_OPS = {
     pty_master_read,
     pty_master_write,
-    0
+    pty_ioctl
 };
 
 const struct fd_ops PTY_SLAVE_FD_OPS = {
     pty_slave_read,
     pty_slave_write,
-    0
+    pty_ioctl
 };

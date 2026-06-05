@@ -30,5 +30,9 @@ extern int errno;
 #define EROFS       30
 #define ENAMETOOLONG 36
 #define ENOSYS      38
+#define EINTR        4  /* Interrupted system call */
+#define ENFILE      23
+#define ERANGE      34  /* Result too large */
+#define EDOM        33  /* Math argument out of domain */
 
 #endif

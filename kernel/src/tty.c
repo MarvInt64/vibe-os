@@ -579,6 +579,13 @@ static int tty_fd_ioctl(void *object, uint32_t request, uintptr_t arg) {
  tty->input_length = 0;
  tty->input[0] = '\0';
  return 0;
+ case TTY_IOCTL_GET_RAW:
+ /* Write 0 (cooked) or 1 (raw) to the user-provided uint32_t* */
+ if (arg != 0) {
+     *(uint32_t *)arg = tty->raw_input_mode ? 1 : 0;
+     return 0;
+ }
+ return -SYSCALL_EINVAL;
  default:
  return -SYSCALL_ENOSYS;
  }

@@ -25,6 +25,7 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 /* One-char-at-a-time output sink so snprintf and the fd printers share the
  * same formatter. */
@@ -523,4 +524,59 @@ int sscanf(const char *str, const char *fmt, ...) {
     }
     __builtin_va_end(ap);
     return count;
+}
+
+/* ---- sprintf: output to string (unbounded) ---------------------------- */
+int sprintf(char *buf, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsnprintf(buf, (size_t)-1, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
+/* ---- getline: read a line into malloc'd buffer ------------------------ */
+#include <stdlib.h>
+#include <errno.h>
+ssize_t getline(char **lineptr, size_t *n, FILE *stream) {
+    if (!lineptr || !n || !stream) { errno = EINVAL; return -1; }
+    if (!*lineptr || *n == 0) {
+        *n = 128;
+        *lineptr = (char *)malloc(*n);
+        if (!*lineptr) return -1;
+    }
+    size_t pos = 0;
+    int c;
+    while ((c = fgetc(stream)) != EOF) {
+        if (pos + 1 >= *n) {
+            size_t newsz = *n * 2;
+            char *newbuf = (char *)realloc(*lineptr, newsz);
+            if (!newbuf) return -1;
+            *lineptr = newbuf;
+            *n = newsz;
+        }
+        (*lineptr)[pos++] = (char)c;
+        if (c == '\n') break;
+    }
+    if (pos == 0) return -1;
+    (*lineptr)[pos] = '\0';
+    return (ssize_t)pos;
+}
+
+/* ---- fdopen: wrap a file descriptor in a FILE* ----------------------- */
+FILE *fdopen(int fd, const char *mode) {
+    FILE *fp = (FILE *)malloc(sizeof(FILE));
+    if (!fp) return (FILE *)0;
+    fp->fd = fd; fp->flags = 0; fp->bufmode = 0;
+    fp->bufpos = fp->buflen = 0; fp->own_buf = 0;
+    fp->mem = (const unsigned char *)0; fp->mem_len = fp->mem_pos = 0;
+    fp->buf = (unsigned char *)0; fp->bufcap = 0;
+    while (*mode) {
+        switch (*mode++) {
+            case 'r': fp->flags |= 0x01; break;  /* _F_READ  */
+            case 'w': fp->flags |= 0x02; break;  /* _F_WRITE */
+            case 'a': fp->flags |= 0x06; break;  /* _F_WRITE|_F_APPEND */
+        }
+    }
+    return fp;
 }

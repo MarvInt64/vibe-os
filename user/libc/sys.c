@@ -472,3 +472,16 @@ struct tm *localtime_r(const time_t *timep, struct tm *r) {
     return r;
 }
 
+#include <sys/ioctl.h>
+#include <stdarg.h>
+int ioctl(int fd, unsigned long request, ...) {
+    va_list ap;
+    va_start(ap, request);
+    uintptr_t arg = va_arg(ap, uintptr_t);
+    va_end(ap);
+    return (int)__sc3(SYS_IOCTL, (uint64_t)fd, (uint64_t)request, (uint64_t)arg);
+}
+
+/* dup2 — duplicate file descriptor (stub) */
+int dup2(int oldfd, int newfd) { (void)oldfd; return newfd; }
+

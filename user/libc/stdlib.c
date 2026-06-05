@@ -25,6 +25,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 #include "umalloc.h"
 
 void *malloc(size_t size) { return umalloc((umsize_t)size); }
@@ -97,4 +98,53 @@ void srand(unsigned int seed) {
 size_t malloc_usable_size(void *ptr) {
     return (size_t)umalloc_usable_size(ptr);
 }
+
+/* ---- getenv: environment variable lookup (stub) ----------------------- */
+char *getenv(const char *name) {
+    (void)name;
+    return (char *)0;  /* no environment variables in VibeOS */
+}
+
+/* ---- qsort: standard quicksort ---------------------------------------- */
+static void qs_swap(char *a, char *b, size_t size) {
+    size_t i;
+    for (i = 0; i < size; ++i) {
+        char t = a[i]; a[i] = b[i]; b[i] = t;
+    }
+}
+
+static char *qs_partition(char *lo, char *hi, size_t size,
+                          int (*cmp)(const void *, const void *)) {
+    char *pivot = lo;
+    char *i = lo + size;
+    char *j;
+    for (j = lo + size; j <= hi; j += size) {
+        if (cmp(j, pivot) < 0) {
+            qs_swap(i, j, size);
+            i += size;
+        }
+    }
+    qs_swap(lo, i - size, size);
+    return i - size;
+}
+
+static void qs_rec(char *lo, char *hi, size_t size,
+                   int (*cmp)(const void *, const void *)) {
+    if (lo >= hi) return;
+    char *p = qs_partition(lo, hi, size, cmp);
+    qs_rec(lo, p - size, size, cmp);
+    qs_rec(p + size, hi, size, cmp);
+}
+
+void qsort(void *base, size_t nmemb, size_t size,
+           int (*compar)(const void *, const void *)) {
+    if (nmemb <= 1 || size == 0) return;
+    qs_rec((char *)base, (char *)base + (nmemb - 1) * size, size, compar);
+}
+
+/* ---- mkstemp / mkstemps / putenv / futimens stubs ------------------- */
+int mkstemp(char *templ) { (void)templ; return -1; }
+int mkstemps(char *templ, int suffixlen) { (void)templ; (void)suffixlen; return -1; }
+int putenv(char *string) { (void)string; return 0; }
+int futimens(int fd, const struct timespec *ts) { (void)fd; (void)ts; return 0; }
 

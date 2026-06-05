@@ -478,3 +478,30 @@ $(KERNEL_OBJECTS): kernel/include/version.h
 
 kernel/include/version.h:
 	@$(MAKE) bump-version
+
+# ---- nano (GNU nano editor, VibeOS port) --------------------------------
+NANO_SRCS := $(wildcard third_party/nano/src/*.c)
+NANO_OBJS := $(patsubst third_party/nano/src/%.c,build/user/nano/%.o,$(NANO_SRCS))
+NANO_CFLAGS := $(UCFLAGS) $(LIBC_INC) \
+  -include user/nano/nano_config.h -UHAVE_CONFIG_H -DNDEBUG \
+  -Iuser -Iuser/nano -Ithird_party/nano/src \
+  -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter \
+  -Wno-missing-field-initializers -Wno-missing-braces
+
+nano: $(DISK_IMG) $(LIBC_A)
+	@mkdir -p build/user/nano
+	$(foreach src,$(NANO_SRCS),$(UCC) $(NANO_CFLAGS) \
+		-c $(src) -o $(patsubst third_party/nano/src/%.c,build/user/nano/%.o,$(src)) &&) true
+	$(UCC) $(UCFLAGS) -Iuser/libc/include -Iuser/nano -Iuser \
+		-c user/nano/vibeos_ncurses.c -o build/user/nano/vibeos_ncurses.o
+	$(UCC) $(UCFLAGS) -Iuser/libc/include -Iuser/nano -Iuser \
+		-c user/nano/getopt_stub.c -o build/user/nano/getopt_stub.o
+	$(UCC) $(NANO_CFLAGS) -Iuser/nano \
+		-c user/nano/vibeos_nano_main.c -o build/user/nano/main.o
+		$(LD) -nostdlib -static -T user/linker.ld -o build/user/nano.elf \
+			$(LIBC_CRT0) build/user/nano/main.o $(NANO_OBJS) \
+			build/user/nano/vibeos_ncurses.o build/user/nano/getopt_stub.o \
+			$(LIBC_A)
+	$(USTRIP) --strip-all build/user/nano.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/nano.elf /bin/nano
+	@echo "nano installed to $(DISK_IMG)."
