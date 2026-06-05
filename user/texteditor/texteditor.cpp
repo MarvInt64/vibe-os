@@ -464,13 +464,11 @@ int TextEditor::visible_cols()  const { int w = win_w_ - ED_GUTTER_WIDTH; return
 /* --------------------------------------------------------------------------- */
 
 bool TextEditor::load_from_path(const char *path) {
-    int fd = (int)__sc1(SYS_OPEN, (uint64_t)(size_t)path);
-    if (fd < 0) return false;
+    FILE *f = fopen(path, "r");
+    if (!f) return false;
     char buf[4096];
-    int total = 0;
-    int n;
-    while ((n = read(fd, buf, sizeof(buf))) > 0) total += n;
-    close(fd);
+    int total = (int)fread(buf, 1, sizeof(buf), f);
+    fclose(f);
     num_lines_ = 0;
     int line_start = 0;
     for (int i = 0; i < total; ++i) {
@@ -501,15 +499,17 @@ bool TextEditor::load_from_path(const char *path) {
 }
 
 bool TextEditor::write_to_path(const char *path) {
-    int fd = (int)__sc1(SYS_CREAT, (uint64_t)(size_t)path);
-    if (fd < 0) return false;
+    /* "w" truncates (via unlink+create), so saving a shorter file no longer
+     * leaves a stale tail from the previous, longer version. */
+    FILE *f = fopen(path, "w");
+    if (!f) return false;
     bool ok = true;
     for (int i = 0; i < num_lines_; ++i) {
         const Line &ln = line_buffer_[i];
-        if (write(fd, ln.text, ln.len) != ln.len) { ok = false; break; }
-        if (i < num_lines_ - 1) { if (write(fd, "\n", 1) != 1) { ok = false; break; } }
+        if (fwrite(ln.text, 1, (size_t)ln.len, f) != (size_t)ln.len) { ok = false; break; }
+        if (i < num_lines_ - 1 && fputc('\n', f) == EOF) { ok = false; break; }
     }
-    close(fd);
+    if (fclose(f) != 0) ok = false;
     if (ok) modified_ = false;
     return ok;
 }

@@ -204,9 +204,13 @@ void FileBrowser::dialog_cancel() {
 }
 
 void FileBrowser::dialog_finish(const char *path) {
-    // SYS_WRITE_FILE truncates/creates and writes the whole buffer atomically.
-    __sc3(SYS_WRITE_FILE, (uint64_t)(size_t)result_file_,
-          (uint64_t)(size_t)path, (uint64_t)strlen(path));
+    // Write the chosen path to the result file the caller hands us. "w"
+    // truncates any previous content so a shorter selection can't leave a tail.
+    FILE *f = fopen(result_file_, "w");
+    if (f) {
+        fwrite(path, 1, strlen(path), f);
+        fclose(f);
+    }
     exit(0);
 }
 

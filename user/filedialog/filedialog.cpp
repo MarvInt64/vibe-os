@@ -246,10 +246,13 @@ void FileDialog::on_cancel() {
 }
 
 void FileDialog::finish(const char *result_path) {
-    /* Write result to the temporary file passed via arg. */
-    /* Using SYS_WRITE_FILE (atomic write-all) for simplicity */
-    __sc3(SYS_WRITE_FILE, (uint64_t)(size_t)result_file_, (uint64_t)(size_t)result_path, (uint64_t)strlen(result_path));
-    
+    /* Write the chosen path to the temporary result file passed via arg.
+     * "w" truncates, so a shorter path can't leave a stale tail behind. */
+    FILE *f = fopen(result_file_, "w");
+    if (f) {
+        fwrite(result_path, 1, strlen(result_path), f);
+        fclose(f);
+    }
     exit(0);
 }
 

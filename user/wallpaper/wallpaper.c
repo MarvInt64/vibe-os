@@ -116,44 +116,32 @@ static int stat_path(const char *path, unsigned long *kind, unsigned long *size)
  * from SYS_STAT, so we never need to grow the buffer mid-read. */
 static int read_all_exact(const char *path, size_t cap, unsigned char **out_buf, int *out_len) {
     char msg[160];
-    int fd;
-    int total = 0;
-    int n;
+    FILE *f;
+    size_t total;
     unsigned char *buf;
 
     snprintf(msg, sizeof(msg), "wallpaper: read_all open %s cap=%lu", path, (unsigned long)cap);
     vos_log(VOS_LOG_APP, msg);
-    fd = (int)__sc1(SYS_OPEN, (uint64_t)(size_t)path);
-    snprintf(msg, sizeof(msg), "wallpaper: read_all open rc=%d", fd);
-    vos_log(VOS_LOG_APP, msg);
-    if (fd < 0) return -1;
-    vos_log(VOS_LOG_APP, "wallpaper: read_all before malloc");
-    buf = (unsigned char *)malloc((size_t)cap);
+    f = fopen(path, "r");
+    if (!f) { vos_log(VOS_LOG_APP, "wallpaper: read_all open failed"); return -1; }
+
+    buf = (unsigned char *)malloc(cap);
     if (!buf) {
         vos_log(VOS_LOG_APP, "wallpaper: read_all malloc failed");
-        __sc1(SYS_CLOSE, (uint64_t)fd);
+        fclose(f);
         return -1;
     }
-    vos_log(VOS_LOG_APP, "wallpaper: read_all malloc ok");
 
-    while ((size_t)total < cap) {
-        size_t remain = cap - (size_t)total;
-        snprintf(msg, sizeof(msg), "wallpaper: read_all before read off=%d cap=%lu", total, (unsigned long)cap);
-        vos_log(VOS_LOG_APP, msg);
-        n = (int)__sc3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)(buf + total),
-                       (uint64_t)remain);
-        snprintf(msg, sizeof(msg), "wallpaper: read_all read rc=%d", n);
-        vos_log(VOS_LOG_APP, msg);
-        if (n <= 0) break;
-        total += n;
-    }
-    vos_log(VOS_LOG_APP, "wallpaper: read_all before close");
-    __sc1(SYS_CLOSE, (uint64_t)fd);
-    vos_log(VOS_LOG_APP, "wallpaper: read_all after close");
+    /* fread loops internally over the buffered stream, so one call fills the
+     * whole buffer (or stops at end-of-file). */
+    total = fread(buf, 1, cap, f);
+    fclose(f);
+    snprintf(msg, sizeof(msg), "wallpaper: read_all read %lu bytes", (unsigned long)total);
+    vos_log(VOS_LOG_APP, msg);
 
-    if (total <= 0) { free(buf); return -1; }
+    if (total == 0) { free(buf); return -1; }
     *out_buf = buf;
-    *out_len = total;
+    *out_len = (int)total;
     return 0;
 }
 
