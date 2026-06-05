@@ -26,6 +26,13 @@ struct tty;
 #define PROCESS_USER_IMAGE_SIZE (PROCESS_USER_REGION_BYTES - PROCESS_USER_STACK_SIZE)
 #define PROCESS_USER_STACK_TOP_OFFSET PROCESS_USER_REGION_BYTES
 #define PROCESS_USER_PAGE_TABLE_COUNT (PROCESS_USER_REGION_BYTES / 0x200000u)
+
+/* Virtual address region reserved for direct-mapped window framebuffers.
+ * Lives just below the user stack so it never collides with sbrk().
+ * 4 MB is enough for ~6 full-HD windows. */
+#define PROCESS_FB_REGION_BASE   (PROCESS_USER_BASE + PROCESS_USER_REGION_BYTES - PROCESS_USER_STACK_SIZE - 0x400000u)
+#define PROCESS_FB_REGION_BYTES  0x400000u
+
 #define PROCESS_VFS_HANDLE_CAPACITY 8
 
 enum process_state {
@@ -102,6 +109,8 @@ struct process {
     uintptr_t heap_break;
     uintptr_t fb_vaddr;       /* mapped window framebuffer, 0 if not bound */
     uint32_t  fb_win_id;      /* window id of the bound framebuffer      */
+    uintptr_t fb_next_vaddr;  /* next free address in the FB mapping region */
+
 
     /* Physical backing for the demand-grown heap: each SYS_SBRK growth kmallocs
      * a chunk and records it here so it can be freed when the process exits.
