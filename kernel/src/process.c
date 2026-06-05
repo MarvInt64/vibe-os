@@ -2255,7 +2255,7 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             snap.index   = c->index;
             snap.apic_id = c->apic_id;
             snap.ticks   = c->ticks;
-            snap.allocs  = c->allocs;
+            snap.busy    = c->busy_ticks;
             /* Write the snapshot into the user buffer (kernel can access
              * user memory directly while the process's page tables are active). */
             memcpy(buf + i, &snap, sizeof(snap));
@@ -2941,6 +2941,7 @@ int timer_handle_interrupt(struct interrupt_frame *frame) {
     struct process *process = g_current_process;
 
     timer_tick();
+    this_cpu()->ticks++;          /* per-CPU total ticks (for utilisation) */
     process_wake_ready(timer_tick_count());
     timer_acknowledge_irq();
 
@@ -2952,6 +2953,7 @@ int timer_handle_interrupt(struct interrupt_frame *frame) {
         return 0;
     }
 
+    this_cpu()->busy_ticks++;     /* this tick interrupted a running process */
     ++process->runtime_ticks;
     ++process->preempt_count;
     process->context = *frame;
@@ -2978,6 +2980,7 @@ int process_ap_timer(struct interrupt_frame *frame) {
         return 0;   /* interrupted kernel/idle, nothing to preempt */
     }
 
+    this_cpu()->busy_ticks++;   /* this tick interrupted a running process */
     ++process->runtime_ticks;
     ++process->preempt_count;
     process->context = *frame;

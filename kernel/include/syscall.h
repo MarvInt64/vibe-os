@@ -145,8 +145,8 @@ struct system_info_snapshot {
 struct cpu_info_snapshot {
     uint32_t index;      /* 0 = BSP, 1..N = APs                */
     uint32_t apic_id;    /* Local APIC ID                      */
-    uint64_t ticks;      /* local timer tick count             */
-    uint64_t allocs;     /* successful kmalloc/kfree cycles    */
+    uint64_t ticks;      /* total local timer ticks on this CPU  */
+    uint64_t busy;       /* ... that interrupted a user process  */
 };
 
 enum syscall_error {

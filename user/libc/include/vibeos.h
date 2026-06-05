@@ -45,8 +45,8 @@ int vos_system_info(struct vos_system_info *out);
 struct vos_cpu_info {
     uint32_t index;
     uint32_t apic_id;
-    uint64_t ticks;
-    uint64_t allocs;
+    uint64_t ticks;   /* total local timer ticks on this CPU            */
+    uint64_t busy;    /* ... that interrupted a user process (busy time) */
 };
 
 /* Fill `buf` with up to `max` per-CPU snapshots. Returns the number of CPUs

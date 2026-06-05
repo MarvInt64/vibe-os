@@ -155,21 +155,28 @@ void TaskManager::apply_tab_visibility() {
     }
 }
 
-/* Fill the per-core bars. All processes currently run on the boot CPU, so it
- * carries the whole system load; the APs are online but idle until the
- * scheduler runs on them, so they read 0%. */
-void TaskManager::update_perf_panel(unsigned long total_cpu_tenths) {
+/* Fill the per-core utilisation bars. Each core reports its total timer ticks
+ * and how many of those interrupted a running process; the busy fraction since
+ * the last refresh is that core's utilisation, so load shows up on whichever
+ * core(s) the scheduler dispatched work to. */
+void TaskManager::update_perf_panel() {
     struct vos_cpu_info ci[kMaxCpus] = {};
     int n = vos_cpu_info(ci, kMaxCpus);
     if (n < 1) n = 1;
 
     for (int i = 0; i < cpu_count_ && i < n; ++i) {
+        unsigned idx = ci[i].index;
         StringBuilder<32> lbl;
-        lbl.append("CPU").append((int)ci[i].index);
-        lbl.append(ci[i].index == 0 ? "  boot" : "  AP");
+        lbl.append("CPU").append((int)idx);
+        lbl.append(idx == 0 ? "  boot" : "  AP");
         vui_set_text(core_label_[i], lbl.c_str());
 
-        int util = (ci[i].index == 0) ? (int)(total_cpu_tenths / 10) : 0;
+        uint64_t d_ticks = ci[i].ticks - prev_cpu_ticks_[i];
+        uint64_t d_busy  = ci[i].busy  - prev_cpu_busy_[i];
+        prev_cpu_ticks_[i] = ci[i].ticks;
+        prev_cpu_busy_[i]  = ci[i].busy;
+
+        int util = (d_ticks > 0) ? (int)((d_busy * 100u) / d_ticks) : 0;
         if (util > 100) util = 100;
         vui_set_value(core_bar_[i], util);
     }
@@ -305,7 +312,7 @@ void TaskManager::refresh() {
     (void)ready; (void)sleeping; (void)total_mem;
 
     /* Per-core bars on the PERFORMANCE tab. */
-    if (perf) update_perf_panel(total_cpu_tenths);
+    if (perf) update_perf_panel();
 }
 
 void TaskManager::set_status(const char *text, vui_u32 color) {

@@ -60,10 +60,13 @@ struct cpu {
     unsigned long   resume_rsp;     /* parked scheduler kernel stack pointer  */
     unsigned long   resume_result;  /* run-result code handed back to caller  */
 
-    /* Process time-slices dispatched on this CPU (a busy-work measure for the
-     * task manager). Placed after the GS-relative resume fields so adding it
-     * never shifts their fixed offsets. */
-    volatile unsigned long slices;
+    /* Per-CPU utilisation accounting for the task manager. Placed after the
+     * GS-relative resume fields so adding them never shifts the asserted
+     * offsets. `ticks` (above) counts every local timer interrupt on this CPU;
+     * busy_ticks counts those that interrupted a running user process (vs idle
+     * or kernel), so busy/total over an interval is this core's utilisation. */
+    volatile unsigned long slices;       /* process slices dispatched here */
+    volatile unsigned long busy_ticks;   /* timer ticks that hit a process  */
 };
 
 /* Claim the next per-CPU slot for the calling CPU, record its APIC id, and

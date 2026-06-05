@@ -66,6 +66,7 @@ unsigned cpu_register(unsigned apic_id) {
     c->resume_rsp = 0;
     c->resume_result = 0;
     c->slices = 0;
+    c->busy_ticks = 0;
 
     /* Point this CPU's GS base at its struct so this_cpu() resolves via gs:0. */
     write_gs_base((uint64_t)(uintptr_t)c);

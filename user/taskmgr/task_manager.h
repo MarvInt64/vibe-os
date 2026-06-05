@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <stdint.h>
 #include "../vexui.h"
 #include "process_row.h"
 
@@ -86,9 +87,12 @@ private:
      * (Named core_* to avoid clashing with the cpu_label_ metric card above.) */
     vui_widget *core_label_[kMaxCpus] = {};
     vui_widget *core_bar_[kMaxCpus]   = {};
+    /* Previous-refresh tick/busy counts per core, for delta utilisation. */
+    uint64_t prev_cpu_ticks_[kMaxCpus] = {};
+    uint64_t prev_cpu_busy_[kMaxCpus]  = {};
 
     /* Build the per-core widgets and toggle the two tab views. */
     void build_perf_panel();
-    void update_perf_panel(unsigned long total_cpu_tenths);
+    void update_perf_panel();
     void apply_tab_visibility();
 };
