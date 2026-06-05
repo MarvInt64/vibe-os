@@ -62,6 +62,7 @@ static struct process *g_current_process;
 static uint32_t g_next_pid;
 static uint32_t g_scheduler_cursor;
 static uint8_t g_window_manager_requested;
+static uint32_t g_desktop_uid = 0;  /* uid to assign to desktop-spawned apps */
 #define PROCESS_IMAGE_ALLOC_QUARANTINE_CAP 64u
 static void *g_image_alloc_quarantine[PROCESS_IMAGE_ALLOC_QUARANTINE_CAP];
 static uint32_t g_image_alloc_quarantine_count;
@@ -1462,9 +1463,16 @@ static int process_spawn_named_from_parent(struct process *parent, const char *n
                 g_processes[slot].cwd[k] = parent->cwd[k];
             g_processes[slot].cwd[k] = '\0';
         }
-        /* Inherit uid/gid so spawned children run as the same user. */
-        g_processes[slot].uid = parent->uid;
-        g_processes[slot].gid = parent->gid;
+        /* Inherit uid/gid so spawned children run as the same user.
+         * The desktop (pid 0) is a kernel construct; its children should
+         * inherit the uid of whoever started the window manager. */
+        if (parent->pid == 0) {
+            g_processes[slot].uid = g_desktop_uid;
+            g_processes[slot].gid = g_desktop_uid;
+        } else {
+            g_processes[slot].uid = parent->uid;
+            g_processes[slot].gid = parent->gid;
+        }
         return (int)g_processes[slot].pid;
     }
 
@@ -1506,9 +1514,16 @@ static int process_spawn_named_from_parent(struct process *parent, const char *n
                 g_processes[slot].cwd[k] = parent->cwd[k];
             g_processes[slot].cwd[k] = '\0';
         }
-        /* Inherit uid/gid so spawned children run as the same user. */
-        g_processes[slot].uid = parent->uid;
-        g_processes[slot].gid = parent->gid;
+        /* Inherit uid/gid so spawned children run as the same user.
+         * The desktop (pid 0) is a kernel construct; its children should
+         * inherit the uid of whoever started the window manager. */
+        if (parent->pid == 0) {
+            g_processes[slot].uid = g_desktop_uid;
+            g_processes[slot].gid = g_desktop_uid;
+        } else {
+            g_processes[slot].uid = parent->uid;
+            g_processes[slot].gid = parent->gid;
+        }
         return (int)g_processes[slot].pid;
     }
 }
@@ -2107,6 +2122,12 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 
     if (number == SYS_WINDOWMGR_START) {
         g_window_manager_requested = 1;
+        /* Save the calling process's uid so the desktop and all its
+         * spawned apps (dock, topbar, taskmgr, …) inherit it. */
+        g_desktop_uid = process->uid;
+        /* The desktop process (slot 0) itself should reflect this uid. */
+        g_processes[0].uid = process->uid;
+        g_processes[0].gid = process->uid;
         frame->rax = 0;
         return 0;
     }
