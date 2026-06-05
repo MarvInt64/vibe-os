@@ -219,7 +219,10 @@ static constexpr uint32_t COL_BG       = 0x00142840;  // solid window background
 static constexpr uint32_t COL_ACCENT   = 0x4aa8ff;  // azure accent (play / sliders)
 static constexpr uint32_t COL_ACCENT_HI= 0x8ccbff;  // bright accent (handles, glow)
 static constexpr uint32_t COL_TEXT     = 0xeef3fb;  // primary text
-static constexpr uint32_t COL_TEXT_DIM = 0x8b9bb4;  // secondary text / idle icons
+static constexpr uint32_t COL_TEXT_DIM = 0x8b9bb4;  // secondary text (artist/meta)
+static constexpr uint32_t COL_ICON     = 0xc4d0de;  // idle transport icons (bright
+                                                    // enough to read on the dark
+                                                    // panel without a hover wash)
 static constexpr uint32_t COL_WAVE_L   = 0x33d4e6;  // waveform gradient: left  (cyan)
 static constexpr uint32_t COL_WAVE_M   = 0x4a86ff;  // waveform gradient: middle (blue)
 static constexpr uint32_t COL_WAVE_R   = 0xb15cf0;  // waveform gradient: right (violet)
@@ -639,9 +642,9 @@ static void cb_play(vui_widget *)    { g_paused.store(!g_paused.load()); }
 static void cb_prev(vui_widget *)    { g_restart.store(true); g_paused.store(false); }
 static void cb_next(vui_widget *)    { g_restart.store(true); g_paused.store(false); }
 static void cb_shuffle(vui_widget *w){ bool v = !g_shuffle.load(); g_shuffle.store(v);
-                                       vui_set_color(w, v ? COL_ACCENT : COL_TEXT_DIM); }
+                                       vui_set_color(w, v ? COL_ACCENT : COL_ICON); }
 static void cb_repeat(vui_widget *w) { bool v = !g_repeat.load();  g_repeat.store(v);
-                                       vui_set_color(w, v ? COL_ACCENT : COL_TEXT_DIM); }
+                                       vui_set_color(w, v ? COL_ACCENT : COL_ICON); }
 static void cb_seek(vui_widget *w)   { g_seek.store(vui_get_int(w)); }
 static void cb_vol(vui_widget *w)    { int v = vui_get_int(w); g_volume.store(v);
                                        audio_ioctl(AUDIO_IOCTL_SET_VOLUME, (unsigned)v); }
@@ -671,9 +674,9 @@ void AudioPlayer::run(const char *path) {
     meta_lbl_   = vui_label(win_, 142, 96, "MP3");             vui_set_color(meta_lbl_, COL_TEXT_DIM);
 
     vui_widget *heart = vui_image(win_, W - 70, 32, 28);
-    vui_set_icon_svg(heart, SVG_HEART);  vui_set_color(heart, COL_TEXT_DIM);
+    vui_set_icon_svg(heart, SVG_HEART);  vui_set_color(heart, COL_ICON);
     vui_widget *dots  = vui_image(win_, W - 38, 32, 28);
-    vui_set_icon_svg(dots, SVG_DOTS);    vui_set_color(dots, COL_TEXT_DIM);
+    vui_set_icon_svg(dots, SVG_DOTS);    vui_set_color(dots, COL_ICON);
 
     // --- waveform canvas (its own buffer; stride == width) ----------------
     int wx = 44, wy = (int)(H * 0.40f), ww = W - 88, wh = 96;
@@ -693,7 +696,7 @@ void AudioPlayer::run(const char *path) {
     // --- transport row ----------------------------------------------------
     int cy = H - 92;
     shuffle_ic_ = vui_image(win_, W / 2 - 178, cy - 15, 30);
-    vui_set_icon_svg(shuffle_ic_, SVG_SHUFFLE); vui_set_color(shuffle_ic_, COL_TEXT_DIM); vui_on_click(shuffle_ic_, cb_shuffle);
+    vui_set_icon_svg(shuffle_ic_, SVG_SHUFFLE); vui_set_color(shuffle_ic_, COL_ICON); vui_on_click(shuffle_ic_, cb_shuffle);
     vui_widget *prev = vui_image(win_, W / 2 - 98, cy - 15, 30);
     vui_set_icon_svg(prev, SVG_PREV); vui_set_color(prev, COL_TEXT); vui_on_click(prev, cb_prev);
 
@@ -705,11 +708,11 @@ void AudioPlayer::run(const char *path) {
     vui_widget *next = vui_image(win_, W / 2 + 68, cy - 15, 30);
     vui_set_icon_svg(next, SVG_NEXT); vui_set_color(next, COL_TEXT); vui_on_click(next, cb_next);
     repeat_ic_ = vui_image(win_, W / 2 + 148, cy - 15, 30);
-    vui_set_icon_svg(repeat_ic_, SVG_REPEAT); vui_set_color(repeat_ic_, COL_TEXT_DIM); vui_on_click(repeat_ic_, cb_repeat);
+    vui_set_icon_svg(repeat_ic_, SVG_REPEAT); vui_set_color(repeat_ic_, COL_ICON); vui_on_click(repeat_ic_, cb_repeat);
 
     // --- volume -----------------------------------------------------------
     vui_widget *spk = vui_image(win_, W - 152, cy - 15, 30);
-    vui_set_icon_svg(spk, SVG_SPEAKER); vui_set_color(spk, COL_TEXT_DIM);
+    vui_set_icon_svg(spk, SVG_SPEAKER); vui_set_color(spk, COL_ICON);
     volume_ = vui_slider(win_, W - 112, cy - 8, 72, 16, 100);
     vui_set_value(volume_, g_volume.load()); vui_on_click(volume_, cb_vol);
 
