@@ -308,7 +308,7 @@ static void ensure_shell_dock_running(void) {
         return;
     }
 
-    g_shell_dock_pid = (uint32_t)process_spawn_path("/bin/dock", 0, 0);
+    g_shell_dock_pid = (uint32_t)process_spawn_path("/bin/dock", 0, 0, g_desktop_uid, g_desktop_uid);
     g_shell_dock_next_launch_tick = now + timer_frequency_hz();
 }
 
@@ -326,7 +326,7 @@ static void ensure_shell_topbar_running(void) {
         return;
     }
 
-    g_shell_topbar_pid = (uint32_t)process_spawn_path("/bin/topbar", 0, 0);
+    g_shell_topbar_pid = (uint32_t)process_spawn_path("/bin/topbar", 0, 0, g_desktop_uid, g_desktop_uid);
     g_shell_topbar_next_launch_tick = now + timer_frequency_hz();
 }
 
@@ -337,7 +337,7 @@ static void start_desktop_scene_apps(void) {
     if (g_desktop_scene_started || !g_wm_active) {
         return;
     }
-    (void)process_spawn_path("/bin/wallpaper", 0, 0);
+    (void)process_spawn_path("/bin/wallpaper", 0, 0, g_desktop_uid, g_desktop_uid);
     g_desktop_scene_started = 1;
 }
 
@@ -453,7 +453,7 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
   
   serial_write("VIBEOS: Attempting to spawn /bin/sh...\n");
   {
-    int result = process_spawn_path("/bin/sh", &TTY_FD_OPS, &g_cli_tty);
+    int result = process_spawn_path("/bin/sh", &TTY_FD_OPS, &g_cli_tty, 0, 0);
     serial_write("VIBEOS: process_spawn_path returned ");
     serial_write_hex_u64(result);
     serial_write("\n");

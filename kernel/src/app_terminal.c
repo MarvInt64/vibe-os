@@ -94,7 +94,7 @@ static void terminal_draw_ansi_screen(const struct terminal_app_state *terminal,
 #define TERM_ACTION_NEW 1
 
 static void terminal_spawn_shell(struct terminal_app_state *terminal) {
-	int pid = process_spawn_path("/bin/sh", &TTY_FD_OPS, &terminal->tty);
+	int pid = process_spawn_path("/bin/sh", &TTY_FD_OPS, &terminal->tty, g_desktop_uid, g_desktop_uid);
 	serial_write("TERMINAL: spawn_shell pid=");
 	serial_write_hex_u64(pid);
 	serial_write("\n");

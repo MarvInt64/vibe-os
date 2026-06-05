@@ -62,7 +62,7 @@ static struct process *g_current_process;
 static uint32_t g_next_pid;
 static uint32_t g_scheduler_cursor;
 static uint8_t g_window_manager_requested;
-static uint32_t g_desktop_uid = 0;  /* uid to assign to desktop-spawned apps */
+uint32_t g_desktop_uid = 0;  /* uid to assign to desktop-spawned apps */
 #define PROCESS_IMAGE_ALLOC_QUARANTINE_CAP 64u
 static void *g_image_alloc_quarantine[PROCESS_IMAGE_ALLOC_QUARANTINE_CAP];
 static uint32_t g_image_alloc_quarantine_count;
@@ -1251,7 +1251,8 @@ int process_spawn_embedded_elf(const uint8_t *image, size_t image_size, const st
     return (int)g_processes[slot].pid;
 }
 
-int process_spawn_path(const char *path, const struct fd_ops *stdio_ops, void *stdio_object) {
+int process_spawn_path(const char *path, const struct fd_ops *stdio_ops, void *stdio_object,
+                       uint32_t uid, uint32_t gid) {
     const struct vfs_file *file = vfs_lookup(path);
 
     if (file != 0) {
@@ -1262,6 +1263,8 @@ int process_spawn_path(const char *path, const struct fd_ops *stdio_ops, void *s
         if (!process_load_image_slot(&g_processes[slot], (uint32_t)slot, file->data, (size_t)(file->end - file->data), 0, stdio_ops, stdio_object, 0, path)) {
             return -SYSCALL_EINVAL;
         }
+        g_processes[slot].uid = uid;
+        g_processes[slot].gid = gid;
         return (int)g_processes[slot].pid;
     }
 
@@ -1293,9 +1296,13 @@ int process_spawn_path(const char *path, const struct fd_ops *stdio_ops, void *s
                 kfree(buf);
                 return -SYSCALL_ENOMEM;
             }
-            result = process_load_image_slot(&g_processes[slot], (uint32_t)slot, buf, (size_t)n, 0, stdio_ops, stdio_object, 0, path)
-                ? (int)g_processes[slot].pid
-                : -SYSCALL_EINVAL;
+            if (!process_load_image_slot(&g_processes[slot], (uint32_t)slot, buf, (size_t)n, 0, stdio_ops, stdio_object, 0, path)) {
+                kfree(buf);
+                return -SYSCALL_EINVAL;
+            }
+            g_processes[slot].uid = uid;
+            g_processes[slot].gid = gid;
+            result = (int)g_processes[slot].pid;
         }
         kfree(buf);
         return result;
@@ -1469,6 +1476,10 @@ static int process_spawn_named_from_parent(struct process *parent, const char *n
         if (parent->pid == 0) {
             g_processes[slot].uid = g_desktop_uid;
             g_processes[slot].gid = g_desktop_uid;
+            journal_log_hex(JOURNAL_INFO, g_processes[slot].pid,
+                            "  spawn uid=desktop(", g_desktop_uid);
+            journal_log_hex(JOURNAL_INFO, g_processes[slot].pid,
+                            ")", 0);
         } else {
             g_processes[slot].uid = parent->uid;
             g_processes[slot].gid = parent->gid;
@@ -1520,6 +1531,10 @@ static int process_spawn_named_from_parent(struct process *parent, const char *n
         if (parent->pid == 0) {
             g_processes[slot].uid = g_desktop_uid;
             g_processes[slot].gid = g_desktop_uid;
+            journal_log_hex(JOURNAL_INFO, g_processes[slot].pid,
+                            "  spawn uid=desktop(", g_desktop_uid);
+            journal_log_hex(JOURNAL_INFO, g_processes[slot].pid,
+                            ")", 0);
         } else {
             g_processes[slot].uid = parent->uid;
             g_processes[slot].gid = parent->gid;
@@ -1912,7 +1927,7 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             return 0;
         }
         pty = (struct pty *)entry->object;
-        child_pid = process_spawn_path(path, &PTY_SLAVE_FD_OPS, pty);
+        child_pid = process_spawn_path(path, &PTY_SLAVE_FD_OPS, pty, process->uid, process->gid);
         if (child_pid > 0) {
             struct process *child = process_find_by_pid((uint32_t)child_pid);
             if (child != 0) {

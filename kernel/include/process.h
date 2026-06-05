@@ -149,7 +149,10 @@ uint32_t process_current_gid(void);
 void process_init(void);
 int process_spawn_demo_processes(uint32_t count);
 int process_spawn_embedded_elf(const uint8_t *image, size_t image_size, const struct fd_ops *stdio_ops, void *stdio_object);
-int process_spawn_path(const char *path, const struct fd_ops *stdio_ops, void *stdio_object);
+int process_spawn_path(const char *path, const struct fd_ops *stdio_ops, void *stdio_object,
+                       uint32_t uid, uint32_t gid);
+/* UID that desktop-spawned apps should inherit (set by SYS_WINDOWMGR_START). */
+extern uint32_t g_desktop_uid;
 int process_run_ready_slice(void);
 int timer_handle_interrupt(struct interrupt_frame *frame);
 

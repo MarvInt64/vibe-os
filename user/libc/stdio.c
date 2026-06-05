@@ -186,107 +186,262 @@ int puts(const char *str) {
 }
 int putchar(int c) { char ch = (char)c; write(STDOUT_FILENO, &ch, 1); return c; }
 
-/* ---- FILE shim --------------------------------------------------------- */
+/* ---- FILE stream: buffered I/O over kernel file descriptors ------------ *
+ *
+ * VibeOS has no fd-level truncation primitive (writing fewer bytes than a file
+ * already holds does not shrink it), so "w" mode truncates by unlinking the
+ * path before creating it — a fresh zero-length file. Reads and writes are
+ * buffered through a single per-stream BUFSIZ buffer to avoid one syscall per
+ * byte; the buffer is used for read-ahead or write-behind, never both at once,
+ * and the direction is switched transparently when a "+" stream alternates.
+ */
 #include <stdlib.h>
 
-static FILE s_stdin  = { .fd = STDIN_FILENO };
-static FILE s_stdout = { .fd = STDOUT_FILENO };
-static FILE s_stderr = { .fd = STDERR_FILENO };
+/* fp->flags bits. */
+#define _F_READ   0x01   /* stream is readable                 */
+#define _F_WRITE  0x02   /* stream is writable                 */
+#define _F_APPEND 0x04   /* every write goes to end-of-file    */
+#define _F_EOF    0x08   /* end-of-file reached                */
+#define _F_ERR    0x10   /* an I/O error occurred              */
+
+/* fp->bufmode values. */
+#define _B_IDLE   0      /* buffer empty / direction not chosen */
+#define _B_READ   1      /* buffer holds read-ahead data        */
+#define _B_WRITE  2      /* buffer holds pending writes         */
+
+/* The standard streams are unbuffered (buf == NULL): output appears
+ * immediately (important for interactive prompts) and input is read directly.
+ * printf/puts/putchar bypass the FILE layer entirely (see above). */
+static FILE s_stdin  = { .fd = STDIN_FILENO,  .flags = _F_READ };
+static FILE s_stdout = { .fd = STDOUT_FILENO, .flags = _F_WRITE };
+static FILE s_stderr = { .fd = STDERR_FILENO, .flags = _F_WRITE };
 FILE *stdin  = &s_stdin;
 FILE *stdout = &s_stdout;
 FILE *stderr = &s_stderr;
 
+/* Write the whole [data, data+len) range to fd, looping over short writes.
+ * Returns 0 on success, -1 if any write fails. */
+static int write_all_fd(int fd, const unsigned char *data, size_t len) {
+    size_t off = 0;
+    while (off < len) {
+        ssize_t w = write(fd, data + off, len - off);
+        if (w <= 0) return -1;
+        off += (size_t)w;
+    }
+    return 0;
+}
+
+/* Flush pending write-behind data to the file. No-op unless in write mode. */
+static int flush_write(FILE *fp) {
+    if (fp->bufmode != _B_WRITE || fp->bufpos == 0) return 0;
+    int rc = write_all_fd(fp->fd, fp->buf, fp->bufpos);
+    fp->bufpos = 0;
+    if (rc != 0) { fp->flags |= _F_ERR; return EOF; }
+    return 0;
+}
+
+/* Drop unread read-ahead data, rewinding the fd so the logical position
+ * matches what the caller has actually consumed. No-op unless in read mode. */
+static void discard_read(FILE *fp) {
+    if (fp->bufmode == _B_READ && fp->buflen > fp->bufpos)
+        lseek(fp->fd, -(off_t)(fp->buflen - fp->bufpos), SEEK_CUR);
+    fp->bufpos = fp->buflen = 0;
+}
+
 FILE *fopen(const char *path, const char *mode) {
-    int fd = -1;
-    /* Open: 'r'/'rb' → read-only, 'w'/'wb'/'a' → write (create/trunc). */
-    if (mode && (mode[0] == 'r')) {
-        /* SYS_OPEN always opens for read */
-        extern int vos_open_path(const char *path);
-        fd = vos_open_path(path);
+    if (!path || !mode) return (FILE *)0;
+    extern int vos_open_path(const char *path);
+    extern int vos_creat_path(const char *path);
+
+    /* Parse the mode string: first letter plus optional '+' (read+write). */
+    short flags = 0;
+    int truncate = 0, append = 0;
+    switch (mode[0]) {
+        case 'r': flags = _F_READ;  break;
+        case 'w': flags = _F_WRITE; truncate = 1; break;
+        case 'a': flags = _F_WRITE; append   = 1; break;
+        default:  return (FILE *)0;
+    }
+    for (const char *m = mode + 1; *m; ++m)
+        if (*m == '+') flags |= (_F_READ | _F_WRITE);
+
+    int fd;
+    if (flags & _F_WRITE) {
+        if (truncate) unlink(path);        /* "w": discard any existing file */
+        fd = vos_creat_path(path);         /* create (or open) for writing    */
     } else {
-        /* write/append: use SYS_CREAT */
-        extern int vos_creat_path(const char *path);
-        fd = vos_creat_path(path);
+        fd = vos_open_path(path);          /* "r": must already exist         */
     }
     if (fd < 0) return (FILE *)0;
+    if (append) lseek(fd, 0, SEEK_END);
+
     FILE *fp = (FILE *)malloc(sizeof(FILE));
-    if (!fp) { extern int close(int); close(fd); return (FILE *)0; }
-    fp->fd = fd; fp->mem = (void *)0; fp->mem_len = 0; fp->mem_pos = 0;
-    fp->eof = 0; fp->error = 0;
-    if (mode && mode[0] == 'a') { lseek(fd, 0, SEEK_END); }
+    if (!fp) { close(fd); return (FILE *)0; }
+    fp->fd = fd; fp->flags = flags; fp->bufmode = _B_IDLE;
+    fp->bufpos = fp->buflen = 0; fp->own_buf = 0;
+    fp->mem = (const unsigned char *)0; fp->mem_len = fp->mem_pos = 0;
+
+    /* Allocate the I/O buffer; falling back to unbuffered if memory is tight. */
+    fp->buf = (unsigned char *)malloc(BUFSIZ);
+    fp->bufcap = fp->buf ? BUFSIZ : 0;
+    fp->own_buf = fp->buf ? 1 : 0;
     return fp;
 }
 
 FILE *fmemopen(void *buf, size_t size, const char *mode) {
-    (void)mode;
+    (void)mode;   /* only read-only memory streams are supported */
     FILE *fp = (FILE *)malloc(sizeof(FILE));
     if (!fp) return (FILE *)0;
-    fp->fd = -1; fp->mem = (const unsigned char *)buf; fp->mem_len = size;
-    fp->mem_pos = 0; fp->eof = 0; fp->error = 0;
+    fp->fd = -1; fp->flags = _F_READ; fp->bufmode = _B_IDLE;
+    fp->buf = (unsigned char *)0; fp->bufcap = fp->bufpos = fp->buflen = 0;
+    fp->own_buf = 0;
+    fp->mem = (const unsigned char *)buf; fp->mem_len = size; fp->mem_pos = 0;
     return fp;
+}
+
+int setvbuf(FILE *fp, char *buf, int mode, size_t size) {
+    if (!fp || fp->fd < 0) return -1;
+    /* Must be called before any I/O: flush/reset first to be safe. */
+    flush_write(fp); discard_read(fp); fp->bufmode = _B_IDLE;
+    if (fp->own_buf && fp->buf) { free(fp->buf); }
+    fp->own_buf = 0; fp->buf = (unsigned char *)0; fp->bufcap = 0;
+    if (mode == _IONBF) return 0;                 /* unbuffered           */
+    if (size < 64) size = BUFSIZ;
+    if (buf) { fp->buf = (unsigned char *)buf; fp->bufcap = size; }
+    else     { fp->buf = (unsigned char *)malloc(size);
+               fp->bufcap = fp->buf ? size : 0; fp->own_buf = fp->buf ? 1 : 0; }
+    return fp->buf ? 0 : -1;
+}
+
+void setbuf(FILE *fp, char *buf) {
+    setvbuf(fp, buf, buf ? _IOFBF : _IONBF, BUFSIZ);
 }
 
 int fclose(FILE *fp) {
     if (!fp) return EOF;
-    if (fp->fd >= 0 && fp->fd > STDERR_FILENO) close(fp->fd);
+    int rc = flush_write(fp);
+    if (fp->fd > STDERR_FILENO) close(fp->fd);
+    if (fp->own_buf && fp->buf) free(fp->buf);
     free(fp);
-    return 0;
+    return rc;
 }
 
 size_t fread(void *ptr, size_t size, size_t nmemb, FILE *fp) {
-    if (!fp || fp->error || fp->eof) return 0;
+    if (!fp || !(fp->flags & _F_READ) || (fp->flags & _F_ERR)) return 0;
     size_t want = size * nmemb;
     if (want == 0) return 0;
-    ssize_t got;
-    if (fp->fd >= 0) {
-        got = read(fp->fd, ptr, want);
-    } else {
+
+    unsigned char *out = (unsigned char *)ptr;
+    size_t done = 0;
+
+    /* In-memory stream: copy straight out of the backing buffer. */
+    if (fp->fd < 0) {
         size_t left = fp->mem_len - fp->mem_pos;
-        got = (ssize_t)(want < left ? want : left);
-        __builtin_memcpy(ptr, fp->mem + fp->mem_pos, (size_t)got);
-        fp->mem_pos += (size_t)got;
+        size_t n = want < left ? want : left;
+        __builtin_memcpy(out, fp->mem + fp->mem_pos, n);
+        fp->mem_pos += n;
+        if (n < want) fp->flags |= _F_EOF;
+        return n / size;
     }
-    if (got <= 0) { if (got == 0) fp->eof = 1; else fp->error = 1; return 0; }
-    return (size_t)got / size;
+
+    if (fp->bufmode == _B_WRITE) flush_write(fp);
+    fp->bufmode = _B_READ;
+
+    while (done < want) {
+        /* Serve from the buffer first. */
+        if (fp->bufpos < fp->buflen) {
+            size_t avail = fp->buflen - fp->bufpos;
+            size_t n = (want - done) < avail ? (want - done) : avail;
+            __builtin_memcpy(out + done, fp->buf + fp->bufpos, n);
+            fp->bufpos += n; done += n;
+            continue;
+        }
+        /* Buffer empty: refill (or, when unbuffered, read straight through). */
+        if (fp->buf) {
+            ssize_t got = read(fp->fd, fp->buf, fp->bufcap);
+            if (got <= 0) { fp->flags |= (got == 0 ? _F_EOF : _F_ERR); break; }
+            fp->buflen = (size_t)got; fp->bufpos = 0;
+        } else {
+            ssize_t got = read(fp->fd, out + done, want - done);
+            if (got <= 0) { fp->flags |= (got == 0 ? _F_EOF : _F_ERR); break; }
+            done += (size_t)got;
+        }
+    }
+    return done / size;
 }
 
 size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *fp) {
-    if (!fp || fp->fd < 0) return 0;
+    if (!fp || !(fp->flags & _F_WRITE) || fp->fd < 0) return 0;
     size_t want = size * nmemb;
-    ssize_t r = write(fp->fd, ptr, want);
-    return r > 0 ? (size_t)r / size : 0;
+    if (want == 0) return 0;
+
+    if (fp->bufmode == _B_READ) discard_read(fp);
+    fp->bufmode = _B_WRITE;
+
+    const unsigned char *in = (const unsigned char *)ptr;
+
+    /* Unbuffered: write straight through. */
+    if (!fp->buf) {
+        if (write_all_fd(fp->fd, in, want) != 0) { fp->flags |= _F_ERR; return 0; }
+        return nmemb;
+    }
+
+    size_t done = 0;
+    while (done < want) {
+        size_t space = fp->bufcap - fp->bufpos;
+        if (space == 0) {
+            if (flush_write(fp) != 0) break;   /* error already flagged */
+            space = fp->bufcap;
+        }
+        size_t n = (want - done) < space ? (want - done) : space;
+        __builtin_memcpy(fp->buf + fp->bufpos, in + done, n);
+        fp->bufpos += n; done += n;
+    }
+    return done / size;
+}
+
+int fflush(FILE *fp) {
+    if (!fp) return 0;
+    return flush_write(fp);
 }
 
 int fseek(FILE *fp, long offset, int whence) {
     if (!fp) return -1;
     if (fp->fd >= 0) {
+        flush_write(fp);            /* commit pending writes ... */
+        discard_read(fp);           /* ... and drop read-ahead   */
+        fp->bufmode = _B_IDLE;
         off_t r = lseek(fp->fd, (off_t)offset, whence);
-        if (r < 0) { fp->error = 1; return -1; }
-        fp->eof = 0;
+        if (r < 0) { fp->flags |= _F_ERR; return -1; }
+        fp->flags &= ~_F_EOF;
         return 0;
     }
-    /* in-memory */
+    /* in-memory stream */
     long new_pos;
     if (whence == SEEK_SET) new_pos = offset;
     else if (whence == SEEK_CUR) new_pos = (long)fp->mem_pos + offset;
     else new_pos = (long)fp->mem_len + offset;
     if (new_pos < 0) new_pos = 0;
     if (new_pos > (long)fp->mem_len) new_pos = (long)fp->mem_len;
-    fp->mem_pos = (size_t)new_pos; fp->eof = 0;
+    fp->mem_pos = (size_t)new_pos; fp->flags &= ~_F_EOF;
     return 0;
 }
 
 long ftell(FILE *fp) {
     if (!fp) return -1;
-    if (fp->fd >= 0) return (long)lseek(fp->fd, 0, SEEK_CUR);
-    return (long)fp->mem_pos;
+    if (fp->fd < 0) return (long)fp->mem_pos;
+    long pos = (long)lseek(fp->fd, 0, SEEK_CUR);
+    if (pos < 0) return -1;
+    /* Account for data sitting in the buffer the caller hasn't seen/committed. */
+    if (fp->bufmode == _B_READ)  pos -= (long)(fp->buflen - fp->bufpos);
+    else if (fp->bufmode == _B_WRITE) pos += (long)fp->bufpos;
+    return pos;
 }
 
-void rewind(FILE *fp) { fseek(fp, 0, SEEK_SET); if (fp) fp->error = 0; }
-int  feof(FILE *fp)    { return fp && fp->eof; }
-int  ferror(FILE *fp)  { return fp && fp->error; }
-void clearerr(FILE *fp){ if (fp) { fp->eof = 0; fp->error = 0; } }
-int  fflush(FILE *fp)  { (void)fp; return 0; }
+void rewind(FILE *fp) { fseek(fp, 0, SEEK_SET); if (fp) fp->flags &= ~_F_ERR; }
+int  feof(FILE *fp)    { return fp && (fp->flags & _F_EOF); }
+int  ferror(FILE *fp)  { return fp && (fp->flags & _F_ERR); }
+void clearerr(FILE *fp){ if (fp) fp->flags &= ~(_F_EOF | _F_ERR); }
 
 char *fgets(char *buf, int n, FILE *fp) {
     if (!fp || n <= 1) return (char *)0;
@@ -320,9 +475,13 @@ int fputs(const char *s, FILE *fp) {
 }
 
 int vfprintf(FILE *fp, const char *fmt, va_list ap) {
-    if (!fp) return -1;
-    if (fp->fd >= 0) return vdprintf(fp->fd, fmt, ap);
-    return -1;
+    if (!fp || fp->fd < 0) return -1;
+    /* Commit any buffered data so the formatted output stays correctly
+     * ordered, then write it straight to the descriptor. */
+    if (fp->bufmode == _B_WRITE) flush_write(fp);
+    else if (fp->bufmode == _B_READ) discard_read(fp);
+    fp->bufmode = _B_IDLE;
+    return vdprintf(fp->fd, fmt, ap);
 }
 
 int fprintf(FILE *fp, const char *fmt, ...) {

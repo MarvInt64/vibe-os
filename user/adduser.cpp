@@ -45,19 +45,11 @@
  */
 
 #include <stdio.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
 #include <sys/stat.h>
-#include <sys/syscall.h>
-
-/* SYS_WRITE_FILE performs an atomic create-or-truncate-and-write-all. There is
- * no append syscall, so the passwd/shadow databases are updated by reading the
- * current contents, appending one line, and writing the whole buffer back. */
-#ifndef SYS_WRITE_FILE
-#define SYS_WRITE_FILE 16
-#endif
 
 namespace {
 
@@ -79,19 +71,19 @@ constexpr int kPathCap    = 64;     /* kernel copies paths into a 64-byte buffer
  * number of bytes read, 0 if the file is empty, or -1 if it cannot be opened.
  */
 ssize_t read_whole_file(const char *path, char *buf, size_t cap) {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return -1;
-    ssize_t n = read(fd, buf, cap - 1);
-    close(fd);
-    if (n < 0) n = 0;
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    size_t n = fread(buf, 1, cap - 1, f);
+    fclose(f);
     buf[n] = '\0';
-    return n;
+    return (ssize_t)n;
 }
 
 /*
- * Append 'line' to the file at 'path' (creating it if absent) by rewriting the
- * whole file. Guarantees the previous content ends with a newline first, so
- * entries never run together. Returns 0 on success, -1 on failure.
+ * Append 'line' to the file at 'path' (creating it if absent). The database is
+ * read, a trailing newline is ensured so entries never run together, the line
+ * is appended, and the whole file rewritten with fopen("w") (which truncates).
+ * Returns 0 on success, -1 on failure.
  */
 int append_line(const char *path, const char *line) {
     char buf[4096];
@@ -102,7 +94,6 @@ int append_line(const char *path, const char *line) {
     if (n > 0 && buf[n - 1] != '\n') {
         if ((size_t)n + 1 >= sizeof(buf)) return -1;
         buf[n++] = '\n';
-        buf[n] = '\0';
     }
 
     size_t line_len = strlen(line);
@@ -110,9 +101,10 @@ int append_line(const char *path, const char *line) {
     memcpy(buf + n, line, line_len);
     n += (ssize_t)line_len;
 
-    ssize_t w = (ssize_t)__sc3(SYS_WRITE_FILE, (uint64_t)(size_t)path,
-                               (uint64_t)(size_t)buf, (uint64_t)n);
-    return (w == n) ? 0 : -1;
+    FILE *f = fopen(path, "w");
+    if (!f) return -1;
+    size_t w = fwrite(buf, 1, (size_t)n, f);
+    return (fclose(f) == 0 && w == (size_t)n) ? 0 : -1;
 }
 
 /* ---- /etc/passwd queries ------------------------------------------------- */

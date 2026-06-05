@@ -544,7 +544,7 @@ void AudioPlayer::worker(WorkerArgs *args) {
 void AudioPlayer::on_tick() {
     // VexUI ticks ~16 Hz; an 8 Hz spectrum looks just as alive and halves the
     // draw+present cost.
-    if ((++tick_count_ & 1) == 0) return;
+    // if ((++tick_count_ & 1) == 0) return;
 
     int lvl = g_level.load();
     level_lp_ += ((float)lvl - level_lp_) * 0.25f;

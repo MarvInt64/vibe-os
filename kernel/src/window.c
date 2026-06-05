@@ -2760,7 +2760,7 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
                 mark_background_dirty(desktop);
                 mark_dirty_rect(desktop, rect_from_bounds(0, 0, (int)desktop->screen_width, (int)desktop->screen_height));
             } else {
-                int pid = process_spawn_path(desktop->launcher_execs[li], 0, 0);
+                int pid = process_spawn_path(desktop->launcher_execs[li], 0, 0, g_desktop_uid, g_desktop_uid);
                 if (pid == -SYSCALL_ENOMEM) {
                     desktop_show_error(desktop, "Not Enough Memory",
                                        "There is not enough memory or no free process slot available to start this app.");
