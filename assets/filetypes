@@ -1,0 +1,55 @@
+# VibeOS file type associations (system default).
+# Format: <extension> <action> <program>
+#
+#   action = exec   → spawn the file directly (executable)
+#   action = open   → launch <program> with the file path as argument
+#   action = edit   → launch <program> with the file path as argument
+#
+# The file browser reads this file at startup; a per-user override at
+# /home/<user>/.config/vibeos/filetypes takes precedence.
+#
+# Lines starting with # are comments.  Blank lines are ignored.
+
+elf   exec   -
+out   exec   -
+com   exec   -
+
+txt   edit   /bin/edit
+md    edit   /bin/edit
+markdown edit /bin/edit
+cpp   edit   /bin/edit
+h     edit   /bin/edit
+hpp   edit   /bin/edit
+c     edit   /bin/edit
+rs    edit   /bin/edit
+s     edit   /bin/edit
+S     edit   /bin/edit
+ld    edit   /bin/edit
+cfg   edit   /bin/edit
+toml  edit   /bin/edit
+json  edit   /bin/edit
+yaml  edit   /bin/edit
+yml   edit   /bin/edit
+xml   edit   /bin/edit
+py    edit   /bin/edit
+sh    edit   /bin/edit
+css   edit   /bin/edit
+html  edit   /bin/edit
+js    edit   /bin/edit
+ts    edit   /bin/edit
+log   edit   /bin/edit
+csv   edit   /bin/edit
+ini   edit   /bin/edit
+conf  edit   /bin/edit
+
+mp3   open   /bin/audioplayer
+wav   open   /bin/audioplayer
+flac  open   /bin/audioplayer
+
+png   open   /bin/view
+jpg   open   /bin/view
+jpeg  open   /bin/view
+gif   open   /bin/view
+bmp   open   /bin/view
+svg   open   /bin/view
+vwp   open   /bin/view

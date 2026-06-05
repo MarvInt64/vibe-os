@@ -309,6 +309,8 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/id.elf     $(LIBC_CRT0) build/user/id.o     $(LIBC_A)
 	$(USTRIP) --strip-all build/user/id.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/id.elf /bin/id
+	# Seed /etc/filetypes (file type → action mapping for the file browser).
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/filetypes /etc/filetypes
 	# Seed /etc/passwd with the root user entry if not already present
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/passwd /etc/passwd
 	# Seed /tmp so it exists from first boot (ext2_put creates the dir automatically)
