@@ -1222,9 +1222,13 @@ void FileBrowser::render() {
 /* Flush the canvas to screen without a full VexUI repaint — much faster than
  * vui_request_repaint because it only copies our pixel buffer and presents
  * the canvas rectangle via SYS_WINDOW_PRESENT_RECT.  The toolbar/sidebar
- * widgets are static and don not need re-rendering on every frame. */
+ * widgets are static and don not need re-rendering on every frame.
+ *
+ * After presenting the raw canvas, request a VexUI repaint so the widget
+ * layer (sidebar, toolbar) is redrawn on top in the next event-loop cycle. */
 void FileBrowser::flush() {
     if (canvas_) vui_canvas_flush(win_, canvas_);
+    vui_request_repaint(win_);
 }
 
 // Canvas click dispatch. The toolbar and sidebar are handled by their own VexUI
@@ -1671,7 +1675,7 @@ void FileBrowser::nav_up() {
 void FileBrowser::do_refresh() {
     refresh_files();
     render();
-    /* VexUI repaints automatically after EV_RESIZE */
+    flush();
 }
 
 void FileBrowser::set_grid_view(bool grid) {
@@ -1734,9 +1738,10 @@ void FileBrowser::run() {
     if (win_w_ > BROWSER_MAX_W) win_w_ = BROWSER_MAX_W;
     if (win_h_ > BROWSER_MAX_H) win_h_ = BROWSER_MAX_H;
 
-    /* Use the kernel-bound framebuffer (or VexUI fallback) as our canvas.
-     * Drawing goes directly to the window back-buffer — zero copies. */
-    canvas_pixels_ = vui_canvas_ptr(win_);
+    /* Use our own static pixel buffer.  The W_CANVAS widget copies from it
+     * into VexUI's g_canvas during repaint.  (Kernel framebuffer bypass is
+     * not yet enabled — when BIND_FB works, switch back to vui_canvas_ptr.) */
+    canvas_pixels_ = g_canvas_pixels;
 
     // A full-window canvas hosts the hand-rendered file list, breadcrumbs,
     // preview and status bar. Created first so the toolbar/sidebar widgets,
