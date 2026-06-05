@@ -147,11 +147,18 @@ void TextGrid::render(uint32_t *buf, int buf_stride, int buf_h) const {
         }
     }
 
-    /* Block cursor (only visible when following the bottom). */
+    /* Blinking block cursor (only visible when following the bottom). */
     if (view_off_ == 0) {
-        int cx = cur_c_ * cell_w_;
-        int cy = (rows_ - 1) * cell_h_;
-        fill_rect(buf, buf_stride, buf_h, cx, cy + cell_h_ - 2, cell_w_, 2, COL_CURSOR);
+        ++blink_frame_;
+        bool cursor_on = (blink_frame_ % (BLINK_RATE * 2)) < BLINK_RATE;
+        if (cursor_on) {
+            int cx = cur_c_ * cell_w_;
+            int cy = (rows_ - 1) * cell_h_;
+            fill_rect(buf, buf_stride, buf_h, cx, cy, cell_w_, cell_h_, COL_CURSOR);
+            char ch = line(cur_line_)[cur_c_];
+            if (ch > ' ')
+                atlas_glyph(buf, buf_stride, buf_h, cx, cy, ch, COL_BG, scale_);
+        }
     }
 
     /* Scrollbar on the right edge of the visible area, when there is history. */

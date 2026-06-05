@@ -64,6 +64,9 @@ private:
     int  scale_  = 1;
     int  cell_w_ = 9;
     int  cell_h_ = 16;
+
+    mutable int blink_frame_ = 0;
+    static constexpr int BLINK_RATE = 25;  /* frames on/off each */
 };
 
 #endif
