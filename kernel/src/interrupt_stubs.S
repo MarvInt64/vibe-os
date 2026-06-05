@@ -22,6 +22,7 @@
 .extern fault_handler
 .extern bkl_acquire
 .extern bkl_release
+.extern audio_tick
 /* The scheduler's park/resume slot is per-CPU: it lives in this CPU's struct
  * cpu, reached through the GS base. These offsets must match struct cpu in
  * cpu.h (guarded by _Static_assert in cpu.c). */
@@ -358,6 +359,12 @@ timer_interrupt_stub:
     push rcx
     push rbx
     push rax
+
+    /* Feed the audio DMA BEFORE contending for the big kernel lock. audio_tick
+     * only touches the AC97 registers (boot CPU only) and the SPSC voice rings,
+     * so it needs no lock; doing it here keeps audio glitch-free even when an AP
+     * is holding the BKL in a long syscall. (All GP regs are already saved.) */
+    call audio_tick
 
     /* Entering the kernel from a timer IRQ: take the big kernel lock. If this
      * CPU already holds it (the timer fired in kernel context) bkl_acquire just

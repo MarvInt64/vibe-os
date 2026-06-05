@@ -208,8 +208,11 @@ void ProcessRow::update(const vui_process_info &p, int cpu_tenths) {
     vui_set_text(ram_label_,    mem.c_str());
     vui_set_color(ram_label_,   ram_color(p.mem_bytes));
 
-    /* The running process is the scheduler — disallow killing it. */
-    vui_set_visible(kill_button_, s != ProcessState::Running ? 1 : 0);
+    /* Every active process gets a kill button. (It used to be hidden while the
+     * process was RUNNING — a single-CPU artefact: with SMP several processes
+     * are genuinely running at once, so their buttons would flicker away. The
+     * kernel still enforces who may kill whom by uid.) */
+    vui_set_visible(kill_button_, 1);
     vui_set_user(kill_button_, reinterpret_cast<void *>(static_cast<unsigned long>(p.pid)));
 
     vui_set_visible(row_vbox_,     1);
