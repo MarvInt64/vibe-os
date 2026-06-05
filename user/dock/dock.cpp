@@ -135,7 +135,10 @@ int main() {
     /* The pill sits in the lower dock_h pixels; the upper tooltip_h pixels are
      * fully transparent so the tooltip bubble has room to render above the icons. */
     vui_widget *surface = vui_pill(win, 0, tooltip_h, width, dock_h);
-    vui_set_color(surface, 0x00263a54u);
+    /* Glassmorphism dock: deep navy-blue like macOS, with a layered
+     * gradient (lighter top, darker bottom), soft border, and top highlight
+     * — matching the reference dock.png aesthetic. */
+    vui_set_color(surface, 0x00142c4au);
 
     vui_widget *row = vui_hbox(win, 32, tooltip_h + 8, width - 64, dock_h - 16);
     vui_set_gap(row, 18);

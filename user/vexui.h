@@ -61,7 +61,7 @@ typedef void (*vui_key_callback)(vui_window *window, unsigned int key);
 /* Mouse-wheel scroll; delta is the signed notch count (positive = away/up). */
 typedef void (*vui_scroll_callback)(vui_window *window, int delta);
 typedef void (*vui_menu_callback)(vui_window *window);
-typedef void (*vui_mouse_callback)(vui_window *window, int x, int y);
+typedef void (*vui_mouse_callback)(vui_window *window, int x, int y, vui_u32 buttons);
 
 typedef struct vui_theme {
     vui_u32 bg;

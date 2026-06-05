@@ -45,9 +45,9 @@ public:
     void render();
 
     // Event handlers (canvas region: file list, scrollbar, breadcrumbs).
-    void on_click(int x, int y);
+    void on_click(int x, int y, uint32_t buttons);
     void on_mouse_move(int x, int y);
-    void on_mouse_release(int x, int y);
+    void on_mouse_release(int x, int y, uint32_t buttons);
     void on_key(uint32_t key);
     void on_scroll(int delta);
     void on_resize(int w, int h);
@@ -107,6 +107,24 @@ private:
     int scroll_drag_start_y_ = 0;
     int scroll_drag_start_scroll_ = 0;
     bool scroll_hovered_ = false;
+
+    // Breadcrumb hit-testing state
+    int  breadcrumb_count_ = 0;           /* number of path segments shown  */
+    int  breadcrumb_x_[16] = {};          /* x-start of each segment        */
+    int  breadcrumb_w_[16] = {};          /* pixel width of each segment    */
+    char breadcrumb_path_[16][256] = {};  /* absolute path for each segment */
+
+    // Preview panel
+    bool preview_expanded_ = true;
+
+    // Context menu (right-click on file)
+    bool context_menu_visible_ = false;
+    int  context_menu_x_ = 0;
+    int  context_menu_y_ = 0;
+    int  context_item_idx_ = -1;          /* index into filtered_indices_   */
+
+    // Detail panel Open button (VexUI widget, created in build_widgets)
+    vui_widget *open_file_btn_ = nullptr;
 
     // File lists
     FileEntry entries_[256];

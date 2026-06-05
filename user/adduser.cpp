@@ -403,6 +403,13 @@ int main(int argc, char **argv) {
     if (chmod(home, 0700) != 0)
         fprintf(stderr, "adduser: warning: could not chmod %s\n", home);
 
+    /* Seed standard XDG user directories (Desktop, Documents, Downloads) so
+     * the file browser's sidebar shortcuts work immediately. */
+    char subdir[128];
+    snprintf(subdir, sizeof(subdir), "%s/Desktop",   home); mkdir(subdir, 0700);
+    snprintf(subdir, sizeof(subdir), "%s/Documents", home); mkdir(subdir, 0700);
+    snprintf(subdir, sizeof(subdir), "%s/Downloads", home); mkdir(subdir, 0700);
+
     printf("Added user '%s' (uid=%d, gid=%d, home=%s, shell=%s).\n",
            username, uid, gid, home, shell);
     return 0;

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>VibeOS DOM and Scripting Test</title>
+</head>
+<body style="font-family: sans-serif; background-color: #f1f5f9; padding: 20px;">
+    <div id="card" style="background-color: #ffffff; padding: 20px; border: 1px solid #cbd5e1; border-radius: 8px; display: flex; flex-direction: column; gap: 15px;">
+        <h1 id="title" style="margin: 0; color: #1e293b;">VibeOS Features Test</h1>
+        <p style="margin: 0; color: #64748b;">
+            This page tests Flexbox layout with gaps, event listeners, dynamic attribute and style proxy manipulation, and dynamic element creation.
+        </p>
+        
+        <div id="status" class="badge" style="background-color: #e2e8f0; padding: 8px; border-radius: 4px; color: #475569;">
+            Status: Ready
+        </div>
+
+        <div style="display: flex; gap: 10px;">
+            <button id="btn-color" onclick="changeColor()" style="padding: 8px 12px; background-color: #3b82f6; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                Change Color
+            </button>
+            <button id="btn-add" style="padding: 8px 12px; background-color: #10b981; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                Add Dynamic Text
+            </button>
+        </div>
+
+        <div id="list-container" style="display: flex; flex-direction: column; gap: 5px; border-top: 1px solid #e2e8f0; padding-top: 10px;">
+            <strong>Dynamic Log:</strong>
+        </div>
+    </div>
+
+    <script>
+        // Test onclick attribute
+        function changeColor() {
+            print("Change Color clicked!");
+            var title = document.querySelector("#title");
+            if (title) {
+                // Read current style
+                var curColor = title.style.color;
+                print("Current style color: " + curColor);
+                
+                // Toggle color
+                if (curColor === "#ef4444" || curColor === "rgb(239, 68, 68)") {
+                    title.style.color = "#1e293b";
+                } else {
+                    title.style.color = "#ef4444";
+                }
+            }
+            
+            var status = document.querySelector(".badge");
+            if (status) {
+                status.innerText = "Color Toggled!";
+                status.style.backgroundColor = "#fee2e2";
+                status.style.color = "#991b1b";
+            }
+        }
+
+        // Test addEventListener and dynamic element creation
+        var btnAdd = document.querySelector("#btn-add");
+        if (btnAdd) {
+            btnAdd.addEventListener("click", function() {
+                print("Add Dynamic Text clicked!");
+                
+                var container = document.querySelector("#list-container");
+                if (container) {
+                    // Create element & text node
+                    var newDiv = document.createElement("div");
+                    var newText = document.createTextNode("Item added at " + new Date().toLocaleTimeString());
+                    newDiv.appendChild(newText);
+                    
+                    // Style new element
+                    newDiv.style.color = "#047857";
+                    newDiv.style.backgroundColor = "#d1fae5";
+                    newDiv.style.padding = "6px";
+                    newDiv.style.borderRadius = "4px";
+                    
+                    // Append element
+                    container.appendChild(newDiv);
+                }
+            });
+        }
+    </script>
+</body>
+</html>

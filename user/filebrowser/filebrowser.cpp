@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <dirent.h>
 
 // Static buffer for the canvas framebuffer
@@ -125,6 +126,17 @@ FileBrowser::~FileBrowser() {
 void FileBrowser::init() {
     instance_ = this;
     canvas_pixels_ = g_canvas_pixels;
+
+    // Resolve the current user's home directory for sidebar paths.
+    char home[128];
+    if (vos_home_dir(home, sizeof(home)) <= 0)
+        strcpy(home, "/root");  /* fallback */
+
+    char desktop[160], documents[160], downloads[160];
+    snprintf(desktop,   sizeof(desktop),   "%s/Desktop",   home);
+    snprintf(documents, sizeof(documents), "%s/Documents", home);
+    snprintf(downloads, sizeof(downloads), "%s/Downloads", home);
+
     // Populate Sidebar items
     sidebar_count_ = 0;
     sidebar_items_[sidebar_count_++] = {"FAVORITES", "", "", true};
@@ -133,10 +145,10 @@ void FileBrowser::init() {
     sidebar_items_[sidebar_count_++] = {"Projects", "/home", SVG_FOLDER_OUTLINE, false};
 
     sidebar_items_[sidebar_count_++] = {"HOME", "", "", true};
-    sidebar_items_[sidebar_count_++] = {"Home", "/home", SVG_HOME, false};
-    sidebar_items_[sidebar_count_++] = {"Desktop", "/home", SVG_DESKTOP, false};
-    sidebar_items_[sidebar_count_++] = {"Documents", "/home", SVG_DOCUMENTS, false};
-    sidebar_items_[sidebar_count_++] = {"Downloads", "/home", SVG_DOWNLOAD, false};
+    sidebar_items_[sidebar_count_++] = {"Home", home, SVG_HOME, false};
+    sidebar_items_[sidebar_count_++] = {"Desktop", desktop, SVG_DESKTOP, false};
+    sidebar_items_[sidebar_count_++] = {"Documents", documents, SVG_DOCUMENTS, false};
+    sidebar_items_[sidebar_count_++] = {"Downloads", downloads, SVG_DOWNLOAD, false};
 
     sidebar_items_[sidebar_count_++] = {"SYSTEM", "", "", true};
     sidebar_items_[sidebar_count_++] = {"Root", "/", SVG_DISK, false};
@@ -643,12 +655,19 @@ void FileBrowser::render() {
     draw_svg(16, 55, 18, SVG_HOME, 0x009aa7bau);
     int bc_x = 40;
     draw_text(bc_x, 56, "Home", 0x009aa7bau);
-    bc_x += get_text_width("Home") + 8;
-    
+    /* Store Home as breadcrumb segment 0 for hit-testing. */
+    breadcrumb_x_[0] = bc_x;
+    breadcrumb_w_[0] = get_text_width("Home");
+    strcpy(breadcrumb_path_[0], "/");
+
+    bc_x += breadcrumb_w_[0] + 8;
+    int seg_idx = 1;
+
     // Split the current path into "/"-separated segments without relying on
     // strtok (not provided by the VibeOS libc). Each segment is rendered as a
     // breadcrumb preceded by a ">" separator.
     const char *p = current_path_;
+    char accum_path[256] = "";
     while (*p) {
         while (*p == '/') ++p;          // skip separator(s)
         if (!*p) break;
@@ -659,11 +678,28 @@ void FileBrowser::render() {
         }
         segment[n] = '\0';
 
+        // Build accumulated path for this segment
+        if (strcmp(accum_path, "/") == 0)
+            snprintf(accum_path, sizeof(accum_path), "/%s", segment);
+        else
+            snprintf(accum_path, sizeof(accum_path), "%s/%s",
+                     breadcrumb_path_[seg_idx - 1], segment);
+
         draw_text(bc_x, 56, ">", 0x005c6a7eu);
         bc_x += 16;
         draw_text(bc_x, 56, segment, 0x009aa7bau);
+
+        /* Store segment hit-test info. */
+        if (seg_idx < 16) {
+            breadcrumb_x_[seg_idx] = bc_x;
+            breadcrumb_w_[seg_idx] = get_text_width(segment);
+            strcpy(breadcrumb_path_[seg_idx], accum_path);
+        }
+
         bc_x += get_text_width(segment) + 8;
+        ++seg_idx;
     }
+    breadcrumb_count_ = seg_idx;
 
     // 5. Render Central File Workspace Listing
     int list_x, list_y, list_w, list_h;
@@ -903,49 +939,47 @@ void FileBrowser::render() {
         fill_rect(badge_x, tags_y - 4, 20, 20, 0x00223147u);
         draw_text(badge_x + 6, tags_y - 2, "+", 0x009aa7bau);
 
-        // 7. Embedded Code Preview folding panel (y: ~370..536)
+        // 7. Embedded Code Preview folding panel
         if (has_preview_) {
             int prev_y = tags_y + 32;
             draw_line(detail_x + 16, prev_y, detail_x + detail_w - 16, prev_y, 0x00294058u);
 
             prev_y += 12;
-            draw_text(detail_x + 16, prev_y, "v Preview", 0x00e6edf7u); // Collapsed header style
-            
-            // Draw full-screen preview icon
-            draw_svg(detail_x + detail_w - 32, prev_y - 4, 18, SVG_GRID_VIEW, 0x009aa7bau);
+            const char *toggle_label = preview_expanded_ ? "v Preview" : "> Preview";
+            draw_text(detail_x + 16, prev_y, toggle_label, 0x00e6edf7u);
 
-            // Dark code block box
-            int box_y = prev_y + 24;
-            int box_h = detail_y + detail_h - box_y - 12;
-            fill_rect(detail_x + 16, box_y, detail_w - 32, box_h, 0x00070c12u);
-            draw_rect(detail_x + 16, box_y, detail_w - 32, box_h, 0x00294058u);
+            if (preview_expanded_) {
+                // Dark code block box
+                int box_y = prev_y + 24;
+                int box_h = detail_y + detail_h - box_y - 12;
+                fill_rect(detail_x + 16, box_y, detail_w - 32, box_h, 0x00070c12u);
+                draw_rect(detail_x + 16, box_y, detail_w - 32, box_h, 0x00294058u);
 
-            // Parse lines out of preview_text_ and print with numbers
-            int render_line_y = box_y + 10;
-            char line_temp[128];
-            const char *src_p = preview_text_;
-            int curr_num = 1;
-            
-            while (*src_p && curr_num <= 6) {
-                int c = 0;
-                while (*src_p && *src_p != '\n' && c < 120) {
-                    line_temp[c++] = *src_p++;
+                // Parse lines out of preview_text_ and print with numbers
+                int render_line_y = box_y + 10;
+                char line_temp[128];
+                const char *src_p = preview_text_;
+                int curr_num = 1;
+
+                while (*src_p && curr_num <= 6) {
+                    int c = 0;
+                    while (*src_p && *src_p != '\n' && c < 120) {
+                        line_temp[c++] = *src_p++;
+                    }
+                    line_temp[c] = '\0';
+                    if (*src_p == '\n') src_p++;
+
+                    char num_str[8];
+                    snprintf(num_str, sizeof(num_str), "%d", curr_num);
+                    draw_text(detail_x + 24, render_line_y, num_str, 0x003b4d61u);
+
+                    char trunc_code[64];
+                    truncate_text_to_width(line_temp, trunc_code, 200);
+                    draw_text(detail_x + 44, render_line_y, trunc_code, 0x00cbd5e1u);
+
+                    render_line_y += 18;
+                    curr_num++;
                 }
-                line_temp[c] = '\0';
-                if (*src_p == '\n') src_p++;
-
-                // Line number
-                char num_str[8];
-                snprintf(num_str, sizeof(num_str), "%d", curr_num);
-                draw_text(detail_x + 24, render_line_y, num_str, 0x003b4d61u);
-
-                // Code contents (truncated to fit box width)
-                char trunc_code[64];
-                truncate_text_to_width(line_temp, trunc_code, 200);
-                draw_text(detail_x + 44, render_line_y, trunc_code, 0x00cbd5e1u);
-
-                render_line_y += 18;
-                curr_num++;
             }
         }
     } else {
@@ -1004,39 +1038,113 @@ void FileBrowser::render() {
     // Filled progress pill (42.8 free => 85.2 used => 66% progress)
     int fill_w = (bar_w * 66) / 100;
     fill_rect(bar_x, bar_y, fill_w, bar_h, 0x003b82f6u);
+
+    // ---- Right-click context menu overlay ----
+    if (context_menu_visible_ && context_item_idx_ >= 0) {
+        int mx = context_menu_x_, my = context_menu_y_;
+        int mw = 160, mh = 108; /* 3 items + padding */
+        /* Clamp to window bounds. */
+        if (mx + mw > win_w_) mx = win_w_ - mw - 4;
+        if (my + mh > win_h_) my = win_h_ - mh - 4;
+        if (mx < 4) mx = 4;
+        if (my < 4) my = 4;
+
+        fill_rect(mx, my, mw, mh, 0x001b3147u);
+        draw_rect(mx, my, mw, mh, 0x003b82f6u);
+
+        int item_y = my + 6;
+        draw_text(mx + 12, item_y + 3, "Open", 0x00e6edf7u);    item_y += 32;
+        draw_text(mx + 12, item_y + 3, "Rename", 0x00e6edf7u);  item_y += 32;
+        draw_text(mx + 12, item_y + 3, "Delete", 0x00f87171u);
+
+        /* Store menu item positions for hit-testing (in on_click we check
+         * against these when context_menu_visible_ is true). */
+        context_menu_x_ = mx;
+        context_menu_y_ = my;
+    }
 }
 
 // Canvas click dispatch. The toolbar and sidebar are handled by their own VexUI
 // widget callbacks; this only covers the hand-rendered file list + scrollbar.
-void FileBrowser::on_click(int x, int y) {
+void FileBrowser::on_click(int x, int y, uint32_t buttons) {
+    bool right_click = (buttons & 2u) != 0;
+
+    // ---- Dismiss context menu on any click outside its bounds ----
+    if (context_menu_visible_) {
+        int mx = context_menu_x_, my = context_menu_y_;
+        int mw = 160, mh = 108;
+        if (x >= mx && x <= mx + mw && y >= my && y <= my + mh) {
+            // Click inside menu — which item?
+            int rel_y = y - my;
+            int item = rel_y / 32; /* 0=Open, 1=Rename, 2=Delete */
+            context_menu_visible_ = false;
+            if (context_item_idx_ >= 0 && context_item_idx_ < filtered_count_) {
+                int act_idx = filtered_indices_[context_item_idx_];
+                FileEntry &fe = entries_[act_idx];
+                char target_path[512];
+                if (strcmp(current_path_, "/") == 0)
+                    snprintf(target_path, sizeof(target_path), "/%s", fe.name);
+                else
+                    snprintf(target_path, sizeof(target_path), "%s/%s", current_path_, fe.name);
+
+                if (item == 0) { /* Open */
+                    if (fe.kind == 2) navigate(target_path, true);
+                    else vos_spawn_arg("/bin/edit", target_path);
+                } else if (item == 1) { /* Rename */
+                    /* TODO: in-place rename UI */
+                } else if (item == 2) { /* Delete */
+                    unlink(target_path);
+                    refresh_files();
+                    selected_index_ = -1;
+                    update_preview();
+                }
+            }
+            render();
+            vui_request_repaint(win_);
+            return;
+        }
+        context_menu_visible_ = false;
+        render();
+        vui_request_repaint(win_);
+        if (right_click) return; /* right-click outside menu = dismiss only */
+    }
+
+    // ---- Breadcrumb navigation ----
+    int bc_y = 55;
+    int bc_h = 20;
+    for (int i = 0; i < breadcrumb_count_; ++i) {
+        if (x >= breadcrumb_x_[i] && x <= breadcrumb_x_[i] + breadcrumb_w_[i] &&
+            y >= bc_y && y <= bc_y + bc_h) {
+            navigate(breadcrumb_path_[i], true);
+            return;
+        }
+    }
+
     // Check Main Listing Area Clicks & Scrollbar Grab
     int list_x, list_y, list_w, list_h;
     get_listing_rect(list_x, list_y, list_w, list_h);
-    
+
     if (x >= list_x && x <= list_x + list_w && y >= list_y && y <= list_y + list_h) {
-        // Check Scrollbar Track grab first. The track spans the full listing
-        // height, so its geometry is simply the listing rect.
+        // Check Scrollbar Track grab first
         int sb_col_x = list_x + list_w - 12;
-        int sb_y = list_y;
-        int sb_h = list_h;
         if (x >= sb_col_x && x <= sb_col_x + 8) {
+            // ... scrollbar handling (unchanged) ...
             int total_rows = (filtered_count_ + (grid_view_ ? 3 : 0)) / (grid_view_ ? 4 : 1);
             int item_h = grid_view_ ? 96 : 36;
             int content_h = total_rows * item_h;
             int visible_h = list_h - (grid_view_ ? 0 : 36);
             if (content_h > visible_h) {
+                int sb_h = list_h;
                 int thumb_h = (sb_h * visible_h) / content_h;
                 if (thumb_h < 20) thumb_h = 20;
-                int thumb_y = sb_y + (scroll_y_ * (sb_h - thumb_h)) / (content_h - visible_h);
-                
+                int thumb_y = list_y + (scroll_y_ * (sb_h - thumb_h)) / (content_h - visible_h);
+
                 if (y >= thumb_y && y <= thumb_y + thumb_h) {
-                    // Grab thumb
                     scroll_dragging_ = true;
                     scroll_drag_start_y_ = y;
                     scroll_drag_start_scroll_ = scroll_y_;
                 } else {
-                    // Track click jumps scrolling
-                    int target_scroll = ((y - sb_y - thumb_h / 2) * (content_h - visible_h)) / (sb_h - thumb_h);
+                    int target_scroll = ((y - list_y - thumb_h / 2) * (content_h - visible_h)) / (sb_h - thumb_h);
                     scroll_y_ = target_scroll;
                     if (scroll_y_ < 0) scroll_y_ = 0;
                     if (scroll_y_ > max_scroll_y_) scroll_y_ = max_scroll_y_;
@@ -1046,37 +1154,53 @@ void FileBrowser::on_click(int x, int y) {
             return;
         }
 
-        // List Item Clicks
+        // ---- Right-click context menu on file ----
+        if (right_click) {
+            int clicked_item = -1;
+            if (!grid_view_) {
+                int start_row_y = list_y + 36;
+                clicked_item = (y - start_row_y) / 36 + (scroll_y_ / 36);
+            } else {
+                int row = (y - list_y - 16) / 96 + (scroll_y_ / 96);
+                int col = (x - list_x - 16) / 108;
+                if (col >= 0 && col < 4) clicked_item = row * 4 + col;
+            }
+            if (clicked_item >= 0 && clicked_item < filtered_count_) {
+                selected_index_ = clicked_item;
+                update_preview();
+                context_menu_visible_ = true;
+                context_menu_x_ = x;
+                context_menu_y_ = y;
+                context_item_idx_ = clicked_item;
+                render();
+                vui_request_repaint(win_);
+            }
+            return;
+        }
+
+        // List Item Clicks (unchanged)
         if (!grid_view_) {
             int start_row_y = list_y + 36;
             int clicked_item = start_row_y ? (y - start_row_y) / 36 + (scroll_y_ / 36) : -1;
             if (clicked_item >= 0 && clicked_item < filtered_count_) {
                 if (clicked_item == selected_index_) {
-                    // Double Click trigger: Open folder or launch file
                     int act_idx = filtered_indices_[clicked_item];
                     FileEntry &fe = entries_[act_idx];
-                    
-                    char target_path[512];
-                    if (strcmp(current_path_, "/") == 0) {
-                        snprintf(target_path, sizeof(target_path), "/%s", fe.name);
-                    } else {
-                        snprintf(target_path, sizeof(target_path), "%s/%s", current_path_, fe.name);
-                    }
 
-                    if (fe.kind == 2) { // Folder
-                        navigate(target_path, true);
-                    } else if (dialog_mode_) {
-                        // In a picker, a file is the result (OPEN) or fills the
-                        // filename field (SAVE) — never launches another app.
+                    char target_path[512];
+                    if (strcmp(current_path_, "/") == 0)
+                        snprintf(target_path, sizeof(target_path), "/%s", fe.name);
+                    else
+                        snprintf(target_path, sizeof(target_path), "%s/%s", current_path_, fe.name);
+
+                    if (fe.kind == 2) navigate(target_path, true);
+                    else if (dialog_mode_) {
                         if (dialog_save_) { if (filename_input_) vui_set_text(filename_input_, fe.name); }
                         else dialog_finish(target_path);
-                    } else { // File - launch editor or player!
+                    } else {
                         const char *ext = strrchr(fe.name, '.');
-                        if (ext && strcmp(ext, ".mp3") == 0) {
-                            vos_spawn_arg("/bin/audioplayer", target_path);
-                        } else {
-                            vos_spawn_arg("/bin/edit", target_path);
-                        }
+                        if (ext && strcmp(ext, ".mp3") == 0) vos_spawn_arg("/bin/audioplayer", target_path);
+                        else vos_spawn_arg("/bin/edit", target_path);
                     }
                 } else {
                     selected_index_ = clicked_item;
@@ -1097,26 +1221,21 @@ void FileBrowser::on_click(int x, int y) {
                     if (clicked_item == selected_index_) {
                         int act_idx = filtered_indices_[clicked_item];
                         FileEntry &fe = entries_[act_idx];
-                        
-                        char target_path[512];
-                        if (strcmp(current_path_, "/") == 0) {
-                            snprintf(target_path, sizeof(target_path), "/%s", fe.name);
-                        } else {
-                            snprintf(target_path, sizeof(target_path), "%s/%s", current_path_, fe.name);
-                        }
 
-                        if (fe.kind == 2) {
-                            navigate(target_path, true);
-                        } else if (dialog_mode_) {
+                        char target_path[512];
+                        if (strcmp(current_path_, "/") == 0)
+                            snprintf(target_path, sizeof(target_path), "/%s", fe.name);
+                        else
+                            snprintf(target_path, sizeof(target_path), "%s/%s", current_path_, fe.name);
+
+                        if (fe.kind == 2) navigate(target_path, true);
+                        else if (dialog_mode_) {
                             if (dialog_save_) { if (filename_input_) vui_set_text(filename_input_, fe.name); }
                             else dialog_finish(target_path);
                         } else {
                             const char *ext = strrchr(fe.name, '.');
-                            if (ext && strcmp(ext, ".mp3") == 0) {
-                                vos_spawn_arg("/bin/audioplayer", target_path);
-                            } else {
-                                vos_spawn_arg("/bin/edit", target_path);
-                            }
+                            if (ext && strcmp(ext, ".mp3") == 0) vos_spawn_arg("/bin/audioplayer", target_path);
+                            else vos_spawn_arg("/bin/edit", target_path);
                         }
                     } else {
                         selected_index_ = clicked_item;
@@ -1128,6 +1247,21 @@ void FileBrowser::on_click(int x, int y) {
                     }
                 }
             }
+        }
+        return;
+    }
+
+    // ---- Preview toggle (detail panel header click) ----
+    int detail_x, detail_y, detail_w, detail_h;
+    get_detail_rect(detail_x, detail_y, detail_w, detail_h);
+    if (has_preview_ && selected_index_ >= 0 &&
+        x >= detail_x && x <= detail_x + detail_w) {
+        int prev_y = detail_y + 270; /* approximate: tags_y + 32 after metadata */
+        if (y >= prev_y && y <= prev_y + 20) {
+            preview_expanded_ = !preview_expanded_;
+            render();
+            vui_request_repaint(win_);
+            return;
         }
     }
 }
@@ -1177,7 +1311,7 @@ void FileBrowser::on_mouse_move(int x, int y) {
     }
 }
 
-void FileBrowser::on_mouse_release(int x, int y) {
+void FileBrowser::on_mouse_release(int x, int y, uint32_t /*buttons*/) {
     (void)x; (void)y;
     if (scroll_dragging_) {
         scroll_dragging_ = false;
@@ -1232,19 +1366,19 @@ void FileBrowser::on_tick() {
 // event to the singleton FileBrowser instance so all real logic stays inside
 // the class (clean separation between framework glue and application code).
 // ---------------------------------------------------------------------------
-static void fb_on_click_cb(vui_window *w, int x, int y) {
+static void fb_on_click_cb(vui_window *w, int x, int y, vui_u32 buttons) {
     (void)w;
-    FileBrowser::instance()->on_click(x, y);
+    FileBrowser::instance()->on_click(x, y, buttons);
 }
 
-static void fb_on_mouse_move_cb(vui_window *w, int x, int y) {
+static void fb_on_mouse_move_cb(vui_window *w, int x, int y, vui_u32 /*buttons*/) {
     (void)w;
     FileBrowser::instance()->on_mouse_move(x, y);
 }
 
-static void fb_on_mouse_release_cb(vui_window *w, int x, int y) {
+static void fb_on_mouse_release_cb(vui_window *w, int x, int y, vui_u32 buttons) {
     (void)w;
-    FileBrowser::instance()->on_mouse_release(x, y);
+    FileBrowser::instance()->on_mouse_release(x, y, buttons);
 }
 
 static void fb_on_scroll_cb(vui_window *w, int delta) {

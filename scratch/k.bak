@@ -342,8 +342,6 @@ static void start_desktop_scene_apps(void) {
         return;
     }
     (void)process_spawn_path("/bin/wallpaper", 0, 0, g_desktop_uid, g_desktop_uid);
-    (void)process_spawn_path("/bin/doom", 0, 0, g_desktop_uid, g_desktop_uid);  /* TEMP load */
-    (void)process_spawn_path("/bin/doom", 0, 0, g_desktop_uid, g_desktop_uid);  /* TEMP load */
     g_desktop_scene_started = 1;
 }
 

@@ -129,15 +129,15 @@ void on_tick_cb(vui_window *) { Browser::s_instance_->on_tick(); }
 void on_resize_cb(vui_window *, int w, int h) { Browser::s_instance_->on_resize(w, h); }
 void on_key_cb(vui_window *, unsigned key) { Browser::s_instance_->on_key(key); }
 void on_scroll_cb(vui_window *, int dy) { Browser::s_instance_->on_scroll(dy); }
-void on_mouse_move_cb(vui_window *, int x, int y) {
+void on_mouse_move_cb(vui_window *, int x, int y, vui_u32 /*buttons*/) {
     if (y < BAR_H) return;
     Browser::s_instance_->on_mouse_move(x, y - BAR_H);
 }
-void on_click_cb(vui_window *, int x, int y) {
+void on_click_cb(vui_window *, int x, int y, vui_u32 /*buttons*/) {
     if (y < BAR_H) return;
     Browser::s_instance_->on_click(x, y - BAR_H);
 }
-void on_mouse_release_cb(vui_window *, int x, int y) {
+void on_mouse_release_cb(vui_window *, int x, int y, vui_u32 /*buttons*/) {
     Browser::s_instance_->on_mouse_release(x, y - BAR_H);
 }
 

@@ -118,6 +118,10 @@ def main():
     #                works no matter which user the session runs as.
     #   /home  0755  parent for future regular users (each /home/<name> is then
     #                created 0700 and owned by that user).
+    #   /home/root  0700  root's user-space home (redundant with /root but
+    #                     follows the /home convention for the file browser).
+    #   /home/user  0700  default regular user, pre-seeded with Desktop,
+    #                     Documents, and Downloads subdirectories.
     # All are owned by root (uid 0); only root + the owner can enter a 0700 dir.
     # Reuse ext2_put's writer to avoid duplicating the allocation logic.
     import importlib.util
@@ -139,12 +143,22 @@ def main():
         return ino
     seed(EXT2_ROOT, "root", 0o700)
     seed(EXT2_ROOT, "tmp",  0o777)
-    seed(EXT2_ROOT, "home", 0o755)
+    home_ino = seed(EXT2_ROOT, "home", 0o755)
+    root_home_ino = seed(home_ino, "root", 0o700)
+    # Root's standard directories (same as adduser creates for regular users).
+    seed(root_home_ino, "Desktop",   0o700)
+    seed(root_home_ino, "Documents", 0o700)
+    seed(root_home_ino, "Downloads", 0o700)
+    # Also seed /root with the same subdirectories for root's top-level home.
+    root_ino = fs.dir_find(EXT2_ROOT, "root")
+    seed(root_ino, "Desktop",   0o700)
+    seed(root_ino, "Documents", 0o700)
+    seed(root_ino, "Downloads", 0o700)
     fs.flush_meta()
 
     print(f"format_disk: formatted {path} ({disk_size//1024//1024} MB, "
           f"{blocks_count} blocks, {inodes_count} inodes, first_data={first_data}); "
-          f"seeded /root (0700), /tmp (0777), /home (0755)")
+          "seeded /root, /tmp, /home, /home/root, +Desktop/Documents/Downloads")
 
 if __name__ == "__main__":
     main()

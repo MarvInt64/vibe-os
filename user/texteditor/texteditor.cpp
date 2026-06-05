@@ -43,9 +43,9 @@ static int get_text_width(const char *s, int scale) {
 /*  Global callback trampolines (routed to the singleton instance)           */
 /* --------------------------------------------------------------------------- */
 static void ed_on_key(vui_window *, unsigned int key)       { TextEditor::instance()->on_key(key);          }
-static void ed_on_click(vui_window *, int x, int y)         { TextEditor::instance()->on_click(x, y);       }
-static void ed_on_mm(vui_window *, int x, int y)            { TextEditor::instance()->on_mouse_move(x, y);  }
-static void ed_on_mr(vui_window *, int x, int y)            { TextEditor::instance()->on_mouse_release(x, y); }
+static void ed_on_click(vui_window *, int x, int y, vui_u32 /*buttons*/) { TextEditor::instance()->on_click(x, y);       }
+static void ed_on_mm(vui_window *, int x, int y, vui_u32 /*buttons*/)    { TextEditor::instance()->on_mouse_move(x, y);  }
+static void ed_on_mr(vui_window *, int x, int y, vui_u32 /*buttons*/)    { TextEditor::instance()->on_mouse_release(x, y); }
 static void ed_on_scroll(vui_window *, int delta)           { TextEditor::instance()->on_scroll(delta);     }
 static void ed_on_resize(vui_window *, int w, int h)         { TextEditor::instance()->on_resize(w, h);       }
 static void ed_on_tick(vui_window *)                         { TextEditor::instance()->on_tick();             }

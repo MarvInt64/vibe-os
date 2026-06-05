@@ -1716,21 +1716,47 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         }
         break; }
     case W_PILL: {
-        /* Frosted glass dock surface: highly translucent so wallpaper and
-         * windows bleed through naturally, with a bright top reflection that
-         * sells the glass illusion. */
+        /* Glassmorphism dock: layered semi-transparent bands create a soft
+         * vertical gradient (lighter top → darker bottom). Each band is a
+         * rectangle drawn inside the rounded area, so corners stay clean. */
         uint32_t fill = wd->color ? wd->color : g_theme.surface;
-        uint32_t bd = mix(fill, 0x00ffffffu, 1u, 8u);
+
+        /* Mix lighter top / darker bottom tones from the base colour. */
+        uint32_t top_c = mix(fill, 0x00ffffffu, 2u, 10u);   /* lighter  */
+        uint32_t mid_c = fill;                                /* base     */
+        uint32_t bot_c = mix(fill, 0x00000000u, 3u, 10u);   /* darker   */
+
         int r = 14;
         if (r > wd->h / 2) r = wd->h / 2;
-        /* Body — glassmorphism: translucent enough for depth, opaque enough
-         * for the muted color to read as a surface. */
-        fill_round_rect(w, wd->x, wd->y, wd->w, wd->h, r, argb(fill, 210u), bd);
-        /* Sharp top reflection — the key glass-candy detail. */
-        rect(w, wd->x + r - 2, wd->y + 2, wd->w - 2 * (r - 2), 1, argb(0x00ffffffu, 110u));
-        rect(w, wd->x + r + 2, wd->y + 3, wd->w - 2 * (r + 2), 1, argb(0x00ffffffu, 55u));
-        /* Soft bottom edge shadow — anchors the pill against the screen edge. */
-        rect(w, wd->x + r, wd->y + wd->h - 2, wd->w - 2 * r, 1, argb(0x00000000u, 35u));
+        int hh = wd->h;  /* total pill height */
+
+        /* Base: darkest tone, fills the rounded shape. */
+        fill_round_rect(w, wd->x, wd->y, wd->w, hh, r, argb(bot_c, 230u),
+                        mix(fill, 0x00aaccffu, 1u, 6u));
+
+        /* Three horizontal bands, each lighter toward the top.  The bands
+         * stay strictly inside the non-rounded rectangle so they never
+         * bleed into corner pixels. */
+        int inner_x = wd->x + r;
+        int inner_w = wd->w - 2 * r;
+
+        int split1 = wd->y + r + 1;                       /* top of flat area   */
+        int split2 = wd->y + hh * 2 / 5;                  /* upper-middle        */
+        int split3 = wd->y + hh * 3 / 5;                  /* lower-middle        */
+        int split4 = wd->y + hh - r - 1;                  /* bottom of flat area */
+
+        /* Band 1 (top): lightest, soft alpha so it reads as a highlight. */
+        rect(w, inner_x, split1, inner_w, split2 - split1, argb(top_c, 90u));
+        /* Band 2 (mid-top): medium-light. */
+        rect(w, inner_x, split2, inner_w, split3 - split2, argb(mid_c, 140u));
+        /* Band 3 (mid-bot): medium-dark. */
+        rect(w, inner_x, split3, inner_w, split4 - split3, argb(bot_c, 75u));
+
+        /* Glass edge: a brighter line at the very top of the rounded shape. */
+        rect(w, wd->x + r - 2, wd->y + 2, wd->w - 2 * (r - 2), 1,
+             argb(0x00ffffffu, 80u));
+        rect(w, wd->x + r + 2, wd->y + 3, wd->w - 2 * (r + 2), 1,
+             argb(0x00ffffffu, 40u));
         break; }
     case W_METRIC: {
         /* Self-contained metric card: title + big value + sub-label + a chart
@@ -2080,16 +2106,16 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
         while ((int)sc2(SYS_EVENT_POLL, (uint64_t)w->id, (uint64_t)(size_t)&ev) == 1) {
             if (ev.type == EV_MOUSE_MOVE) {
                 w->mouse_x=ev.x; w->mouse_y=ev.y;
-                if (w->on_mouse_move) w->on_mouse_move(w, ev.x, ev.y);
+                if (w->on_mouse_move) w->on_mouse_move(w, ev.x, ev.y, 0);
             }
             else if (ev.type == EV_MOUSE_DOWN) {
                 w->mouse_x=ev.x; w->mouse_y=ev.y; w->mouse_down=1; click_x=ev.x; click_y=ev.y;
-                if (w->on_mouse_click) w->on_mouse_click(w, ev.x, ev.y);
+                if (w->on_mouse_click) w->on_mouse_click(w, ev.x, ev.y, ev.buttons);
             }
             else if (ev.type == EV_MOUSE_UP) {
                 w->mouse_down=0;
                 w->active_slider = -1;          /* release any slider drag */
-                if (w->on_mouse_release) w->on_mouse_release(w, w->mouse_x, w->mouse_y);
+                if (w->on_mouse_release) w->on_mouse_release(w, w->mouse_x, w->mouse_y, 0);
             }
             else if (ev.type == EV_CLOSE) { w->open=0; }
             else if (ev.type == EV_CONTEXT_MENU) { w->mouse_x=ev.x; w->mouse_y=ev.y; if(w->on_context_menu) w->on_context_menu(w, ev.x, ev.y); }

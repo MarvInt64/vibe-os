@@ -26,6 +26,7 @@
 #include "io.h"
 #include "serial.h"
 #include "string.h"
+#include "timer.h"
 
 /* ---- PCI config access ---- */
 #define PCI_CONFIG_ADDRESS 0x0CF8u
@@ -77,6 +78,8 @@ struct audio_voice {
     uint8_t          ring[AUDIO_RING_SIZE];
     volatile uint32_t head;             /* write pointer */
     volatile uint32_t tail;             /* read pointer  */
+    uint32_t         pre_roll_active;   /* 1 if we are buffering up to the threshold */
+    uint64_t         last_write_tick;   /* tick of the last audio write */
 };
 
 static struct audio_voice g_voices[AUDIO_VOICES];
@@ -136,6 +139,8 @@ static struct audio_voice *voice_for_pid(uint32_t pid) {
          * from reordering the pid store ahead of the pointer stores. */
         g_voices[free_slot].head = 0;
         g_voices[free_slot].tail = 0;
+        g_voices[free_slot].pre_roll_active = 1;
+        g_voices[free_slot].last_write_tick = timer_tick_count();
         __atomic_thread_fence(__ATOMIC_RELEASE);
         g_voices[free_slot].pid  = pid;
         return &g_voices[free_slot];
@@ -145,6 +150,9 @@ static struct audio_voice *voice_for_pid(uint32_t pid) {
 
 /* Mix all active voices into one DMA-sized buffer of int16 stereo PCM.
  * Voices with insufficient data contribute silence for the missing portion. */
+#define AUDIO_PRE_ROLL_BYTES          8192
+#define AUDIO_PRE_ROLL_TIMEOUT_TICKS  10
+
 static void mix_voices(uint8_t *out) {
     /* Accumulate in int32 to avoid overflow when summing multiple voices. */
     int32_t acc[AC97_BD_BYTES / 2];
@@ -155,11 +163,29 @@ static void mix_voices(uint8_t *out) {
 
     for (v = 0; v < AUDIO_VOICES; v++) {
         if (g_voices[v].pid == 0) continue;
-        if (voice_available(&g_voices[v]) < AC97_BD_BYTES) {
-            /* Underrun: this voice has nothing for this buffer — silence. */
+
+        uint32_t avail = voice_available(&g_voices[v]);
+        if (avail == 0) {
+            /* If the voice ran completely dry, re-enable pre-rolling. */
+            g_voices[v].pre_roll_active = 1;
             continue;
         }
-        voice_read(&g_voices[v], tmp, AC97_BD_BYTES);
+
+        if (g_voices[v].pre_roll_active) {
+            uint64_t now = timer_tick_count();
+            if (avail < AUDIO_PRE_ROLL_BYTES && (now - g_voices[v].last_write_tick) < AUDIO_PRE_ROLL_TIMEOUT_TICKS) {
+                /* Still buffering/pre-rolling, contribute silence. */
+                continue;
+            }
+            g_voices[v].pre_roll_active = 0;
+        }
+
+        uint32_t to_read = (avail < AC97_BD_BYTES) ? avail : AC97_BD_BYTES;
+        to_read &= ~3u; /* Align to stereo 16-bit frame size (4 bytes) */
+        if (to_read == 0) continue;
+
+        memset(tmp, 0, AC97_BD_BYTES);
+        voice_read(&g_voices[v], tmp, to_read);
         {
             const int16_t *src = (const int16_t *)tmp;
             for (i = 0; i < AC97_BD_BYTES / 2; i++)
@@ -228,6 +254,24 @@ static inline void bm_write8(uint16_t reg, uint8_t val) {
 void audio_tick(void) {
     if (!g_audio_present) return;
 
+    /* TEMP: every ~1s dump DMA underruns + each active voice's ring fill level
+     * (in ms of buffered audio) to see whether the stutter is DMA-feed or
+     * voice-production (doom not keeping the ring full). */
+    static uint32_t s_dbg = 0;
+    if ((++s_dbg % 100u) == 0) {
+        serial_write("AUDIO dbg: underruns=");
+        serial_write_hex_u64(g_underruns);
+        for (int vv = 0; vv < AUDIO_VOICES; vv++) {
+            if (g_voices[vv].pid == 0) continue;
+            uint32_t avail = voice_available(&g_voices[vv]);
+            /* bytes / (48000*4) * 1000 = ms; 192 bytes per ms */
+            serial_write(" v"); serial_write_hex_u64(g_voices[vv].pid);
+            serial_write("="); serial_write_hex_u64(avail / 192u);
+            serial_write("ms");
+        }
+        serial_write("\n");
+    }
+
     uint8_t  civ = bm_read8(AC97_BM_PCM_OUT_CIV);
     uint16_t sr  = bm_read16(AC97_BM_PCM_OUT_SR);
 
@@ -273,6 +317,7 @@ int audio_write(uint32_t pid, const void *data, uint32_t bytes) {
     if (bytes == 0) return 0;
 
     voice_write(v, data, bytes);
+    v->last_write_tick = timer_tick_count();
     return (int)bytes;
 }
 
@@ -284,6 +329,8 @@ void audio_release_voice(uint32_t pid) {
             g_voices[i].pid  = 0;
             g_voices[i].head = 0;
             g_voices[i].tail = 0;
+            g_voices[i].pre_roll_active = 0;
+            g_voices[i].last_write_tick = 0;
             return;
         }
     }
