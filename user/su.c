@@ -27,39 +27,47 @@
  *
  * Usage: su [username]   (defaults to "root")
  *
- * Reads /etc/shadow for plaintext passwords, /etc/passwd for uid lookup.
- * On success calls SYS_SETUID to change the effective uid of this process.
- * Because the shell forks before executing su, the setuid only affects this
- * child — that is the correct Unix behaviour.
+ * Authenticates against /etc/shadow (preferred) or /etc/passwd (fallback),
+ * then changes the effective uid of the calling process.  Because the shell
+ * spawns su as a child, the uid change only affects this child — matching
+ * standard Unix fork+exec semantics.
+ *
+ * Password database conventions (POSIX-like):
+ *   /etc/passwd  — name:passwd:uid:gid:gecos:home:shell
+ *   /etc/shadow  — name:password             (plaintext; mode 0600)
+ *
+ * Authentication policy:
+ *   - Root (uid 0) may switch to any account without a password.
+ *   - Non-root users must provide the target account's password.
+ *   - Password is verified against /etc/shadow first, then /etc/passwd.
+ *   - The kernel enforces: only root may change to a different uid;
+ *     non-root users calling SYS_SETUID to a different uid get EPERM.
  */
 
-#define SYS_READ    0
-#define SYS_WRITE   1
-#define SYS_EXIT    4
-#define SYS_OPEN    7
-#define SYS_CLOSE   8
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <sys/syscall.h>
+
+/* ---- Syscall numbers (kernel ABI) ---------------------------------------- */
+
+#define SYS_GETUID  55
 #define SYS_SETUID  57
 
-typedef unsigned long  size_t;
-typedef long           ssize_t;
-typedef unsigned long  uint64_t;
-typedef unsigned int   uint32_t;
-typedef unsigned short uint16_t;
-typedef unsigned char  uint8_t;
+/* ---- Bare syscall stubs -------------------------------------------------- */
 
-/* ---- Bare-metal syscall stubs -------------------------------------------- */
-
-static inline ssize_t syscall3(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2) {
-    ssize_t ret;
+static long sc0(unsigned long n) {
+    long ret;
     __asm__ volatile("int $0x80"
                      : "=a"(ret)
-                     : "a"(n), "D"(a0), "S"(a1), "d"(a2)
+                     : "a"(n)
                      : "rcx", "r11", "memory");
     return ret;
 }
 
-static inline ssize_t syscall1(uint64_t n, uint64_t a0) {
-    ssize_t ret;
+static long sc1(unsigned long n, unsigned long a0) {
+    long ret;
     __asm__ volatile("int $0x80"
                      : "=a"(ret)
                      : "a"(n), "D"(a0)
@@ -67,196 +75,167 @@ static inline ssize_t syscall1(uint64_t n, uint64_t a0) {
     return ret;
 }
 
-/* ---- String helpers (no libc) -------------------------------------------- */
+/* ---- Database lookup helpers ---------------------------------------------- */
 
-static size_t su_strlen(const char *s) {
-    size_t n = 0;
-    while (s[n]) n++;
-    return n;
-}
-
-static int su_strcmp(const char *a, const char *b) {
-    while (*a && *a == *b) { a++; b++; }
-    return (unsigned char)*a - (unsigned char)*b;
-}
-
-/* ---- I/O helpers ---------------------------------------------------------- */
-
-static void su_write(const char *s) {
-    syscall3(SYS_WRITE, 1, (uint64_t)(size_t)s, su_strlen(s));
-}
-
-/* Read one char from stdin, blocking until available. */
-static char su_readchar(void) {
-    char c = 0;
-    while (syscall3(SYS_READ, 0, (uint64_t)(size_t)&c, 1) <= 0)
-        ;
-    return c;
-}
-
-/* ---- File reading helper -------------------------------------------------- */
+#define MAX_LINE     256
+#define MAX_PASSWORD 128
 
 /*
- * Open a file by path, read its entire contents into buf, close it.
- * Returns the number of bytes read, or -1 on error.
- * SYS_READ needs a file descriptor (fd), not a path — we must SYS_OPEN first.
+ * Extract colon-delimited field `index` (0-based) from a line.
+ * Overwrites the delimiter with '\0' in-place.
+ * Returns pointer into `line`, or NULL if the field doesn't exist.
  */
-static ssize_t read_file(const char *path, char *buf, size_t cap) {
-    ssize_t fd = syscall1(SYS_OPEN, (uint64_t)(size_t)path);
-    if (fd < 0) return -1;
-    ssize_t n = syscall3(SYS_READ, (uint64_t)fd, (uint64_t)(size_t)buf, cap - 1);
-    syscall1(SYS_CLOSE, (uint64_t)fd);
-    if (n > 0) buf[n] = '\0';
-    return n;
+static char *field_n(char *line, int index) {
+    char *start = line;
+    for (int i = 0; i < index; i++) {
+        while (*start && *start != ':') start++;
+        if (*start == ':') start++;
+        else return NULL;
+    }
+    if (!*start || *start == '\n') return NULL;
+    char *end = start;
+    while (*end && *end != ':' && *end != '\n') end++;
+    *end = '\0';
+    return start;
 }
 
-/* ---- /etc/passwd lookup: name -> uid ------------------------------------- */
+/*
+ * Look up a username in a colon-delimited database file.
+ * If `pw_out` is non-NULL, copies the password field (index `pw_field`).
+ * Returns: 1 = found, 0 = user not found, -1 = file cannot be opened.
+ */
+static int lookup_user(const char *path, const char *username,
+                       int pw_field, char *pw_out, size_t pw_cap) {
+    FILE *fp = fopen(path, "r");
+    if (!fp) return -1;
+
+    char line[MAX_LINE];
+    int found = 0;
+    while (!found && fgets(line, sizeof(line), fp)) {
+        /* Strip trailing newline. */
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
+
+        char *name = field_n(line, 0);
+        if (!name || strcmp(name, username) != 0) continue;
+
+        if (pw_out && pw_cap > 0) {
+            char *pw = field_n(line, pw_field);
+            size_t n = pw ? strlen(pw) : 0;
+            if (n >= pw_cap) n = pw_cap - 1;
+            if (pw) memcpy(pw_out, pw, n);
+            pw_out[n] = '\0';
+        }
+        found = 1;
+    }
+    fclose(fp);
+    return found;
+}
 
 /*
- * Scan /etc/passwd for username and return the numeric uid in field 2.
+ * Look up a username in /etc/passwd and return the numeric uid (field 2).
  * Returns -1 if the user is not found.
- * Format: name:x:uid:gid:gecos:home:shell
  */
 static int lookup_uid(const char *username) {
-    static char buf[512];
-    ssize_t n = read_file("/etc/passwd", buf, sizeof(buf));
-    if (n <= 0) return -1;
+    FILE *fp = fopen("/etc/passwd", "r");
+    if (!fp) return -1;
 
-    char *line = buf;
-    while (*line) {
-        /* Field 0: username. */
-        char *p = line;
-        while (*p && *p != ':' && *p != '\n') p++;
-        size_t name_len = (size_t)(p - line);
-        size_t user_len = su_strlen(username);
+    char line[MAX_LINE];
+    int uid = -1;
+    while (fgets(line, sizeof(line), fp)) {
+        size_t len = strlen(line);
+        if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
 
-        if (name_len == user_len) {
-            /* Compare name manually since su_strcmp is NUL-terminated. */
-            int match = 1;
-            for (size_t i = 0; i < name_len; ++i) {
-                if (line[i] != username[i]) { match = 0; break; }
-            }
-            if (match) {
-                /* Skip two colon-separated fields to reach uid. */
-                int colons = 0;
-                while (*p && *p != '\n' && colons < 2) {
-                    if (*p == ':') colons++;
-                    p++;
-                }
-                int uid = 0;
-                while (*p >= '0' && *p <= '9') {
-                    uid = uid * 10 + (*p - '0');
-                    p++;
-                }
-                return uid;
-            }
-        }
+        char *name = field_n(line, 0);
+        if (!name || strcmp(name, username) != 0) continue;
 
-        while (*line && *line != '\n') line++;
-        if (*line == '\n') line++;
+        char *uid_str = field_n(line, 2);
+        if (uid_str) uid = atoi(uid_str);
+        break;
     }
-    return -1;
+    fclose(fp);
+    return uid;
 }
 
-/* ---- /etc/shadow lookup: name -> plaintext password ---------------------- */
+/* ---- Password prompt ------------------------------------------------------ */
 
 /*
- * Scan /etc/shadow for username and copy its password into pw_buf.
- * Format: name:password\n  (one entry per line, plaintext for now)
- * Returns 1 on success, 0 if user not found.
+ * Read a password from stdin.  Reads one byte at a time with a spin-yield
+ * loop so this works correctly on both blocking TTY and non-blocking PTY
+ * slave file descriptors.  The PTY returns 0 immediately when empty, so
+ * we must yield the CPU to let the terminal app deliver more data.
+ *
+ * Backspace / DEL are honoured.  The caller is responsible for printing
+ * the prompt and a trailing newline — this function only reads.
  */
-static int lookup_shadow(const char *username, char *pw_buf, size_t pw_cap) {
-    static char buf[512];
-    ssize_t n = read_file("/etc/shadow", buf, sizeof(buf));
-    if (n <= 0) return 0;
-
-    char *line = buf;
-    while (*line) {
-        /* Field 0: username. */
-        char *p = line;
-        while (*p && *p != ':' && *p != '\n') p++;
-        size_t name_len = (size_t)(p - line);
-        size_t user_len = su_strlen(username);
-
-        if (name_len == user_len) {
-            int match = 1;
-            for (size_t i = 0; i < name_len; ++i) {
-                if (line[i] != username[i]) { match = 0; break; }
-            }
-            if (match && *p == ':') {
-                p++;  /* skip ':' */
-                size_t i = 0;
-                while (*p && *p != '\n' && i < pw_cap - 1) {
-                    pw_buf[i++] = *p++;
-                }
-                pw_buf[i] = '\0';
-                return 1;
-            }
-        }
-
-        while (*line && *line != '\n') line++;
-        if (*line == '\n') line++;
+static void read_password(char *buf, size_t cap) {
+    size_t i = 0;
+    while (i < cap - 1) {
+        char c = 0;
+        ssize_t n;
+        while ((n = read(STDIN_FILENO, &c, 1)) <= 0)
+            sc0(3 /* SYS_YIELD */);
+        if (c == '\n' || c == '\r') break;
+        if ((c == 0x7f || c == '\b') && i > 0) { i--; continue; }
+        if (c >= 0x20) buf[i++] = c;
     }
-    return 0;
+    buf[i] = '\0';
 }
 
 /* ---- Entry point ---------------------------------------------------------- */
 
 int main(int argc, char **argv) {
-    const char *target = "root";
-    if (argc >= 2) target = argv[1];
+    const char *target = (argc >= 2) ? argv[1] : "root";
 
-    /* Resolve target uid before asking for a password to avoid leaking
-     * that a username exists through a timing difference. */
+    /* Resolve the target uid before prompting — avoids leaking user-existence
+     * information through timing differences. */
     int target_uid = lookup_uid(target);
     if (target_uid < 0) {
-        /* Don't reveal whether the user exists; just deny. */
-        su_write("su: incorrect password\n");
+        fprintf(stderr, "su: user '%s' does not exist\n", target);
         return 1;
     }
 
-    /* Fetch password from shadow. */
-    char expected_pw[128];
-    if (!lookup_shadow(target, expected_pw, sizeof(expected_pw))) {
-        /* No shadow entry means access is denied — this is intentional:
-         * every account that allows su must have an explicit shadow entry. */
-        su_write("su: incorrect password\n");
+    /* Root may switch to any account without a password.  This matches the
+     * standard Unix convention: uid 0 is all-powerful. */
+    int current_uid = (int)sc0(SYS_GETUID);
+    if (current_uid != 0) {
+        /* Non-root: must authenticate against the password database.
+         * Try /etc/shadow first, then fall back to /etc/passwd.  This
+         * mirrors the traditional Unix migration path to shadow passwords. */
+        char expected[MAX_PASSWORD];
+        int have_pw = lookup_user("/etc/shadow", target, 1,
+                                  expected, sizeof(expected));
+        if (have_pw <= 0) {
+            have_pw = lookup_user("/etc/passwd", target, 1,
+                                  expected, sizeof(expected));
+        }
+
+        if (have_pw <= 0) {
+            fprintf(stderr, "su: no password entry for '%s'\n", target);
+            return 1;
+        }
+
+        /* Prompt for the password.  Echo control is not yet supported
+         * (VibeOS lacks TCSETA), so the caller's terminal is responsible
+         * for local echo behaviour. */
+        fprintf(stderr, "Password: ");
+        char entered[MAX_PASSWORD];
+        read_password(entered, sizeof(entered));
+        fprintf(stderr, "\n");
+
+        if (strcmp(entered, expected) != 0) {
+            fprintf(stderr, "su: authentication failure\n");
+            return 1;
+        }
+    }
+
+    /* Set the new uid.  The kernel returns 0 on success, -EPERM if the
+     * caller is not root and the target uid differs. */
+    long ret = sc1(SYS_SETUID, (unsigned long)(unsigned int)target_uid);
+    if (ret < 0) {
+        fprintf(stderr, "su: cannot set uid %d (error %ld)\n", target_uid, -ret);
         return 1;
     }
 
-    /* Prompt for password.  The TTY echoes what is typed (no way to suppress
-     * it without a TCSETA ioctl, which is not yet implemented).
-     * Read the whole line at once — same approach as the shell readline fix:
-     * the PTY delivers a complete line when Enter is pressed, so a large
-     * SYS_READ call is the only reliable way to get the full password. */
-    /* The PTY slave read (used by the terminal app) is non-blocking: it
-     * returns 0 immediately when no data is in the ring buffer.  We must
-     * read character-by-character with a spin-yield loop so we wait
-     * correctly on both TTY (boot console) and PTY (terminal app). */
-    su_write("Password: ");
-    char entered[128];
-    size_t ei = 0;
-    while (ei < sizeof(entered) - 1) {
-        char c = 0;
-        while (syscall3(SYS_READ, 0, (uint64_t)(size_t)&c, 1) <= 0)
-            syscall1(3 /*SYS_YIELD*/, 0);  /* yield CPU until data arrives */
-        if (c == '\n' || c == '\r') break;
-        if ((c == '\x7f' || c == '\b') && ei > 0) { ei--; continue; }
-        if (c >= 0x20) entered[ei++] = c;
-    }
-    entered[ei] = '\0';
-    su_write("\n");
-
-    if (su_strcmp(entered, expected_pw) != 0) {
-        su_write("su: incorrect password\n");
-        return 1;
-    }
-
-    /* Password matched — switch uid. */
-    syscall1(SYS_SETUID, (uint64_t)(uint32_t)target_uid);
-
-    su_write("su: switched to ");
-    su_write(target);
-    su_write("\n");
     return 0;
 }

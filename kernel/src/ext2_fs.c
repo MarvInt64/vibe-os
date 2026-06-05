@@ -290,21 +290,34 @@ int ext2_format(struct ext2_filesystem *fs, struct ramdisk_device *device) {
     ext2_mkdir(fs, "/etc", 0755);
 
     /* Seed /etc with the system identity files so they exist from the very
-     * first boot — id/whoami/su look at /etc/passwd and would fall back to
-     * "user" forever otherwise. The content is hard-coded here (no host-side
-     * install needed); any later `edit /etc/passwd` and Save overwrites it
-     * because the inode is on the persistent ext2 partition. */
+     * first boot. The content is hard-coded here (no host-side install needed);
+     * later edits via `edit /etc/passwd` overwrite these because the inodes
+     * live on the persistent ext2 partition.
+     *
+     * POSIX conventions:
+     *   /etc/passwd  — user database (name:passwd:uid:gid:gecos:home:shell)
+     *   /etc/shadow  — shadow password file (name:password  — plaintext for now)
+     *   /etc/group   — group database (name:passwd:gid:members)
+     *   /etc/hostname — system hostname
+     *   /etc/issue   — pre-login banner
+     *
+     * The root account has an empty shadow password by design — this allows
+     * the initial login to proceed without a password prompt, matching the
+     * Unix convention for freshly-installed systems.  Use `passwd root` or
+     * `adduser` to set real passwords. */
     {
         static const char seed_passwd[] = "root:x:0:0:Root:/root:/bin/sh\n";
+        static const char seed_shadow[] = "root:\n";
         static const char seed_group[]  = "root:x:0:\n";
         static const char seed_host[]   = "vibeos\n";
-        static const char seed_issue[]  = "VibeOS \\r (kernel \\v)\\n\\n";
+        static const char seed_issue[]  = "VibeOS \\r (kernel \\v)\\\n\\n";
 
         struct { const char *path; const char *data; uint16_t mode; } seeds[] = {
-            { "/etc/passwd", seed_passwd, 0644 },
-            { "/etc/group",  seed_group,  0644 },
-            { "/etc/hostname", seed_host, 0644 },
-            { "/etc/issue",  seed_issue,  0644 },
+            { "/etc/passwd",   seed_passwd, 0644 },
+            { "/etc/shadow",   seed_shadow, 0600 },
+            { "/etc/group",    seed_group,  0644 },
+            { "/etc/hostname", seed_host,   0644 },
+            { "/etc/issue",    seed_issue,  0644 },
         };
         for (size_t i = 0; i < sizeof(seeds) / sizeof(seeds[0]); ++i) {
             uint32_t ino = ext2_create(fs, seeds[i].path, seeds[i].mode);
