@@ -31,6 +31,7 @@
 #include "input.h"
 #include "interrupts.h"
 #include "smp.h"
+#include "bkl.h"
 #include "cpu.h"
 #include "apic.h"
 #include "journal.h"
@@ -446,6 +447,12 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
    * uses this_cpu() — the scheduler's per-CPU current/cursor fields are reached
    * through it from process_init() onward. */
   cpu_register(apic_is_active() ? lapic_id() : 0);
+
+  /* Take the big kernel lock for the boot CPU. From here the kernel always runs
+   * holding it; it is dropped only on the way out to userspace (in the trap
+   * exit path) and re-taken on every kernel entry. This is what will let APs
+   * run userspace in parallel while kernel code stays serialised. */
+  bkl_acquire();
 
   settings_init();
   journal_init();

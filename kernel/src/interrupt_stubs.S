@@ -19,6 +19,8 @@
 .extern syscall_handle_interrupt
 .extern timer_handle_interrupt
 .extern fault_handler
+.extern bkl_acquire
+.extern bkl_release
 /* The scheduler's park/resume slot is per-CPU: it lives in this CPU's struct
  * cpu, reached through the GS base. These offsets must match struct cpu in
  * cpu.h (guarded by _Static_assert in cpu.c). */
@@ -100,6 +102,12 @@ ap_timer_stub:
     iretq
 
 interrupt_restore_user_context:
+    /* Leaving the kernel: drop the big kernel lock. rdi holds the frame pointer
+     * we still need, so preserve it across the call. (bkl_release only truly
+     * unlocks when this CPU's recursion depth reaches zero.) */
+    push rdi
+    call bkl_release
+    pop rdi
     mov rsp, rdi
     pop rax
     pop rbx
@@ -227,6 +235,11 @@ syscall_interrupt_stub:
     push rbx
     push rax
 
+    /* Entering the kernel from a syscall: take the big kernel lock. All GP regs
+     * are already saved on the stack, so the call clobbering caller-saved
+     * registers is harmless. */
+    call bkl_acquire
+
     mov rdi, rsp
     call syscall_handle_interrupt
     test eax, eax
@@ -336,6 +349,11 @@ timer_interrupt_stub:
     push rcx
     push rbx
     push rax
+
+    /* Entering the kernel from a timer IRQ: take the big kernel lock. If this
+     * CPU already holds it (the timer fired in kernel context) bkl_acquire just
+     * deepens the recursion, so this never self-deadlocks. */
+    call bkl_acquire
 
     mov rdi, rsp
     call timer_handle_interrupt
