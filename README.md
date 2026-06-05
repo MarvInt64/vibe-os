@@ -13,9 +13,11 @@ It boots via GRUB/Multiboot2, runs entirely bare-metal, and includes a working g
 |---|---|
 | **Boot** | GRUB Multiboot2 → 32-bit protected mode → 64-bit long mode; VGA text-mode fallback during early init |
 | **Memory** | Physical frame allocator, 4-level paging, kernel heap (`kmalloc`/`kfree`), per-process page tables with full address-space isolation; **isolated compositor heap** for window buffers; **per-process image heaps** to prevent fragmentation and overlap |
-| **Interrupts** | IDT, PIC remapping, IRQ handlers, `int 0x80` syscall interface (39 syscalls) |
-| **Scheduler** | Round-robin preemptive multi-process; FPU/SSE context switch per process (`fxsave`/`fxrstor`) so userspace can freely use floats and SSE |
-| **Process management** | `SYS_PROCESS_SPAWN` / `SYS_WAITPID` / `SYS_PROCESS_KILL`; per-process file-descriptor table; `SYS_GETARG` argument passing |
+| **Interrupts** | IDT + IRQ handlers + `int 0x80` syscall interface; **ACPI enumeration** (RSDP→RSDT/XSDT→MADT) and **Local APIC + IOAPIC** interrupt routing, falling back to the legacy 8259 PIC + PIT on machines without ACPI |
+| **SMP / Multi-core** | Brings every CPU online via INIT-SIPI-SIPI; per-CPU GDT/TSS/data (GS-base) and per-CPU Local APIC timer; a **recursive big kernel lock** lets the application processors run userspace **in parallel** with the boot CPU while the kernel core stays serialised; SMP-safe heap. Boot with `-smp N` (the `make run*` targets default to 4 cores) |
+| **Scheduler** | Round-robin preemptive multi-process, **across all cores** (each CPU dispatches its own ready process, never the same one twice); FPU/SSE context switch per process (`fxsave`/`fxrstor`) so userspace can freely use floats and SSE |
+| **Process management** | `SYS_PROCESS_SPAWN` / `SYS_WAITPID` / `SYS_PROCESS_KILL`; per-process file-descriptor table; `SYS_GETARG` argument passing; child processes inherit the parent's uid/gid and working directory |
+| **Users & auth** | `/etc/passwd` + `/etc/shadow`; numeric uids with ownership/permission checks in the VFS; `su` (password login, drops to a shell), `adduser` (Linux-style account creation, 0700 home), `whoami`, `id`, `chown`, `chmod`; `kill` restricted to the owner or root; apps resolve their working dir from the user's passwd home |
 | **Storage** | IDE/PIO driver, ramdisk (in-memory block device for early boot), persistent raw disk image |
 | **File system** | ext2 read/write; full VFS layer; `open`/`close`/`read`/`write`/`stat`/`readdir`/`chdir`/`getcwd`/`unlink`/`creat`/`mkdir` syscalls; survives reboots |
 | **Networking** | Intel e1000 NIC driver; ARP, IPv4, ICMP (`ping`), UDP, DNS, TCP; HTTP (`curl`); TLS via BearSSL (freestanding port) — `SYS_NET_HTTPS_GET` syscall exists and encrypts the connection, but certificate validation is disabled (accept-all, no trust store) and the shell `curl` command currently only uses plain HTTP |
@@ -27,12 +29,13 @@ It boots via GRUB/Multiboot2, runs entirely bare-metal, and includes a working g
 | **Wallpaper** | Userspace decodes an image (shared `user/libimage`, stb_image) and hands pixels to the kernel via `SYS_SET_WALLPAPER`; `/bin/wallpaper [path]` (default `/wallpapers/default.png`); plain theme-blue backdrop when none set |
 | **VexUI toolkit** | Retained-mode widget library: labels, rounded buttons, **pill buttons**, panels, **cards**, **status badges/pills**, **rounded inputs**, **tabs** (accent underline), progress bars, **sparklines**, **dock tiles**; **VBox/HBox layout containers** with `expand`/`fill`/`gap`/`padding`; in-window menu bar; **interactive and styled scrollbars**; **hover delivery to unfocused panels**; **dirty-on-change setters + damaged-rect partial presents** for efficient redraws |
 | **Font rendering** | Built-in bitmap font atlas (`font_atlas.c`) used by VexUI and the kernel terminal; DejaVu Sans TTF embedded via `.incbin` + stb_truetype glyph cache (`appfont.c`) used by the browser for anti-aliased proportional text |
-| **Userspace libc** | Freestanding libc: stdio/stdlib/string/ctype; `crt0` (entry, `.init_array` ctors, `_exit`); user heap (`umalloc`) |
+| **Userspace libc** | Freestanding libc: **buffered `<stdio.h>` `FILE` streams** (`fopen`/`fread`/`fwrite`/`fseek`/`fclose`, with real `"w"` truncation), stdlib/string/ctype, `time`/`math`/`setjmp`; `crt0` (entry, `.init_array` ctors, `_exit`); user heap (`umalloc`); `vos_home_dir()` resolves the session user's home |
 | **SVG Rendering** | Reusable **lib/svg** library with **anti-aliased SDF (Signed Distance Field) renderer**; used by the dock for high-quality vector icons |
 | **C++20 userspace** | Full freestanding C++20 runtime: vtables, RTTI, `typeid`, global/local statics, `new`/`delete`, `__cxa_guard_*`, `__cxa_atexit`; standard headers `<array>`, `<span>`, `<algorithm>`, `<utility>`, `<type_traits>`, `<new>`, `<typeinfo>`, etc. |
 | **Kernel C++ runtime** | Kernel-side C++20 subset (no exceptions/RTTI); `new`/`delete` via `kmalloc`; `.init_array` global ctors; automatic boot self-test |
 | **Logging** | Kernel event journal (`dmesg`); serial debug output; `SYS_LOG` / `vos_log` for userspace; crash persistence to `/journal.log` |
-| **Apps** | `sh` (interactive shell with `audiocfg`), `edit` (text editor), `browser` (revamped with custom **CSS engine**), `taskmgr` (v2 with real-time CPU accounting), `filebrowser` (graphical file manager), `doom` (scalable aspect-ratio locked doomgeneric port), **topbar** (userspace system bar), `uidemo`, `hello`, `cpptest` |
+| **Apps** | `sh` (interactive shell with `audiocfg`), `edit` (text editor), `browser` (revamped with custom **CSS engine**), `taskmgr` (real-time CPU accounting + a **PERFORMANCE tab with live per-core utilisation bars**), `filebrowser` (graphical file manager with an OPEN/SAVE file-dialog mode), `texteditor` + `mp3play`/audioplayer, `adduser`, `doom` (scalable aspect-ratio locked doomgeneric port), **topbar** (userspace system bar), `uidemo`, `hello`, `cpptest` |
+| **Audio** | AC97 driver with per-process voice ring buffers (multiple apps mix simultaneously); the DMA is fed lock-free from the timer IRQ, so playback stays glitch-free regardless of compositing/CPU load |
 
 ---
 
@@ -116,9 +119,11 @@ On subsequent builds, `make run` is enough — it rebuilds whatever changed.
 ## Running
 
 QEMU launches with:
-- **256 MB RAM**, `vga std` framebuffer
-- **HVF** acceleration on macOS / **KVM** on Linux (falls back to TCG)
+- **512 MB RAM**, `vga std` framebuffer
+- **4 CPU cores** by default (`-smp 4`); override per run, e.g. `make run-serial QEMU_SMP="-smp 2"` or `QEMU_SMP=` for a single core
+- **TCG** on macOS, **KVM → TCG** on Linux; `-cpu max` (exposes RDRAND for the TLS entropy source)
 - **Intel e1000** NIC with SLIRP user networking (guest IP `10.0.2.15`, DNS at `10.0.2.3`)
+- **AC97** audio device
 - Persistent **IDE disk** backed by `vibeos-disk.img`
 
 The desktop starts automatically. Click the **TERM** icon on the taskbar to open a terminal.
@@ -156,10 +161,20 @@ clear                  clear terminal
 exit                   exit shell
 ```
 
+**Users**
+```
+whoami                 print the current user name
+id                     print uid / gid
+su [user]              switch user (prompts for the /etc/shadow password)
+adduser [opts] <name>  create an account (-u uid, -d home, -s shell, -c gecos); root only
+chown <uid[:gid]> <f>  change file ownership (root only)
+chmod <mode> <file>    change permission bits
+```
+
 **GUI apps** (launch from shell or desktop icons)
 ```
 gui / desktop / wm     start graphical desktop
-taskmgr / tasks        process manager (v2 with live CPU details)
+taskmgr / tasks        process manager — live per-process CPU + a PERFORMANCE tab with per-core utilisation bars
 browser / web          HTTP/HTTPS text browser with CSS engine
 filebrowser / files    graphical file manager with icons
 doom                   aspect-ratio locked scalable doomgeneric game port
@@ -209,8 +224,13 @@ VibeOS/
 │   ├── include/          — kernel headers
 │   └── src/              — kernel C/C++ and assembly source
 │       ├── boot.S        — Multiboot2 entry, long-mode switch
+│       ├── ap_boot.S     — application-processor (AP) start trampoline
 │       ├── kernel.c      — main kernel init
 │       ├── process.c     — scheduler + process management
+│       ├── acpi.c        — ACPI RSDP/MADT enumeration (CPUs, APICs)
+│       ├── apic.c        — Local APIC + IOAPIC programming
+│       ├── smp.c         — bring APs online, per-CPU scheduler loop
+│       ├── cpu.c         — per-CPU data (GS-base), bkl.c — big kernel lock
 │       ├── paging.c      — virtual memory / page tables
 │       ├── net.c         — networking stack (ARP/IP/ICMP/UDP/TCP)
 │       ├── ext2_fs.c     — ext2 file system
@@ -251,14 +271,15 @@ VibeOS/
 │  user/vexui (retained-mode GUI toolkit, VBox/HBox)      │
 ├─────────────────────────────────────────────────────────┤
 │  Kernel (ring 0)                                        │
-│  scheduler · paging · heap · VFS · ext2                 │
-│  e1000 · ARP/IP/ICMP/UDP/DNS/TCP · BearSSL TLS          │
-│  framebuffer renderer · window server · PS/2 input      │
-│  IDT · PIC · IRQ · syscall (int 0x80)                   │
+│  SMP scheduler (big kernel lock) · paging · heap        │
+│  VFS · ext2 · e1000 · ARP/IP/ICMP/UDP/DNS/TCP · TLS     │
+│  framebuffer renderer · window server · PS/2 · AC97     │
+│  IDT · ACPI · Local APIC / IOAPIC · syscall (int 0x80)  │
 ├─────────────────────────────────────────────────────────┤
+│  CPU0 (BSP) + CPU1..N (APs, INIT-SIPI-SIPI)             │
 │  GRUB Multiboot2 → 32-bit → 64-bit long mode           │
 └─────────────────────────────────────────────────────────┘
-        QEMU  ·  x86_64 bare metal
+        QEMU -smp N  ·  x86_64 bare metal
 ```
 
 ---
@@ -372,7 +393,8 @@ VexUI provides a comprehensive set of Retained-Mode UI controls. Here is a list 
 * **`vui_bar(w, x, y, width, height, max)`**: A horizontal progress bar that fills up to the designated value.
 * **`vui_sparkline(w, x, y, width, height)`**: A decorative mini line graph for tracking historical trends.
 * **`vui_metric(w, x, y, width, height, title, mode)`**: A composite self-contained KPI widget displaying a title, large highlighted value, sub-label, and historical chart.
-* **`vui_tabs(w, x, y, width, labels, active)`**: Tab strip navigation with active accent underline highlighting (e.g., labels `"Home|Files|Settings"`).
+* **`vui_slider(w, x, y, width, height, max)`**: An interactive horizontal slider (draggable handle); the `vui_on_click` callback fires whenever a drag/click changes the value (read with `vui_get_value`).
+* **`vui_tabs(w, x, y, width, labels, active)`**: Tab strip navigation with active accent underline highlighting (e.g., labels `"Home|Files|Settings"`). Read the selected tab with **`vui_get_value(tabs)`** and switch views from an `vui_on_click` handler (e.g. the task manager's PROCESSES/PERFORMANCE tabs toggle widget visibility).
 
 #### Custom Rendering (Canvas)
 * **`vui_canvas(w, x, y, width, height, pixels)`**: A retained canvas element mapping to an `XRGB` pixel array for custom drawing components.
