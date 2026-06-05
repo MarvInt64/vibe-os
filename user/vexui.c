@@ -2025,7 +2025,7 @@ vui_window *vui_window_open_inset(const char *title, int width, int height,
      * back-buffer — every pixel we write lands there with zero intermediate
      * copies.  Falls back to the static g_canvas_fb when the kernel does
      * not support BIND_FB (older VibeOS or non-user-app windows). */
-        {
+    if (0) {
         int fb_stride = 0, fb_w = 0, fb_h = 0;
         long fb_addr, fb_dx, fb_r10, fb_r8;
         __asm__ volatile(

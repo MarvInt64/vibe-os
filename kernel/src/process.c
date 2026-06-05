@@ -2410,16 +2410,9 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         uint32_t *storage = desktop_window_get_storage(d, (int)frame->rdi, &cw, &ch);
         if (!storage || cw <= 0 || ch <= 0) { frame->rax = 0; return 0; }
         size_t bytes = (size_t)cw * (size_t)ch * 4u;
-        size_t npages = (bytes + 0xFFFul) >> 12;
-        /* Use the dedicated FB mapping region (below the stack) so we never
-         * collide with sbrk() heap pages.  Initialise on first use. */
-        if (process->fb_next_vaddr == 0)
-            process->fb_next_vaddr = PROCESS_FB_REGION_BASE;
-        uintptr_t vaddr = process->fb_next_vaddr;
-        if (vaddr + bytes > PROCESS_FB_REGION_BASE + PROCESS_FB_REGION_BYTES) {
-            frame->rax = 0; return 0;  /* FB region exhausted */
-        }
+        uintptr_t vaddr = (process->heap_break + 0xFFFul) & ~0xFFFul;
         uintptr_t phys  = (uintptr_t)storage;
+        size_t npages = (bytes + 0xFFFul) >> 12;
         uint64_t *pt = process->user_page_tables;
         for (size_t i = 0; i < npages; ++i) {
             size_t table_idx = ((vaddr + (i << 12)) - PROCESS_USER_BASE) >> 21;
@@ -2428,11 +2421,12 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         }
         process->fb_vaddr  = vaddr;
         process->fb_win_id = (uint32_t)frame->rdi;
-        process->fb_next_vaddr = vaddr + bytes;
+        process->heap_break = vaddr + bytes;
         frame->rax = (uint64_t)vaddr;
         frame->rdx = (uint64_t)(uint32_t)cw;
         frame->r10 = (uint64_t)(uint32_t)cw;
         frame->r8  = (uint64_t)(uint32_t)ch;
+        /* Invalidate TLB for the newly mapped pages. */
         for (size_t i = 0; i < npages; ++i)
             __asm__ volatile("invlpg (%0)" :: "r"(vaddr + (i << 12)) : "memory");
         return 0;
