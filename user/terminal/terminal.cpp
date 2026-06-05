@@ -64,6 +64,7 @@ private:
     int  line_len_ = 0;
 
     bool dirty_ = true;
+    int  blink_counter_ = 0;
 };
 
 Terminal *Terminal::instance = nullptr;
@@ -83,9 +84,11 @@ void Terminal::echo(char c) {
 }
 
 void Terminal::send_line() {
-    /* Terminate the line and hand it to the shell; echo the newline locally. */
+    /* Terminate the line with newline and hand it to the shell.
+     * Newline termination matches TTY behaviour; NUL termination
+     * breaks programs (su, etc.) that read char-by-char until '\n'. */
     if (line_len_ < (int)sizeof(line_) - 1) {
-        line_[line_len_++] = '\0';
+        line_[line_len_++] = '\n';
     }
     
     /* Save to history */
@@ -203,7 +206,14 @@ void Terminal::pump_output() {
 
 void Terminal::on_tick() {
     pump_output();
-    if (dirty_) repaint();
+    if (dirty_) {
+        repaint();
+        return;
+    }
+    /* Force periodic repaints so the cursor blinks even when idle. */
+    if ((++blink_counter_ % 8) == 0) {
+        repaint();
+    }
 }
 
 void Terminal::repaint() {
