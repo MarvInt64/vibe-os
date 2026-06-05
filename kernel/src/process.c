@@ -1462,6 +1462,9 @@ static int process_spawn_named_from_parent(struct process *parent, const char *n
                 g_processes[slot].cwd[k] = parent->cwd[k];
             g_processes[slot].cwd[k] = '\0';
         }
+        /* Inherit uid/gid so spawned children run as the same user. */
+        g_processes[slot].uid = parent->uid;
+        g_processes[slot].gid = parent->gid;
         return (int)g_processes[slot].pid;
     }
 
@@ -1503,6 +1506,9 @@ static int process_spawn_named_from_parent(struct process *parent, const char *n
                 g_processes[slot].cwd[k] = parent->cwd[k];
             g_processes[slot].cwd[k] = '\0';
         }
+        /* Inherit uid/gid so spawned children run as the same user. */
+        g_processes[slot].uid = parent->uid;
+        g_processes[slot].gid = parent->gid;
         return (int)g_processes[slot].pid;
     }
 }
