@@ -117,6 +117,9 @@ Browser::Browser() {
     layout_engine_.set_metrics(appfont_advance, appfont_line_height);
     layout_engine_.set_image_sizer(img_sizer_cb);
     s_instance_ = this;
+    /* Pre-fill canvas with page colour so the window never flashes magentan     * (the transparent sentinel) before the first frame is rendered. */
+    for (int i = 0; i < BROW_MAX_W * BROW_MAX_H; ++i) canvas_[i] = COL_PAGE;
+
     warm_heap(8u * 1024u * 1024u);   /* 8 MB: HTTP buffer + HTML + a few images */
 }
 
