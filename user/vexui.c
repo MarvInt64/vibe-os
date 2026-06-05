@@ -609,36 +609,10 @@ static void draw_svg_icon(struct vui_window *w, int x, int y, int size,
         g_svg_cache[slot].size = size;
         g_svg_cache[slot].color = color;
 
-        /* Supersample: render at up to 2x the display size, then box-downscale
-         * into the cache. A thin stroke + soft glow rendered directly at a small
-         * size aliases into a blob; rendering at 2x and averaging keeps fine
-         * detail (ring, drop-shadow) crisp. Cache stores the final size×size. */
-        static unsigned int ss_buf[SVG_MAX_DIM * SVG_MAX_DIM];
-        int ss = size * 2; if (ss > SVG_MAX_DIM) ss = SVG_MAX_DIM; if (ss < size) ss = size;
-        svg_render_rgba(svg, ss_buf, ss, (unsigned int)color);
-        if (ss == size) {
-            for (i = 0; i < size * size; ++i) g_svg_cache[slot].buffer[i] = ss_buf[i];
-        } else {
-            for (int yy = 0; yy < size; ++yy) {
-                int sy0 = yy * ss / size, sy1 = (yy + 1) * ss / size; if (sy1 <= sy0) sy1 = sy0 + 1;
-                for (int xx = 0; xx < size; ++xx) {
-                    int sx0 = xx * ss / size, sx1 = (xx + 1) * ss / size; if (sx1 <= sx0) sx1 = sx0 + 1;
-                    unsigned sr = 0, sg = 0, sb = 0, sa = 0, n = 0;
-                    for (int sy = sy0; sy < sy1; ++sy)
-                        for (int sx = sx0; sx < sx1; ++sx) {
-                            unsigned int p = ss_buf[sy * ss + sx]; unsigned a = (p >> 24) & 255u;
-                            sr += ((p >> 16) & 255u) * a; sg += ((p >> 8) & 255u) * a;
-                            sb += (p & 255u) * a;         sa += a; ++n;
-                        }
-                    unsigned int out = 0;
-                    if (sa > 0) {
-                        unsigned r = sr / sa, g = sg / sa, b = sb / sa, av = sa / n;
-                        out = (av << 24) | (r << 16) | (g << 8) | b;
-                    }
-                    g_svg_cache[slot].buffer[yy * size + xx] = out;
-                }
-            }
-        }
+        /* Render once at the display size into the cache (the svg rasteriser has
+         * its own 1px analytic AA, so a direct render stays crisp). Cached in
+         * RAM and just blitted on every subsequent repaint. */
+        svg_render_rgba(svg, g_svg_cache[slot].buffer, size, (unsigned int)color);
         g_svg_cache[slot].valid = 1;
 
         cached_buf = g_svg_cache[slot].buffer;
