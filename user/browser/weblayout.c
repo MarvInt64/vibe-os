@@ -272,9 +272,7 @@ static struct wl_run *add_run(struct wl_doc *d){
         if(!nr) return 0;
         d->runs=nr; d->run_cap=nc;
     }
-    struct wl_run *r = &d->runs[d->run_count++];
-    r->node = 0;
-    return r;
+    return &d->runs[d->run_count++];
 }
 static int add_href(struct wl_doc *d,const char *href){
     int i=0;
@@ -401,7 +399,6 @@ void wl_init(struct wl_doc *d){
     d->hrefs=0; d->href_count=0; d->href_cap=0;
     d->fields=0; d->field_count=0; d->field_cap=0;
     d->height=0;
-    d->bg_color=0;
 }
 void wl_free(struct wl_doc *d){
     if(d->pool) ufree(d->pool);

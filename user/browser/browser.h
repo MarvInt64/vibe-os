@@ -15,15 +15,11 @@
 #include <atomic>
 #include <thread>
 #include <mutex>
-#include <quickjs.h>
 #include "vibeos.h"
-
-
 #include "vexui.h"
 #include "weblayout.h"
 #include "dom.h"
 #include "layout_engine.h"
-
 
 /* Fetch lifecycle, driven by the network worker thread and observed by the UI
  * thread. The atomic is the synchronisation barrier: the worker releases Ready
@@ -50,8 +46,6 @@ static constexpr int PAGE_PAD    = 14;  /* inner left padding        */
 class Browser {
 public:
     Browser();
-    ~Browser();
-
 
     /* Open the window, set up callbacks, and run the event loop. */
     void __attribute__((noreturn)) run();
@@ -67,7 +61,6 @@ public:
     void on_forward();
     void on_url_enter();
     void on_tick();
-    void layout_current();
 
     static Browser *s_instance_;  /* for static image callback */
 
@@ -87,7 +80,6 @@ private:
     vui_widget *w_canvas_  = nullptr;
     vui_widget *w_back_    = nullptr;
     vui_widget *w_forward_ = nullptr;
-    vui_widget *w_reload_  = nullptr;
 
     /* ---- navigation ---------------------------------------------------- */
     static constexpr int HIST_CAP = 24;
@@ -127,16 +119,6 @@ private:
     char     *html_buf_ = nullptr;
     int       html_len_ = 0;
     wl_doc    layout_   = {};
-    struct dom_doc dom_ = {};
-    JSRuntime *js_rt_ = nullptr;
-    JSContext *js_ctx_ = nullptr;
-
-    static constexpr int MAX_DYN_STRS = 1024;
-    char *dynamic_strings_[MAX_DYN_STRS] = {};
-    int dynamic_string_count_ = 0;
-
-
-
     int       scroll_   = 0;
     int       hover_link_ = -1;
     bool      scroll_dragging_ = false;
@@ -179,38 +161,6 @@ private:
     void scan_and_play_audio();             /* find first <audio src> and play it    */
     static void audio_worker(Browser *b, char src[512], std::atomic<bool> *stop);
 
-    /* ---- JavaScript integration ----------------------------------------- */
-    void js_init();
-    void js_free();
-    void execute_scripts();
-    void execute_script_node(struct dom_node *node);
-    void layout_dom_only();
-
-    static JSValue js_print(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_console_warn(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_console_error(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_console_info(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_element_get_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_element_set_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_document_get_element_by_id(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static struct dom_node *find_node_by_id(struct dom_node *node, const char *id);
-    static JSValue js_wrap_node(JSContext *ctx, struct dom_node *node);
-    static struct dom_node *js_unwrap_node(JSContext *ctx, JSValueConst val);
-    static JSValue js_document_create_element(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_document_create_text_node(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_element_append_child(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_element_add_event_listener(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_window_add_event_listener(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_document_add_event_listener(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_element_get_attribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_element_set_attribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_document_query_selector(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static JSValue js_element_query_selector(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv);
-    static bool matches_selector(struct dom_node *node, const char *selector);
-    static struct dom_node *find_node_by_selector(struct dom_node *node, const char *selector);
-
-
-
     /* ---- DNS cache ----------------------------------------------------- */
     static constexpr int DNS_CACHE_CAP = 16;
     struct DnsEntry { char host[256]; uint32_t ip; };
@@ -247,9 +197,10 @@ private:
     void fetch_worker(uint32_t gen, bool push_to_history);              /* runs on the worker thread: load pending_url_ */
     void load_images(uint32_t gen);               /* worker thread: fetch images, re-layout each */
     void poll_fetch();                /* UI thread: react to worker completion */
+    void layout_current();
     void resolve_href(const char *href, char *out, int cap) const;
     void clamp_scroll();
-    int  content_h() const { return win_h_ - CONTENT_TOP - (console_show_ ? CONSOLE_H : 0); }
+    int  content_h() const { return win_h_ - CONTENT_TOP; }
     int  page_w()    const { return win_w_ - 2 * MARGIN - SCROLLBAR_W; }
     int  content_w() const { return page_w() - 2 * PAGE_PAD; }
 
@@ -263,7 +214,6 @@ private:
     /* ---- link hit-test ------------------------------------------------- */
     int  link_at(int x, int y) const;
     bool hit_link(int x, int y, char *out, int cap) const;
-    struct dom_node *node_at(int x, int y) const;
 
     /* ---- form fields --------------------------------------------------- */
     void seed_fields();              /* copy initial value= into field_values_ */
@@ -272,35 +222,6 @@ private:
 
     /* ---- rendering ----------------------------------------------------- */
     void render();
-    void dispatch_click_event(struct dom_node *node);
-    void add_event_listener(struct dom_node *node, const char *type, JSValue callback);
-    void dom_set_attribute(struct dom_node *node, const char *name, const char *value);
 
-    /* ---- Developer Console --------------------------------------------- */
-public:
-    struct ConsoleLog {
-        char text[512];
-        uint32_t color;
-    };
-    static constexpr int CONSOLE_H = 180;
-    static constexpr int MAX_CONSOLE_LOGS = 64;
-
-    bool console_show_ = false;
-    bool console_focused_ = false;
-    char console_cmd_[256] = {};
-    int  console_cmd_len_ = 0;
-    ConsoleLog console_logs_[MAX_CONSOLE_LOGS] = {};
-    int  console_log_count_ = 0;
-
-    struct EventListener {
-        struct dom_node *node;
-        char type[32];
-        JSValue callback;
-    };
-    static constexpr int MAX_EVENT_LISTENERS = 128;
-    EventListener event_listeners_[MAX_EVENT_LISTENERS] = {};
-    int event_listener_count_ = 0;
-
-    void toggle_console();
-    void console_add_log(const char *text, uint32_t color);
+    /* ---- URL bar editing (deprecated, now handled by VexUI) ------------- */
 };

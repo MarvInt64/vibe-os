@@ -24,6 +24,7 @@
 
 #include "timer.h"
 #include "io.h"
+#include "apic.h"
 
 #define PIC1_COMMAND 0x20u
 #define PIC1_DATA 0x21u
@@ -80,7 +81,13 @@ void timer_tick(void) {
 }
 
 void timer_acknowledge_irq(void) {
-    outb(PIC1_COMMAND, 0x20u);
+    /* Signal end-of-interrupt to whichever controller delivered the timer:
+     * the Local APIC once apic_init() has taken over, otherwise the 8259 PIC.
+     * (apic_init() masks the PIC, so only one of these paths is ever live.) */
+    if (apic_is_active())
+        lapic_eoi();
+    else
+        outb(PIC1_COMMAND, 0x20u);
 }
 
 uint64_t timer_tick_count(void) {

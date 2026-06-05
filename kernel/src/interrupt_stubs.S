@@ -11,6 +11,7 @@
 .global timer_interrupt_stub
 .global pagefault_stub
 .global gpfault_stub
+.global spurious_interrupt_stub
 
 .extern syscall_handle_interrupt
 .extern timer_handle_interrupt
@@ -37,6 +38,11 @@ interrupt_load_runtime_tables:
     mov ax, dx
     ltr ax
     ret
+
+/* Local APIC spurious-interrupt handler (vector 0xFF). A spurious interrupt
+ * does not need an EOI and carries no error code, so we simply return. */
+spurious_interrupt_stub:
+    iretq
 
 interrupt_restore_user_context:
     mov rsp, rdi

@@ -69,48 +69,6 @@ static bool is_space(char c) {
     return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
 }
 
-static int parse_cell_width(dom_node *cell, int parent_w) {
-    const char *style = dom_attr(cell, "style");
-    if (style) {
-        const char *p = style;
-        while (*p) {
-            if (p[0] == 'w' && p[1] == 'i' && p[2] == 'd' && p[3] == 't' && p[4] == 'h') {
-                const char *q = p + 5;
-                while (*q == ' ') ++q;
-                if (*q == ':') {
-                    ++q;
-                    while (*q == ' ') ++q;
-                    int val = 0;
-                    while (*q >= '0' && *q <= '9') {
-                        val = val * 10 + (*q - '0');
-                        ++q;
-                    }
-                    if (*q == '%') {
-                        return parent_w * val / 100;
-                    }
-                    return val;
-                }
-            }
-            ++p;
-        }
-    }
-    const char *w_attr = dom_attr(cell, "width");
-    if (w_attr) {
-        const char *p = w_attr;
-        while (*p == ' ') ++p;
-        int val = 0;
-        while (*p >= '0' && *p <= '9') {
-            val = val * 10 + (*p - '0');
-            ++p;
-        }
-        if (*p == '%') {
-            return parent_w * val / 100;
-        }
-        return val;
-    }
-    return 0;
-}
-
 /* ---- wl_doc growable-storage helpers (mirrors weblayout.c internals) --- */
 
 static int pool_append(wl_doc *d, const char *s, int n) {
@@ -134,9 +92,7 @@ static wl_run *add_run(wl_doc *d) {
         if (!nr) return nullptr;
         d->runs = nr; d->run_cap = nc;
     }
-    wl_run *r = &d->runs[d->run_count++];
-    r->node = nullptr;
-    return r;
+    return &d->runs[d->run_count++];
 }
 
 static int add_href(wl_doc *d, const char *href) {
@@ -289,10 +245,6 @@ struct StyleDecls {
     bool     pos_fixed;        /* position: fixed → skip subtree */
     bool     display_inline;   /* display: inline — no forced block break */
     bool     display_inline_block; /* display: inline-block */
-    bool     display_flex;
-    bool     display_grid;
-    bool     flex_direction_column;
-    int      gap;
 };
 
 static void apply_decls(const char *css, StyleDecls &st) {
@@ -312,13 +264,7 @@ static void apply_decls(const char *css, StyleDecls &st) {
         if (ieq(prop,"display"))         { const char *w=val; while(*w==' ')++w;
                                            st.hidden=ieq(w,"none");
                                            st.display_inline=ieq(w,"inline");
-                                           st.display_inline_block=ieq(w,"inline-block");
-                                           st.display_flex=ieq(w,"flex") || ieq(w,"inline-flex");
-                                           st.display_grid=ieq(w,"grid") || ieq(w,"inline-grid"); }
-        else if (ieq(prop,"flex-direction")) { const char *w=val; while(*w==' ')++w;
-                                           st.flex_direction_column=ieq(w,"column"); }
-        else if (ieq(prop,"gap"))        { const char *w=val; int px=0; while(*w==' ')++w;
-                                           while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} st.gap=px; }
+                                           st.display_inline_block=ieq(w,"inline-block"); }
         else if (ieq(prop,"color"))      { unsigned c; if(parse_color(val,c)) st.color=c; }
         else if (ieq(prop,"background-color")||ieq(prop,"background"))
                                          { unsigned c; if(parse_color(val,c)) st.bg=c; }
@@ -435,18 +381,12 @@ struct Style {
     bool     pos_fixed       = false;
     bool     display_inline  = false;
     bool     display_inline_block = false;
-    int      list_counter    = -1;
-    bool     display_flex    = false;
-    bool     display_grid    = false;
-    bool     flex_direction_column = false;
-    int      gap             = 0;
 };
 
 /* ---- layout state ------------------------------------------------------ */
 
 struct State {
     wl_doc   *doc            = nullptr;
-    dom_node *curr_node      = nullptr;
     int       vw             = 0;
     int       cx             = 0;
     int       cy             = 0;
@@ -467,22 +407,6 @@ struct State {
     int       form_method_post = 0;
     int       form_depth       = 0;  /* > 0 while inside a <form> element */
 
-    /* Table layout tracking */
-    int       table_col_widths[16] = {};
-    int       table_num_cols = 0;
-    int       table_col_idx = 0;
-    int       table_row_y0 = 0;
-    int       table_row_max_h = 0;
-    bool      in_table = false;
-    int       table_cell_bg_idx[16] = {};
-    int       table_cell_border_top[16] = {};
-    int       table_cell_border_bottom[16] = {};
-    int       table_cell_border_left[16] = {};
-    int       table_cell_border_right[16] = {};
-    bool      table_cell_has_bg[16] = {};
-    int       table_border_width_default = 0;
-    unsigned  table_border_color_default = 0;
-
     /* font callbacks */
     int  (*adv_fn)(int cp, int px)  = nullptr;
     int  (*lh_fn)(int px)           = nullptr;
@@ -491,12 +415,6 @@ struct State {
     int  adv(int cp, int px) const  { return adv_fn ? adv_fn(cp, px) : px/2; }
     int  lh (int px)         const  { return lh_fn  ? lh_fn(px)      : px+3; }
 };
-
-static wl_run *add_run(State &S) {
-    wl_run *r = add_run(S.doc);
-    if (r) r->node = S.curr_node;
-    return r;
-}
 
 static void st_push(State &S) { if(S.sp<39){S.stk[S.sp+1]=S.stk[S.sp];++S.sp;} }
 static void st_pop (State &S) { if(S.sp>0) --S.sp; }
@@ -507,7 +425,7 @@ static void apply_css(State &S, dom_node *node) {
     StyleDecls d{S.stk[S.sp].px, S.stk[S.sp].bold, S.stk[S.sp].underline,
                  S.stk[S.sp].italic, S.stk[S.sp].strikethrough,
                  S.stk[S.sp].color, S.stk[S.sp].bg, S.stk[S.sp].hidden,
-                 0, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, false, false, false, false, false, false, false, false, 0};
+                 0, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, false, false, false, false, false};
     if (S.sheet) { char buf[640]; css_match(S.sheet, node, S.anc_stk, S.anc_sp, buf, sizeof buf); apply_decls(buf, d); }
     const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
     S.stk[S.sp].px            = d.px;
@@ -535,14 +453,10 @@ static void apply_css(State &S, dom_node *node) {
     if (d.pos_fixed)            S.stk[S.sp].pos_fixed = true;
     if (d.display_inline)       S.stk[S.sp].display_inline = true;
     if (d.display_inline_block) S.stk[S.sp].display_inline_block = true;
-    if (d.display_flex)         S.stk[S.sp].display_flex = true;
-    if (d.display_grid)         S.stk[S.sp].display_grid = true;
-    S.stk[S.sp].flex_direction_column = d.flex_direction_column;
-    S.stk[S.sp].gap             = d.gap;
 }
 
 static bool check_hidden(State &S, dom_node *node) {
-    StyleDecls d{BODY_PX,false,false,false,false,COL_TEXT,0,false,0,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,false,false,false,false,false,false,false,false,0};
+    StyleDecls d{BODY_PX,false,false,false,false,COL_TEXT,0,false,0,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,false,false,false,false,false};
     if (S.sheet) { char buf[640]; css_match(S.sheet, node, S.anc_stk, S.anc_sp, buf, sizeof buf); apply_decls(buf, d); }
     const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
     return d.hidden || d.pos_fixed;
@@ -570,30 +484,10 @@ static void newline(State &S) {
     S.line_start_run = S.doc->run_count;
 }
 
-static bool has_prev_sibling_element(const dom_node *node) {
-    if (!node || !node->parent) return false;
-    for (dom_node *p = node->parent->first_child; p && p != node; p = p->next_sibling) {
-        if (p->type == DOM_ELEMENT) {
-            const char *t = p->tag;
-            if (ieq(t,"script") || ieq(t,"style") || ieq(t,"head") ||
-                ieq(t,"noscript") || ieq(t,"template") ||
-                ieq(t,"title") || ieq(t,"meta") || ieq(t,"link")) continue;
-            return true;
-        }
-    }
-    return false;
-}
-
+/* Block break with margin collapsing: advance cy only by the delta above
+ * whatever space was already pending. */
 static void block_break(State &S, int margin) {
     if (!S.at_sol) newline(S);
-    
-    // Apply column flexbox gap if applicable
-    if (S.sp > 0 && S.stk[S.sp - 1].display_flex && S.stk[S.sp - 1].flex_direction_column && S.stk[S.sp - 1].gap > 0) {
-        if (has_prev_sibling_element(S.curr_node)) {
-            S.cy += S.stk[S.sp - 1].gap;
-        }
-    }
-    
     int add = margin - S.pending_margin;
     if (add > 0) { S.cy += add; S.pending_margin = margin; }
     S.at_sol = true; S.pend_space = false;
@@ -631,7 +525,7 @@ static void place_word(State &S, const char *s, int n) {
 
     int off = pool_append(S.doc, s, n);
     if (off < 0) return;
-    wl_run *r = add_run(S);
+    wl_run *r = add_run(S.doc);
     if (!r) return;
     r->kind=WL_TEXT; r->x=S.cx; r->y=S.cy; r->w=w; r->h=h;
     r->px=px; r->bold=st.bold?1:0; r->underline=st.underline?1:0;
@@ -669,7 +563,7 @@ static void place_pre_text(State &S, const char *text) {
 /* Emit a WL_RECT background for a block; returns run index for later patching. */
 static int begin_bg(State &S, unsigned color) {
     if (!S.at_sol) newline(S);
-    wl_run *r = add_run(S); if (!r) return -1;
+    wl_run *r = add_run(S.doc); if (!r) return -1;
     int idx = S.doc->run_count - 1;
     r->kind=WL_RECT; r->x=S.stk[S.sp].left; r->y=S.cy-2;
     r->w=S.vw-S.stk[S.sp].left; r->h=0; r->color=color;
@@ -685,7 +579,7 @@ static void end_bg(State &S, int idx) {
 
 /* Left accent bar for <blockquote>. */
 static void accent_bar(State &S, int y_start, unsigned color) {
-    wl_run *r = add_run(S); if (!r) return;
+    wl_run *r = add_run(S.doc); if (!r) return;
     r->kind=WL_RECT; r->x=S.stk[S.sp].left-7; r->y=y_start;
     r->w=3; r->h=S.cy-y_start; r->color=color;
     r->px=r->bold=r->underline=r->off=r->len=0; r->bg=0; r->link=-1;
@@ -693,7 +587,7 @@ static void accent_bar(State &S, int y_start, unsigned color) {
 
 static void add_rule(State &S, unsigned color, int h) {
     block_break(S, 6);
-    wl_run *r = add_run(S);
+    wl_run *r = add_run(S.doc);
     if (r) {
         r->kind=WL_RULE; r->x=S.stk[S.sp].left; r->y=S.cy;
         r->w=S.vw-S.stk[S.sp].left; r->h=h; r->color=color;
@@ -708,14 +602,10 @@ static void add_rule(State &S, unsigned color, int h) {
  * Handles all early returns in walk() automatically. */
 struct AncPusher {
     State &S;
-    bool pushed;
-    AncPusher(State &st, const dom_node *n) : S(st), pushed(false) {
-        if (S.anc_sp < 47) {
-            S.anc_stk[S.anc_sp++] = n;
-            pushed = true;
-        }
+    AncPusher(State &st, const dom_node *n) : S(st) {
+        if (S.anc_sp < 47) S.anc_stk[S.anc_sp++] = n;
     }
-    ~AncPusher() { if (pushed && S.anc_sp > 0) --S.anc_sp; }
+    ~AncPusher() { if (S.anc_sp > 0) --S.anc_sp; }
 };
 
 static void walk(State &S, dom_node *node);
@@ -725,16 +615,8 @@ static void walk_children(State &S, dom_node *node) {
         walk(S, c);
 }
 
-struct NodePusher {
-    State &S;
-    dom_node *old;
-    NodePusher(State &S, dom_node *n) : S(S), old(S.curr_node) { S.curr_node = n; }
-    ~NodePusher() { S.curr_node = old; }
-};
-
 static void walk(State &S, dom_node *node) {
     if (!node) return;
-    NodePusher _np(S, node);
 
     if (node->type == DOM_TEXT) {
         if (S.stk[S.sp].pre) place_pre_text(S, node->text);
@@ -755,161 +637,6 @@ static void walk(State &S, dom_node *node) {
 
     if (check_hidden(S, node)) return;
 
-    bool parent_is_flex_or_grid = S.stk[S.sp].display_flex || S.stk[S.sp].display_grid;
-    bool parent_is_flex_col = S.stk[S.sp].display_flex && S.stk[S.sp].flex_direction_column;
-    bool is_inline_block = false;
-    {
-        StyleDecls d{S.stk[S.sp].px, S.stk[S.sp].bold, S.stk[S.sp].underline,
-                     S.stk[S.sp].italic, S.stk[S.sp].strikethrough,
-                     S.stk[S.sp].color, S.stk[S.sp].bg, S.stk[S.sp].hidden,
-                     0, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, false, false, false, false, false, false, false, false, 0};
-        if (S.sheet) { char buf[640]; css_match(S.sheet, node, S.anc_stk, S.anc_sp, buf, sizeof buf); apply_decls(buf, d); }
-        const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
-        
-        is_inline_block = d.display_inline_block || d.display_flex || d.display_grid || (parent_is_flex_or_grid && !parent_is_flex_col);
-    }
-
-    if (is_inline_block) {
-        st_push(S);
-        apply_css(S, node);
-        
-        // Force display_inline_block to be true on style stack
-        S.stk[S.sp].display_inline_block = true;
-        
-        // Count columns for parent flex/grid if width not specified
-        int block_w = S.stk[S.sp].width;
-        if (block_w <= 0) {
-            if (S.stk[S.sp].max_width > 0) {
-                block_w = S.stk[S.sp].max_width;
-            } else if (parent_is_flex_or_grid && node->parent) {
-                int count = 0;
-                for (dom_node *c = node->parent->first_child; c; c = c->next_sibling) {
-                    if (c->type == DOM_ELEMENT) {
-                        const char *ct = c->tag;
-                        if (ieq(ct,"script") || ieq(ct,"style") || ieq(ct,"head") ||
-                            ieq(ct,"noscript") || ieq(ct,"template") ||
-                            ieq(ct,"title") || ieq(ct,"meta") || ieq(ct,"link")) continue;
-                        ++count;
-                    }
-                }
-                if (count > 0) {
-                    int avail = S.vw - S.stk[S.sp].left;
-                    if (count > 6) count = 6; // Cap columns
-                    block_w = avail / count - 8;
-                }
-            }
-            if (block_w <= 0) block_w = 150;
-        }
-        
-        int maxw = S.vw - S.stk[S.sp].left;
-        if (block_w > maxw) block_w = maxw;
-        if (block_w < 10) block_w = 10;
-        
-        int flex_gap = 0;
-        if (parent_is_flex_or_grid && S.sp > 0 && S.stk[S.sp - 1].gap > 0 && !S.at_sol) {
-            flex_gap = S.stk[S.sp - 1].gap;
-        }
-        
-        int gap = flex_gap;
-        if (gap == 0 && S.pend_space && !S.at_sol) {
-            gap = S.adv(' ', S.stk[S.sp].px);
-        }
-        if (!S.at_sol && S.cx + gap + block_w > S.vw) {
-            newline(S);
-            gap = 0;
-        } else {
-            S.cx += gap;
-        }
-        S.pend_space = false;
-        
-        int saved_left = S.stk[S.sp].left;
-        int saved_vw = S.vw;
-        int saved_cx = S.cx;
-        int saved_cy = S.cy;
-        bool saved_sol = S.at_sol;
-        int saved_lh = S.line_h;
-        
-        // Sub-layout boundaries inside the inline-block
-        S.stk[S.sp].left = saved_cx;
-        S.vw = saved_cx + block_w;
-        S.cx = S.stk[S.sp].left;
-        S.cy = saved_cy;
-        S.at_sol = true;
-        S.line_h = 0;
-        
-        int pt = S.stk[S.sp].padding_top >= 0 ? S.stk[S.sp].padding_top : 0;
-        int pb = S.stk[S.sp].padding_bottom >= 0 ? S.stk[S.sp].padding_bottom : 0;
-        int pl = S.stk[S.sp].padding_left >= 0 ? S.stk[S.sp].padding_left : 0;
-        int pr = S.stk[S.sp].padding_right >= 0 ? S.stk[S.sp].padding_right : 0;
-        int bw = S.stk[S.sp].border_width;
-        
-        int extra_l = pl + (bw > 0 ? bw : 0);
-        int extra_r = pr + (bw > 0 ? bw : 0);
-        
-        int bg_idx = -1;
-        unsigned original_bg = S.stk[S.sp].bg;
-        if (original_bg || bw > 0) {
-            bg_idx = begin_bg(S, original_bg);
-            S.stk[S.sp].bg = 0;
-        }
-        
-        if (pt > 0) S.cy += pt;
-        if (bw > 0) S.cy += bw;
-        
-        int saved_left_for_content = S.stk[S.sp].left;
-        if (extra_l > 0) {
-            S.stk[S.sp].left += extra_l;
-            if (S.at_sol) S.cx = S.stk[S.sp].left;
-        }
-        if (extra_r > 0) {
-            S.vw -= extra_r;
-        }
-        
-        walk_children(S, node);
-        if (!S.at_sol) newline(S);
-        
-        if (pb > 0) S.cy += pb;
-        if (bw > 0) S.cy += bw;
-        
-        if (bg_idx >= 0) {
-            S.stk[S.sp].left = saved_left_for_content;
-            S.vw = saved_cx + block_w;
-            
-            end_bg(S, bg_idx);
-            
-            if (bw > 0 && bw <= 4) {
-                const wl_run &bg = S.doc->runs[bg_idx];
-                unsigned bc = S.stk[S.sp].border_color ? S.stk[S.sp].border_color : COL_RULE;
-                auto bline = [&](int x,int y,int w,int h){
-                    wl_run *r=add_run(S); if(!r)return;
-                    r->kind=WL_RECT;r->x=x;r->y=y;r->w=w;r->h=h;r->color=bc;
-                    r->px=r->bold=r->underline=r->italic=r->strikethrough=r->off=r->len=0;r->bg=0;r->link=-1;
-                };
-                bline(bg.x, bg.y, bg.w, bw);                    /* top */
-                bline(bg.x, bg.y+bg.h-bw, bg.w, bw);            /* bottom */
-                bline(bg.x, bg.y, bw, bg.h);                    /* left */
-                bline(bg.x+bg.w-bw, bg.y, bw, bg.h);            /* right */
-            }
-            if (original_bg == 0) {
-                S.doc->runs[bg_idx].w = 0;
-                S.doc->runs[bg_idx].h = 0;
-            }
-        }
-        
-        int block_h = S.cy - saved_cy;
-        
-        S.vw = saved_vw;
-        S.stk[S.sp].left = saved_left;
-        S.cx = saved_cx + block_w;
-        S.cy = saved_cy;
-        S.at_sol = false;
-        S.line_h = saved_lh;
-        if (block_h > S.line_h) S.line_h = block_h;
-        
-        st_pop(S);
-        return;
-    }
-
     /* ---- Void / replaced elements ------------------------------------- */
     if (ieq(t,"br")) { newline(S); return; }
     if (ieq(t,"hr")) { add_rule(S, COL_RULE, 2); return; }
@@ -918,48 +645,11 @@ static void walk(State &S, dom_node *node) {
     if (ieq(t,"img")) {
         const char *src = dom_attr(node,"src");
         if (!src || !src[0] || ieq_pfx(src,"data:")) src = dom_attr(node,"data-src");
-        
-        st_push(S);
-        apply_css(S, node);
-        int css_w = S.stk[S.sp].width;
-        
-        int attr_w = 0, attr_h = 0;
-        const char *w_attr = dom_attr(node, "width");
-        if (w_attr) {
-            const char *p = w_attr; while (*p == ' ') ++p;
-            while (*p >= '0' && *p <= '9') { attr_w = attr_w * 10 + (*p - '0'); ++p; }
-        }
-        const char *h_attr = dom_attr(node, "height");
-        if (h_attr) {
-            const char *p = h_attr; while (*p == ' ') ++p;
-            while (*p >= '0' && *p <= '9') { attr_h = attr_h * 10 + (*p - '0'); ++p; }
-        }
-        
-        int target_w = css_w > 0 ? css_w : attr_w;
-        int maxw = S.vw - S.stk[S.sp].left;
-        int iw = 0, ih = 0;
-        if (src && src[0] && S.img_fn && S.img_fn(src, maxw, &iw, &ih) && iw > 0) {
-            if (target_w > 0) {
-                int old_iw = iw;
-                iw = target_w;
-                if (attr_h > 0) {
-                    ih = attr_h;
-                } else {
-                    ih = (int)((long)ih * target_w / old_iw);
-                }
-            } else if (attr_h > 0) {
-                iw = (int)((long)iw * attr_h / ih);
-                ih = attr_h;
-            }
-            if (iw > maxw && maxw > 0) {
-                ih = (int)((long)ih * maxw / iw);
-                iw = maxw;
-            }
-            if (ih < 1) ih = 1;
-
+        int iw=0, ih=0, maxw=S.vw-S.stk[S.sp].left;
+        if (src && src[0] && S.img_fn && S.img_fn(src, maxw, &iw, &ih) && iw>0) {
             int hi = add_href(S.doc, src);
             if (!S.at_sol) newline(S);
-            wl_run *r = add_run(S);
+            wl_run *r = add_run(S.doc);
             if (r) { r->kind=WL_IMAGE; r->x=S.stk[S.sp].left; r->y=S.cy;
                      r->w=iw; r->h=ih; r->off=hi; r->len=0; r->link=-1;
                      r->px=r->bold=r->underline=r->color=r->bg=0; }
@@ -967,11 +657,11 @@ static void walk(State &S, dom_node *node) {
         } else {
             const char *alt = dom_attr(node,"alt");
             if (alt && alt[0]) {
-                S.stk[S.sp].color=COL_QUOTE;
+                st_push(S); S.stk[S.sp].color=COL_QUOTE;
                 place_word(S,"[",1); place_text(S,alt); place_word(S,"]",1);
+                st_pop(S);
             }
         }
-        st_pop(S);
         return;
     }
 
@@ -1075,65 +765,19 @@ static void walk(State &S, dom_node *node) {
     }
 
     /* ---- Lists -------------------------------------------------------- */
-    if (ieq(t,"ul")||ieq(t,"dl")) {
-        block_break(S,8); st_push(S);
-        S.stk[S.sp].left += 20;
-        S.stk[S.sp].list_counter = -1;
-        apply_css(S,node); walk_children(S,node); st_pop(S);
-        block_break(S,8); return;
-    }
-    if (ieq(t,"ol")) {
-        block_break(S,8); st_push(S);
-        S.stk[S.sp].left += 20;
-        S.stk[S.sp].list_counter = 1;
-        apply_css(S,node); walk_children(S,node); st_pop(S);
-        block_break(S,8); return;
-    }
+    if (ieq(t,"ul")||ieq(t,"ol")||ieq(t,"dl"))
+        { block_break(S,8); st_push(S); S.stk[S.sp].left+=20; apply_css(S,node); walk_children(S,node); st_pop(S); block_break(S,8); return; }
     if (ieq(t,"li")) {
         block_break(S,3);
         st_push(S); apply_css(S,node);
         if (!S.stk[S.sp].list_style_none) {
-            int px=S.stk[S.sp].px, h=S.lh(px);
-            if (S.stk[S.sp].list_counter >= 1) {
-                char num_str[16];
-                __builtin_snprintf(num_str, sizeof num_str, "%d.", S.stk[S.sp].list_counter);
-                if (S.sp > 0) {
-                    S.stk[S.sp - 1].list_counter++;
-                }
-                int num_len = (int)__builtin_strlen(num_str);
-                int num_w = word_w(S, num_str, num_len, px);
-                int bullet_x = S.stk[S.sp].left;
-                
-                int off = pool_append(S.doc, num_str, num_len);
-                if (off >= 0) {
-                    wl_run *r = add_run(S);
-                    if (r) {
-                        r->kind = WL_TEXT; r->x = bullet_x; r->y = S.cy; r->w = num_w; r->h = h;
-                        r->px = px; r->bold = S.stk[S.sp].bold ? 1 : 0; r->underline = 0;
-                        r->italic = 0; r->strikethrough = 0;
-                        r->color = S.stk[S.sp].color; r->bg = 0; r->off = off; r->len = num_len; r->link = -1;
-                    }
-                }
-                int shift = px + 4;
-                if (num_w + 4 > shift) shift = num_w + 4;
-                S.stk[S.sp].left += shift;
-                S.cx = S.stk[S.sp].left;
-                S.at_sol = false;
-                S.line_h = h;
-            } else {
-                wl_run *r = add_run(S);
-                if (r) {
-                    r->kind = WL_BULLET; r->x = S.stk[S.sp].left; r->y = S.cy;
-                    r->w = px; r->h = h; r->px = px; r->bold = 0; r->underline = 0;
-                    r->italic = 0; r->strikethrough = 0;
-                    r->color = S.stk[S.sp].color; r->bg = 0; r->off = 0; r->len = 0; r->link = -1;
-                }
-                int shift = px + 4;
-                S.stk[S.sp].left += shift;
-                S.cx = S.stk[S.sp].left;
-                S.at_sol = false;
-                S.line_h = h;
-            }
+            wl_run *r=add_run(S.doc);
+            if (r) { int px=S.stk[S.sp].px,h=S.lh(px);
+                     r->kind=WL_BULLET; r->x=S.stk[S.sp].left; r->y=S.cy;
+                     r->w=px; r->h=h; r->px=px; r->bold=0; r->underline=0;
+                     r->italic=0; r->strikethrough=0;
+                     r->color=S.stk[S.sp].color; r->bg=0; r->off=0; r->len=0; r->link=-1;
+                     S.cx=S.stk[S.sp].left+px+4; S.at_sol=false; S.line_h=h; }
         }
         walk_children(S,node); st_pop(S);
         block_break(S,3); return;
@@ -1142,352 +786,12 @@ static void walk(State &S, dom_node *node) {
     if (ieq(t,"dd")) { block_break(S,2); st_push(S); S.stk[S.sp].left+=16; apply_css(S,node); walk_children(S,node); st_pop(S); block_break(S,4); return; }
 
     /* ---- Tables ------------------------------------------------------- */
-    if (ieq(t,"table")) {
-        block_break(S, 10);
-        
-        // Count columns by looking at the first "tr"
-        int num_cols = 0;
-        dom_node *first_tr = nullptr;
-        for (dom_node *c = node->first_child; c; c = c->next_sibling) {
-            if (c->type == DOM_ELEMENT && ieq(c->tag, "tr")) {
-                first_tr = c;
-                break;
-            }
-            if (c->type == DOM_ELEMENT && (ieq(c->tag, "tbody") || ieq(c->tag, "thead") || ieq(c->tag, "tfoot"))) {
-                for (dom_node *sub = c->first_child; sub; sub = sub->next_sibling) {
-                    if (sub->type == DOM_ELEMENT && ieq(sub->tag, "tr")) {
-                        first_tr = sub;
-                        break;
-                    }
-                }
-                if (first_tr) break;
-            }
-        }
-        if (first_tr) {
-            for (dom_node *c = first_tr->first_child; c; c = c->next_sibling) {
-                if (c->type == DOM_ELEMENT && (ieq(c->tag, "td") || ieq(c->tag, "th"))) {
-                    ++num_cols;
-                }
-            }
-        }
-        if (num_cols == 0) num_cols = 1;
-        if (num_cols > 16) num_cols = 16;
-
-        int prev_col_widths[16];
-        for (int i = 0; i < 16; ++i) prev_col_widths[i] = S.table_col_widths[i];
-        int prev_num_cols = S.table_num_cols;
-        int prev_col_idx = S.table_col_idx;
-        int prev_row_y0 = S.table_row_y0;
-        int prev_row_max_h = S.table_row_max_h;
-        bool prev_in_table = S.in_table;
-
-        int avail_w = S.vw - S.stk[S.sp].left;
-        if (avail_w < 50) avail_w = 50;
-
-        int spec_widths[16] = {};
-        int num_spec = 0;
-        int total_spec = 0;
-
-        if (first_tr) {
-            int col_idx = 0;
-            for (dom_node *c = first_tr->first_child; c; c = c->next_sibling) {
-                if (c->type == DOM_ELEMENT && (ieq(c->tag, "td") || ieq(c->tag, "th"))) {
-                    if (col_idx < 16) {
-                        int w = parse_cell_width(c, avail_w);
-                        spec_widths[col_idx] = w;
-                        if (w > 0) {
-                            total_spec += w;
-                            ++num_spec;
-                        }
-                    }
-                    ++col_idx;
-                }
-            }
-        }
-
-        if (num_spec == 0) {
-            int col_w = avail_w / num_cols;
-            for (int i = 0; i < num_cols; ++i) {
-                S.table_col_widths[i] = col_w;
-            }
-        } else if (total_spec >= avail_w) {
-            for (int i = 0; i < num_cols; ++i) {
-                int w = spec_widths[i];
-                if (w == 0) w = 20;
-                S.table_col_widths[i] = w;
-            }
-            int sum = 0;
-            for (int i = 0; i < num_cols; ++i) sum += S.table_col_widths[i];
-            for (int i = 0; i < num_cols; ++i) {
-                S.table_col_widths[i] = S.table_col_widths[i] * avail_w / sum;
-            }
-        } else {
-            int num_unspec = num_cols - num_spec;
-            if (num_unspec > 0) {
-                int leftover = avail_w - total_spec;
-                int unspec_w = leftover / num_unspec;
-                for (int i = 0; i < num_cols; ++i) {
-                    if (spec_widths[i] > 0) {
-                        S.table_col_widths[i] = spec_widths[i];
-                    } else {
-                        S.table_col_widths[i] = unspec_w;
-                    }
-                }
-            } else {
-                for (int i = 0; i < num_cols; ++i) {
-                    S.table_col_widths[i] = spec_widths[i] * avail_w / total_spec;
-                }
-            }
-        }
-        S.table_num_cols = num_cols;
-        S.table_col_idx = 0;
-        S.table_row_y0 = S.cy;
-        S.table_row_max_h = 0;
-        S.in_table = true;
-
-        st_push(S);
-        apply_css(S, node);
-
-        // Parse HTML presentation attribute "border"
-        const char *border_attr = dom_attr(node, "border");
-        int table_border_width = 0;
-        unsigned table_border_color = COL_RULE;
-        if (border_attr) {
-            int val = 0;
-            const char *p = border_attr;
-            while (*p == ' ') ++p;
-            while (*p >= '0' && *p <= '9') {
-                val = val * 10 + (*p - '0');
-                ++p;
-            }
-            if (val > 0) {
-                table_border_width = val > 4 ? 4 : val;
-            }
-        }
-
-        int default_cell_border_width = 0;
-        unsigned default_cell_border_color = 0;
-        if (S.stk[S.sp].border_width > 0) {
-            default_cell_border_width = S.stk[S.sp].border_width;
-            default_cell_border_color = S.stk[S.sp].border_color;
-        } else if (table_border_width > 0) {
-            default_cell_border_width = table_border_width;
-            default_cell_border_color = table_border_color;
-        }
-
-        int prev_border_width_default = S.table_border_width_default;
-        unsigned prev_border_color_default = S.table_border_color_default;
-        S.table_border_width_default = default_cell_border_width;
-        S.table_border_color_default = default_cell_border_color;
-
-        walk_children(S, node);
-
-        S.table_border_width_default = prev_border_width_default;
-        S.table_border_color_default = prev_border_color_default;
-
-        st_pop(S);
-
-        for (int i = 0; i < 16; ++i) S.table_col_widths[i] = prev_col_widths[i];
-        S.table_num_cols = prev_num_cols;
-        S.table_col_idx = prev_col_idx;
-        S.table_row_y0 = prev_row_y0;
-        S.table_row_max_h = prev_row_max_h;
-        S.in_table = prev_in_table;
-
-        block_break(S, 10);
-        return;
-    }
-    if (ieq(t,"tr"))    {
-        if (!S.in_table) {
-            block_break(S,4); st_push(S); apply_css(S,node); walk_children(S,node); st_pop(S); if(!S.at_sol)newline(S); return;
-        }
-        S.table_col_idx = 0;
-        S.table_row_max_h = 0;
-        S.table_row_y0 = S.cy;
-
-        // Clear tracking structures for cells in this row
-        for (int i = 0; i < 16; ++i) {
-            S.table_cell_bg_idx[i] = -1;
-            S.table_cell_border_top[i] = -1;
-            S.table_cell_border_bottom[i] = -1;
-            S.table_cell_border_left[i] = -1;
-            S.table_cell_border_right[i] = -1;
-            S.table_cell_has_bg[i] = false;
-        }
-
-        st_push(S);
-        apply_css(S,node);
-        walk_children(S,node);
-        st_pop(S);
-
-        // Post-process table row cells to stretch their backgrounds and borders to row height
-        int actual_cols = S.table_col_idx;
-        if (actual_cols > S.table_num_cols) actual_cols = S.table_num_cols;
-        for (int col = 0; col < actual_cols; ++col) {
-            int bg_idx = S.table_cell_bg_idx[col];
-            if (bg_idx >= 0 && bg_idx < S.doc->run_count) {
-                wl_run &bg = S.doc->runs[bg_idx];
-                
-                int cell_x0 = S.stk[S.sp].left; // Row's left margin
-                for (int i = 0; i < col; ++i) {
-                    cell_x0 += S.table_col_widths[i];
-                }
-                int cell_w = S.table_col_widths[col];
-                int cell_outer_x = cell_x0 + 2;
-                int cell_outer_w = cell_w - 4;
-
-                int new_h = (S.table_row_y0 + S.table_row_max_h) - bg.y;
-                if (new_h < 0) new_h = 0;
-
-                if (S.table_cell_has_bg[col]) {
-                    bg.w = cell_outer_w;
-                    bg.h = new_h;
-                } else {
-                    bg.w = 0;
-                    bg.h = 0;
-                }
-
-                // Move bottom border to the row's bottom
-                int b_bottom = S.table_cell_border_bottom[col];
-                if (b_bottom >= 0 && b_bottom < S.doc->run_count) {
-                    wl_run &b_run = S.doc->runs[b_bottom];
-                    int cell_bw = b_run.h;
-                    b_run.y = bg.y + new_h - cell_bw;
-                }
-                // Stretch left border to match row height
-                int b_left = S.table_cell_border_left[col];
-                if (b_left >= 0 && b_left < S.doc->run_count) {
-                    wl_run &b_run = S.doc->runs[b_left];
-                    b_run.h = new_h;
-                }
-                // Stretch right border to match row height and position at correct x
-                int b_right = S.table_cell_border_right[col];
-                if (b_right >= 0 && b_right < S.doc->run_count) {
-                    wl_run &b_run = S.doc->runs[b_right];
-                    int cell_bw = b_run.w;
-                    b_run.x = cell_outer_x + cell_outer_w - cell_bw;
-                    b_run.h = new_h;
-                }
-            }
-        }
-
-        S.cy = S.table_row_y0 + S.table_row_max_h;
-        S.at_sol = true;
-        S.cx = S.stk[S.sp].left;
-        S.line_h = 0;
-        return;
-    }
+    if (ieq(t,"table")) { block_break(S,10); st_push(S); apply_css(S,node); walk_children(S,node); st_pop(S); block_break(S,10); return; }
+    if (ieq(t,"tr"))    { block_break(S,4); st_push(S); apply_css(S,node); walk_children(S,node); st_pop(S); if(!S.at_sol)newline(S); return; }
     if (ieq(t,"td")||ieq(t,"th")) {
-        if (!S.in_table) {
-            st_push(S); if(ieq(t,"th"))S.stk[S.sp].bold=true;
-            apply_css(S,node); walk_children(S,node); st_pop(S);
-            S.pend_space=true; S.cx+=8; return;
-        }
-        int col = S.table_col_idx;
-        if (col >= S.table_num_cols) col = S.table_num_cols - 1;
-
-        int cell_x0 = S.stk[S.sp].left;
-        for (int i = 0; i < col; ++i) {
-            cell_x0 += S.table_col_widths[i];
-        }
-        int cell_w = S.table_col_widths[col];
-
-        int saved_vw = S.vw;
-        int saved_left = S.stk[S.sp].left;
-
-        st_push(S);
-        if (ieq(t,"th")) S.stk[S.sp].bold = true;
-        apply_css(S,node);
-
-        // Propagate table borders if none are specified on the cell itself
-        if (S.stk[S.sp].border_width == 0 && S.table_border_width_default > 0) {
-            S.stk[S.sp].border_width = S.table_border_width_default;
-            S.stk[S.sp].border_color = S.table_border_color_default;
-        }
-
-        // Determine cell padding
-        int pt = S.stk[S.sp].padding_top >= 0 ? S.stk[S.sp].padding_top : 6;
-        int pb = S.stk[S.sp].padding_bottom >= 0 ? S.stk[S.sp].padding_bottom : 6;
-        int pl = S.stk[S.sp].padding_left >= 0 ? S.stk[S.sp].padding_left : 8;
-        int pr = S.stk[S.sp].padding_right >= 0 ? S.stk[S.sp].padding_right : 8;
-
-        int cell_outer_x = cell_x0 + 2;
-        int cell_outer_w = cell_w - 4;
-
-        // Set outer boundaries for begin_bg to capture full cell size
-        S.stk[S.sp].left = cell_outer_x;
-        S.vw = cell_outer_x + cell_outer_w;
-        S.cx = S.stk[S.sp].left;
-        S.cy = S.table_row_y0;
-        S.at_sol = true;
-        S.line_h = 0;
-
-        int bg_idx = -1;
-        unsigned original_bg = S.stk[S.sp].bg;
-        if (original_bg || S.stk[S.sp].border_width) {
-            bg_idx = begin_bg(S, original_bg);
-            if (col >= 0 && col < 16) {
-                S.table_cell_bg_idx[col] = bg_idx;
-                S.table_cell_has_bg[col] = (original_bg != 0);
-            }
-            S.stk[S.sp].bg = 0;
-        }
-
-        // Shift inner content boundaries by padding
-        S.stk[S.sp].left = cell_outer_x + pl;
-        S.vw = cell_outer_x + cell_outer_w - pr;
-        S.cx = S.stk[S.sp].left;
-        S.cy = S.table_row_y0 + pt;
-
-        walk_children(S,node);
-        if (!S.at_sol) {
-            newline(S);
-        }
-
-        // Shift down after final content by bottom padding
-        S.cy += pb;
-
-        if (bg_idx >= 0) {
-            end_bg(S, bg_idx);
-            int bw = S.stk[S.sp].border_width;
-            if (bw > 0 && bw <= 4) {
-                const wl_run &bg = S.doc->runs[bg_idx];
-                unsigned bc = S.stk[S.sp].border_color ? S.stk[S.sp].border_color : COL_RULE;
-                auto bline = [&](int x,int y,int w,int h) -> int {
-                    wl_run *r=add_run(S); if(!r)return -1;
-                    r->kind=WL_RECT;r->x=x;r->y=y;r->w=w;r->h=h;r->color=bc;
-                    r->px=r->bold=r->underline=r->italic=r->strikethrough=r->off=r->len=0;r->bg=0;r->link=-1;
-                    return S.doc->run_count - 1;
-                };
-                int top_idx = bline(bg.x, bg.y, bg.w, bw);                    /* top */
-                int bottom_idx = bline(bg.x, bg.y+bg.h-bw, bg.w, bw);            /* bottom */
-                int left_idx = bline(bg.x, bg.y, bw, bg.h);                    /* left */
-                int right_idx = bline(bg.x+bg.w-bw, bg.y, bw, bg.h);            /* right */
-                if (col >= 0 && col < 16) {
-                    S.table_cell_border_top[col] = top_idx;
-                    S.table_cell_border_bottom[col] = bottom_idx;
-                    S.table_cell_border_left[col] = left_idx;
-                    S.table_cell_border_right[col] = right_idx;
-                }
-            }
-            if (original_bg == 0) {
-                S.doc->runs[bg_idx].w = 0;
-                S.doc->runs[bg_idx].h = 0;
-            }
-        }
-
-        st_pop(S);
-
-        int cell_h = S.cy - S.table_row_y0;
-        if (cell_h > S.table_row_max_h) {
-            S.table_row_max_h = cell_h;
-        }
-
-        S.vw = saved_vw;
-        S.stk[S.sp].left = saved_left;
-
-        S.table_col_idx++;
-        return;
+        st_push(S); if(ieq(t,"th"))S.stk[S.sp].bold=true;
+        apply_css(S,node); walk_children(S,node); st_pop(S);
+        S.pend_space=true; S.cx+=8; return;
     }
 
     /* ---- Footer (rendered but dimmed) --------------------------------- */
@@ -1598,7 +902,7 @@ static void walk(State &S, dom_node *node) {
         else S.cx += gap;
         S.pend_space = false;
 
-        wl_run *r = add_run(S);
+        wl_run *r = add_run(S.doc);
         if (r) {
             r->kind = WL_FIELD;
             r->x = S.cx; r->y = S.cy; r->w = box_w; r->h = box_h;
@@ -1629,10 +933,7 @@ static void walk(State &S, dom_node *node) {
             int pt = S.stk[S.sp].padding_top >= 0 ? S.stk[S.sp].padding_top : 0;
             int pb = S.stk[S.sp].padding_bottom >= 0 ? S.stk[S.sp].padding_bottom : 0;
             int pl = S.stk[S.sp].padding_left >= 0 ? S.stk[S.sp].padding_left : 0;
-            int pr = S.stk[S.sp].padding_right >= 0 ? S.stk[S.sp].padding_right : 0;
             if (pl > 80) pl = 80;
-            if (pr > 80) pr = 80;
-            
             /* max-width: shrink effective viewport and optionally center */
             int mw = S.stk[S.sp].max_width;
             int saved_vw = S.vw;
@@ -1646,60 +947,26 @@ static void walk(State &S, dom_node *node) {
                     S.vw = S.stk[S.sp].left + mw;
                 }
             }
-            
-            unsigned original_bg = S.stk[S.sp].bg;
-            if (ieq(t, "html") || ieq(t, "body")) {
-                if (original_bg != 0) {
-                    S.doc->bg_color = original_bg;
-                    original_bg = 0; // Prevent drawing a redundant body bg rect
-                }
-            }
-            
-            int bw = S.stk[S.sp].border_width;
-            int extra_l = pl + (bw > 0 ? bw : 0);
-            int extra_r = pr + (bw > 0 ? bw : 0);
-            
-            block_break(S, mt);
-            
             int bg_idx = -1;
-            if (original_bg || bw > 0) {
-                bg_idx = begin_bg(S, original_bg);
+            block_break(S, mt);
+            if (S.stk[S.sp].bg) {
+                bg_idx = begin_bg(S, S.stk[S.sp].bg);
                 S.stk[S.sp].bg = 0;
             }
-            
             if (pt > 0) S.cy += pt;
-            if (bw > 0) S.cy += bw;
-            
-            int saved_left_for_content = S.stk[S.sp].left;
-            if (extra_l > 0) {
-                S.stk[S.sp].left += extra_l;
-                if (S.at_sol) S.cx = S.stk[S.sp].left;
-            }
-            if (extra_r > 0) {
-                S.vw -= extra_r;
-            }
-            
+            if (pl > 0) { S.stk[S.sp].left += pl; if (S.at_sol) S.cx = S.stk[S.sp].left; }
             walk_children(S, node);
             if (!S.at_sol) newline(S);
-            
             if (pb > 0) S.cy += pb;
-            if (bw > 0) S.cy += bw;
-            
             if (bg_idx >= 0) {
-                S.stk[S.sp].left = saved_left_for_content;
-                S.vw = saved_vw;
-                if (mw > 0 && mw < saved_vw - orig_left) {
-                    S.vw = saved_left_for_content + mw;
-                }
-                
                 end_bg(S, bg_idx);
-                
                 /* draw border around the background block */
+                int bw = S.stk[S.sp].border_width;
                 if (bw > 0 && bw <= 4) {
                     const wl_run &bg = S.doc->runs[bg_idx];
                     unsigned bc = S.stk[S.sp].border_color ? S.stk[S.sp].border_color : COL_RULE;
                     auto bline = [&](int x,int y,int w,int h){
-                        wl_run *r=add_run(S); if(!r)return;
+                        wl_run *r=add_run(S.doc); if(!r)return;
                         r->kind=WL_RECT;r->x=x;r->y=y;r->w=w;r->h=h;r->color=bc;
                         r->px=r->bold=r->underline=r->italic=r->strikethrough=r->off=r->len=0;r->bg=0;r->link=-1;
                     };
@@ -1707,10 +974,6 @@ static void walk(State &S, dom_node *node) {
                     bline(bg.x, bg.y+bg.h-bw, bg.w, bw);            /* bottom */
                     bline(bg.x, bg.y, bw, bg.h);                    /* left */
                     bline(bg.x+bg.w-bw, bg.y, bw, bg.h);            /* right */
-                }
-                if (original_bg == 0) {
-                    S.doc->runs[bg_idx].w = 0;
-                    S.doc->runs[bg_idx].h = 0;
                 }
             }
             S.vw = saved_vw;
@@ -1760,7 +1023,6 @@ int LayoutEngine::layout(wl_doc *doc, dom_node *root, int viewport_w) {
     S.img_fn = image_sizer_fn_;
 
     doc->pool_len = doc->run_count = doc->href_count = doc->height = 0;
-    doc->bg_color = 0;
 
     /* Collect and parse <style> sheets. */
     char *css_buf = static_cast<char *>(umalloc(64 * 1024));

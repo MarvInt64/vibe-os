@@ -23,12 +23,14 @@
  */
 
 #include "interrupts.h"
+#include "apic.h"
 #include "journal.h"
 #include "process.h"
 #include "serial.h"
 #include "timer.h"
 
 #define TIMER_VECTOR 0x20u
+#define SPURIOUS_VECTOR 0xFFu
 
 struct descriptor_ptr {
     uint16_t limit;
@@ -67,6 +69,7 @@ extern void syscall_interrupt_stub(void);
 extern void timer_interrupt_stub(void);
 extern void pagefault_stub(void);
 extern void gpfault_stub(void);
+extern void spurious_interrupt_stub(void);
 
 /* GP-register snapshot written by pagefault_stub / gpfault_stub before
  * fault_handler runs.  Layout matches FREG_* indices in interrupts.h. */
@@ -199,6 +202,7 @@ void interrupts_init(void) {
     set_idt_gate(0x80u, syscall_interrupt_stub, 0xeeu);
     set_idt_gate(13u, gpfault_stub, 0x8eu);    /* #GP */
     set_idt_gate(14u, pagefault_stub, 0x8eu);  /* #PF */
+    set_idt_gate(SPURIOUS_VECTOR, spurious_interrupt_stub, 0x8eu);  /* LAPIC spurious */
 
     gdt_desc.limit = (uint16_t)(sizeof(g_runtime_gdt) - 1u);
     gdt_desc.base = (uint64_t)(uintptr_t)g_runtime_gdt;
@@ -207,6 +211,11 @@ void interrupts_init(void) {
 
     interrupt_load_runtime_tables(&gdt_desc, &idt_desc, TSS_SELECTOR);
     timer_init();
+
+    /* Modernise interrupt delivery: enumerate via ACPI, enable the Local APIC
+     * and route the timer through the IOAPIC (masking the 8259 PIC). On legacy
+     * machines without ACPI this is a no-op and we keep running on the PIC. */
+    apic_init();
 }
 
 /* Point the TSS ring-0 stack (rsp0) at the kernel stack of the process that is

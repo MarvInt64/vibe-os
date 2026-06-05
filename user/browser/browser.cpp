@@ -112,31 +112,13 @@ static void warm_heap(unsigned long total_bytes) {
 }
 
 Browser::Browser() {
-    dom_init(&dom_);
     wl_init(&layout_);
     appfont_init();
     layout_engine_.set_metrics(appfont_advance, appfont_line_height);
     layout_engine_.set_image_sizer(img_sizer_cb);
     s_instance_ = this;
-    warm_heap(16u * 1024u * 1024u);   /* 16 MB: HTTP buffer + HTML + a few images */
-
-    // Initialize JavaScript engine context right away
-    js_init();
-
-    // Initialize developer console variables
-    console_show_ = false;
-    console_focused_ = false;
-    console_cmd_[0] = '\0';
-    console_cmd_len_ = 0;
-    console_log_count_ = 0;
+    warm_heap(8u * 1024u * 1024u);   /* 8 MB: HTTP buffer + HTML + a few images */
 }
-
-Browser::~Browser() {
-    js_free();
-    dom_free(&dom_);
-    wl_free(&layout_);
-}
-
 
 /* ---- global callbacks -------------------------------------------------- */
 
@@ -238,11 +220,6 @@ void __attribute__((noreturn)) Browser::run() {
     vui_menu_separator(win_, m_page);
     vui_on_click(vui_menuitem(win_, m_page, "Close"),
                  [](vui_widget *) { exit(0); });
-    
-    vui_widget *m_dev  = vui_menu(win_, mb, "Developer");
-    vui_on_click(vui_menuitem(win_, m_dev, "Toggle Console"),
-                 [](vui_widget *) { s_instance_->toggle_console(); });
-                 
     vui_sync_menubar(win_);
 
     vui_on_tick(win_, on_tick_cb);
@@ -534,19 +511,13 @@ void Browser::clamp_scroll() {
 
 void Browser::layout_current() {
     if (!html_buf_ || html_len_ <= 0) return;
-    std::lock_guard<std::mutex> lk(layout_mutex_);
-
-    // Free previous DOM document structure and initialize a new one
-    dom_free(&dom_);
-    dom_init(&dom_);
-
-    dom_node *root = dom_parse(&dom_, html_buf_, html_len_);
-    if (!root) return;
-
-    wl_free(&layout_);
-    wl_init(&layout_);
+    dom_doc dom; dom_init(&dom);
+    dom_node *root = dom_parse(&dom, html_buf_, html_len_);
+    if (!root) { dom_free(&dom); return; }
+    wl_free(&layout_); wl_init(&layout_);
     layout_engine_.layout(&layout_, root, content_w());
     LayoutEngine::extract_title(root, page_title_, (int)sizeof page_title_);
+    dom_free(&dom);
     clamp_scroll();
 }
 
@@ -784,12 +755,6 @@ void Browser::poll_fetch() {
     if (s == (int)FetchState::Ready || s == (int)FetchState::Failed) {
         if (worker_.joinable()) worker_.join();
         fetch_state_.store((int)FetchState::Idle, std::memory_order_release);
-        if (s == (int)FetchState::Ready) {
-            js_init();
-            execute_scripts();
-            render();
-            vui_request_repaint(win_);
-        }
     }
 }
 
@@ -976,206 +941,111 @@ void Browser::render() {
         int pos  = (progress_phase_ * 12) % span - knob;
         fill(pos < 0 ? 0 : pos, 0, pos < 0 ? knob + pos : (pos + knob > bar_w ? bar_w - pos : knob), 2, COL_ACCENT);
     }
-    
-    if (!text_ready) {
-        draw_text(PAGE_PAD, 20, "Loading...", COL_DIM);
-    } else {
-        std::lock_guard<std::mutex> render_lock(layout_mutex_);
-        clamp_scroll();
-        for (int i = 0; i < layout_.run_count; ++i) {
-            const wl_run &r = layout_.runs[i];
-            int sy = r.y - scroll_; int rx = content_x + r.x;
-            /* Early exit: non-background runs are laid out top-to-bottom,
-             * so once r.y is past the viewport bottom nothing below is visible. */
-            if (r.kind != WL_RECT && sy >= content_h()) break;
-            if (sy + r.h < 0 || sy >= content_h()) continue;
-            if (r.kind == WL_RECT) { int top = sy, h = r.h; if (top < 0) { h -= -top; top = 0; } if (top + h > content_h()) { h = content_h() - top; } if (h > 0) fill(rx, top, r.w, h, r.color); continue; }
-            if (r.kind == WL_IMAGE) {
-                ImgEntry *im = img_find(r.off>=0&&r.off<layout_.href_count ? layout_.hrefs[r.off] : "");
-                if (im && im->px && r.w > 0 && r.h > 0) {
-                    /* Build or reuse bilinear-scaled cache */
-                    if (!im->spx || im->sw != r.w || im->sh != r.h) {
-                        if (im->spx) { __builtin_free(im->spx); im->spx = nullptr; }
-                        im->spx = (uint32_t *)__builtin_malloc((unsigned)(r.w * r.h) * 4u);
-                        if (im->spx) {
-                            im->sw = r.w; im->sh = r.h;
-                            int iw = im->w, ih = im->h;
-                            int fsw = r.w > 1 ? r.w - 1 : 1, fsh = r.h > 1 ? r.h - 1 : 1;
-                            for (int yy = 0; yy < r.h; ++yy) {
-                                int fy = (int)((long)yy * (ih-1) * 256 / fsh);
-                                int y0 = fy>>8, y1 = y0<ih-1?y0+1:y0, ty = fy&255;
-                                for (int xx = 0; xx < r.w; ++xx) {
-                                    int fx = (int)((long)xx * (iw-1) * 256 / fsw);
-                                    int x0 = fx>>8, x1 = x0<iw-1?x0+1:x0, tx = fx&255;
-                                    uint32_t c00=im->px[y0*iw+x0],c10=im->px[y0*iw+x1];
-                                    uint32_t c01=im->px[y1*iw+x0],c11=im->px[y1*iw+x1];
-                                    int r0=((c00>>16)&255)*(256-tx)+((c10>>16)&255)*tx;
-                                    int r1=((c01>>16)&255)*(256-tx)+((c11>>16)&255)*tx;
-                                    int g0=((c00>>8)&255)*(256-tx)+((c10>>8)&255)*tx;
-                                    int g1=((c01>>8)&255)*(256-tx)+((c11>>8)&255)*tx;
-                                    int b0=(c00&255)*(256-tx)+(c10&255)*tx;
-                                    int b1=(c01&255)*(256-tx)+(c11&255)*tx;
-                                    im->spx[yy*r.w+xx] = (((uint32_t)((r0*(256-ty)+r1*ty)>>16))<<16)
-                                                        | (((uint32_t)((g0*(256-ty)+g1*ty)>>16))<<8)
-                                                        |  ((uint32_t)((b0*(256-ty)+b1*ty)>>16));
-                                }
+    if (!text_ready) { draw_text(PAGE_PAD, 20, "Loading...", COL_DIM); return; }
+    std::lock_guard<std::mutex> render_lock(layout_mutex_);
+    clamp_scroll();
+    for (int i = 0; i < layout_.run_count; ++i) {
+        const wl_run &r = layout_.runs[i];
+        int sy = r.y - scroll_; int rx = content_x + r.x;
+        /* Early exit: non-background runs are laid out top-to-bottom,
+         * so once r.y is past the viewport bottom nothing below is visible. */
+        if (r.kind != WL_RECT && sy >= win_h_) break;
+        if (sy + r.h < 0 || sy >= win_h_) continue;
+        if (r.kind == WL_RECT) { int top = sy, h = r.h; if (top < 0) { h -= -top; top = 0; } if (h > 0) fill(rx, top, r.w, h, r.color); continue; }
+        if (r.kind == WL_IMAGE) {
+            ImgEntry *im = img_find(r.off>=0&&r.off<layout_.href_count ? layout_.hrefs[r.off] : "");
+            if (im && im->px && r.w > 0 && r.h > 0) {
+                /* Build or reuse bilinear-scaled cache */
+                if (!im->spx || im->sw != r.w || im->sh != r.h) {
+                    if (im->spx) { __builtin_free(im->spx); im->spx = nullptr; }
+                    im->spx = (uint32_t *)__builtin_malloc((unsigned)(r.w * r.h) * 4u);
+                    if (im->spx) {
+                        im->sw = r.w; im->sh = r.h;
+                        int iw = im->w, ih = im->h;
+                        int fsw = r.w > 1 ? r.w - 1 : 1, fsh = r.h > 1 ? r.h - 1 : 1;
+                        for (int yy = 0; yy < r.h; ++yy) {
+                            int fy = (int)((long)yy * (ih-1) * 256 / fsh);
+                            int y0 = fy>>8, y1 = y0<ih-1?y0+1:y0, ty = fy&255;
+                            for (int xx = 0; xx < r.w; ++xx) {
+                                int fx = (int)((long)xx * (iw-1) * 256 / fsw);
+                                int x0 = fx>>8, x1 = x0<iw-1?x0+1:x0, tx = fx&255;
+                                uint32_t c00=im->px[y0*iw+x0],c10=im->px[y0*iw+x1];
+                                uint32_t c01=im->px[y1*iw+x0],c11=im->px[y1*iw+x1];
+                                int r0=((c00>>16)&255)*(256-tx)+((c10>>16)&255)*tx;
+                                int r1=((c01>>16)&255)*(256-tx)+((c11>>16)&255)*tx;
+                                int g0=((c00>>8)&255)*(256-tx)+((c10>>8)&255)*tx;
+                                int g1=((c01>>8)&255)*(256-tx)+((c11>>8)&255)*tx;
+                                int b0=(c00&255)*(256-tx)+(c10&255)*tx;
+                                int b1=(c01&255)*(256-tx)+(c11&255)*tx;
+                                im->spx[yy*r.w+xx] = (((uint32_t)((r0*(256-ty)+r1*ty)>>16))<<16)
+                                                    | (((uint32_t)((g0*(256-ty)+g1*ty)>>16))<<8)
+                                                    |  ((uint32_t)((b0*(256-ty)+b1*ty)>>16));
                             }
                         }
                     }
-                    /* Blit cached scaled image — fast path */
-                    if (im->spx) {
-                        for (int yy = 0; yy < r.h; ++yy) {
-                            int py = sy + yy; if (py < 0 || py >= content_h()) continue;
-                            const uint32_t *src = &im->spx[yy * r.w];
-                            uint32_t *dst = &canvas_[py * BROW_MAX_W + rx];
-                            int x0 = rx < 0 ? -rx : 0, x1 = rx+r.w > win_w_ ? win_w_-rx : r.w;
-                            if (x1 > x0) __builtin_memcpy(dst+x0, src+x0, (unsigned)(x1-x0)*4u);
-                        }
-                    }
-                } else if (sy >= 0 && sy < content_h()) fill(rx, sy, r.w, r.h, 0x00e0e4ecu);
-                continue;
-            }
-            if (r.kind == WL_RULE) { if (sy >= 0 && sy < content_h()) fill(rx, sy, r.w, r.h, r.color); continue; }
-            if (r.kind == WL_BULLET) {
-                int rad = r.px/7 + 2, cx = rx + rad + 2, cy = sy + r.h/2;
-                for (int yy=-rad; yy<=rad; ++yy)
-                    for (int xx=-rad; xx<=rad; ++xx)
-                        if (xx*xx+yy*yy<=rad*rad && cy+yy>=0)
-                            if (cx+xx>=0&&cx+xx<win_w_&&cy+yy<content_h()) canvas_[(cy+yy)*BROW_MAX_W+(cx+xx)] = r.color;
-                continue;
-            }
-            if (r.kind == WL_FIELD) {
-                if (sy < 0 || sy >= content_h()) continue;
-                int kind = r.len; bool button = (kind == WLF_SUBMIT || kind == WLF_BUTTON); bool focused = (r.off == focused_field_);
-                uint32_t face = button ? (r.bg ? r.bg : 0x002a354du) : (r.bg ? r.bg : 0x00ffffffu);
-                uint32_t border = focused ? COL_ACCENT : 0x00808a99u;
-                fill(rx, sy, r.w, r.h, face); fill(rx, sy, r.w, 1, border); fill(rx, sy + r.h - 1, r.w, 1, border); fill(rx, sy, 1, r.h, border); fill(rx + r.w - 1, sy, 1, r.h, border);
-                const char *text = button ? ((r.off>=0 && r.off<layout_.field_count && layout_.fields[r.off].value[0]) ? layout_.fields[r.off].value : "Submit") : ((r.off>=0 && r.off<MAX_FIELDS) ? field_values_[r.off] : "");
-                uint32_t tcol = button ? 0x00ffffffu : (r.color ? r.color : 0x00202632u);
-                int ty = sy + (r.h - r.px) / 2;
-                int text_w = text_width_proportional(text, r.px);
-                int tx = rx + (button ? (r.w - text_w)/2 : 6); if (tx < rx + 4) tx = rx + 4;
-                draw_text_proportional(tx, ty, text, r.w - 10, tcol, r.px, button);
-                if (focused && !button) {
-                    int cx = tx + text_width_proportional(text, r.px);
-                    if (cx > rx + r.w - 4) cx = rx + r.w - 4;
-                    fill(cx, sy+3, 2, r.h-6, COL_ACCENT);
                 }
-                continue;
+                /* Blit cached scaled image — fast path */
+                if (im->spx) {
+                    for (int yy = 0; yy < r.h; ++yy) {
+                        int py = sy + yy; if (py < 0 || py >= win_h_) continue;
+                        const uint32_t *src = &im->spx[yy * r.w];
+                        uint32_t *dst = &canvas_[py * BROW_MAX_W + rx];
+                        int x0 = rx < 0 ? -rx : 0, x1 = rx+r.w > win_w_ ? win_w_-rx : r.w;
+                        if (x1 > x0) __builtin_memcpy(dst+x0, src+x0, (unsigned)(x1-x0)*4u);
+                    }
+                }
+            } else if (sy >= 0) fill(rx, sy, r.w, r.h, 0x00e0e4ecu);
+            continue;
+        }
+        if (r.kind == WL_RULE) { if (sy >= 0) fill(rx, sy, r.w, r.h, r.color); continue; }
+        if (r.kind == WL_BULLET) {
+            int rad = r.px/7 + 2, cx = rx + rad + 2, cy = sy + r.h/2;
+            for (int yy=-rad; yy<=rad; ++yy)
+                for (int xx=-rad; xx<=rad; ++xx)
+                    if (xx*xx+yy*yy<=rad*rad && cy+yy>=0)
+                        if (cx+xx>=0&&cx+xx<win_w_&&cy+yy<win_h_) canvas_[(cy+yy)*BROW_MAX_W+(cx+xx)] = r.color;
+            continue;
+        }
+        if (r.kind == WL_FIELD) {
+            if (sy < 0) continue;
+            int kind = r.len; bool button = (kind == WLF_SUBMIT || kind == WLF_BUTTON); bool focused = (r.off == focused_field_);
+            uint32_t face = button ? (r.bg ? r.bg : 0x002a354du) : (r.bg ? r.bg : 0x00ffffffu);
+            uint32_t border = focused ? COL_ACCENT : 0x00808a99u;
+            fill(rx, sy, r.w, r.h, face); fill(rx, sy, r.w, 1, border); fill(rx, sy + r.h - 1, r.w, 1, border); fill(rx, sy, 1, r.h, border); fill(rx + r.w - 1, sy, 1, r.h, border);
+            const char *text = button ? ((r.off>=0 && r.off<layout_.field_count && layout_.fields[r.off].value[0]) ? layout_.fields[r.off].value : "Submit") : ((r.off>=0 && r.off<MAX_FIELDS) ? field_values_[r.off] : "");
+            uint32_t tcol = button ? 0x00ffffffu : (r.color ? r.color : 0x00202632u);
+            int ty = sy + (r.h - r.px) / 2;
+            int text_w = text_width_proportional(text, r.px);
+            int tx = rx + (button ? (r.w - text_w)/2 : 6); if (tx < rx + 4) tx = rx + 4;
+            draw_text_proportional(tx, ty, text, r.w - 10, tcol, r.px, button);
+            if (focused && !button) {
+                int cx = tx + text_width_proportional(text, r.px);
+                if (cx > rx + r.w - 4) cx = rx + r.w - 4;
+                fill(cx, sy+3, 2, r.h-6, COL_ACCENT);
             }
-            if (r.link >= 0 && r.link == hover_link_ && sy >= 0 && sy < content_h()) fill(rx-1, sy, r.w+2, r.h, COL_HOVER);
-            else if (r.bg && sy >= 0 && sy < content_h()) fill(rx-1, sy, r.w+2, r.h, r.bg);
-            draw_run_text(rx, sy, &r);
-            if (r.underline && sy + r.h - 2 >= 0 && sy + r.h - 2 < content_h()) fill(rx, sy + r.h - 2, r.w, 1, r.color);
-            if (r.strikethrough) { int mid = sy + r.h * 2 / 5; if (mid >= 0 && mid < content_h()) fill(rx, mid, r.w, 1, r.color); }
+            continue;
         }
-        if (layout_.height > content_h()) {
-            int track_h = content_h();
-            int knob_h  = track_h * content_h() / layout_.height; if (knob_h < 10) knob_h = 10;
-            int knob_y  = (track_h - knob_h) * scroll_ / (layout_.height - content_h());
-            
-            // Track: subtle, dark semi-transparent panel background
-            fill(win_w_ - SCROLLBAR_W, 0, SCROLLBAR_W, track_h, 0x000e1622u);
-            
-            // Knob: rounded pill inset by 2 pixels
-            uint32_t knob_col = scroll_dragging_ ? COL_ACCENT : (scroll_hovered_ ? 0x004da3ffu : 0x00334155u);
-            fill(win_w_ - SCROLLBAR_W + 2, knob_y + 2, SCROLLBAR_W - 4, knob_h - 4, knob_col);
-        }
+        if (r.link >= 0 && r.link == hover_link_ && sy >= 0) fill(rx-1, sy, r.w+2, r.h, COL_HOVER);
+        else if (r.bg && sy >= 0) fill(rx-1, sy, r.w+2, r.h, r.bg);
+        draw_run_text(rx, sy, &r);
+        if (r.underline && sy + r.h - 2 >= 0) fill(rx, sy + r.h - 2, r.w, 1, r.color);
+        if (r.strikethrough) { int mid = sy + r.h * 2 / 5; if (mid >= 0 && mid < win_h_) fill(rx, mid, r.w, 1, r.color); }
     }
-
-    // Draw Developer Console if visible
-    if (console_show_) {
-        // Divider
-        fill(0, content_h(), win_w_, 2, 0x00334155u); // slate-700
-        // Background
-        fill(0, content_h() + 2, win_w_, CONSOLE_H - 2, 0x000f172au); // slate-900
+    if (layout_.height > content_h()) {
+        int track_h = content_h();
+        int knob_h  = track_h * content_h() / layout_.height; if (knob_h < 10) knob_h = 10;
+        int knob_y  = (track_h - knob_h) * scroll_ / (layout_.height - content_h());
         
-        // Render visible logs
-        int max_visible = 9;
-        int start_idx = 0;
-        if (console_log_count_ > max_visible) {
-            start_idx = console_log_count_ - max_visible;
-        }
-        for (int i = start_idx; i < console_log_count_; ++i) {
-            int line_y = content_h() + 6 + (i - start_idx) * 16;
-            draw_text_proportional(PAGE_PAD, line_y, console_logs_[i].text, win_w_ - PAGE_PAD * 2, console_logs_[i].color, 13, false);
-        }
+        // Track: subtle, dark semi-transparent panel background
+        fill(win_w_ - SCROLLBAR_W, 0, SCROLLBAR_W, track_h, 0x000e1622u);
         
-        // Render command prompt line
-        int prompt_y = win_h_ - BAR_H - 20;
-        int prompt_w = 0;
-        for (const char *p = "> "; *p; ++p) {
-            prompt_w += appfont_advance(*p, 13);
-        }
-        draw_text_proportional(PAGE_PAD, prompt_y, "> ", prompt_w, 0x0064f2ccu, 13, false);
-        draw_text_proportional(PAGE_PAD + prompt_w, prompt_y, console_cmd_, win_w_ - PAGE_PAD * 2 - prompt_w, 0x00f8fafcu, 13, false);
-        
-        if (console_focused_) {
-            int cmd_w = 0;
-            for (int i = 0; i < console_cmd_len_; ++i) {
-                cmd_w += appfont_advance(console_cmd_[i], 13);
-            }
-            int cursor_x = PAGE_PAD + prompt_w + cmd_w;
-            fill(cursor_x, prompt_y, 2, 14, 0x0064f2ccu); // COL_ACCENT
-        }
+        // Knob: rounded pill inset by 2 pixels
+        uint32_t knob_col = scroll_dragging_ ? COL_ACCENT : (scroll_hovered_ ? 0x004da3ffu : 0x00334155u);
+        fill(win_w_ - SCROLLBAR_W + 2, knob_y + 2, SCROLLBAR_W - 4, knob_h - 4, knob_col);
     }
 }
 
 void Browser::on_key(uint32_t k) {
-    if (console_show_ && console_focused_) {
-        if (k == '\n' || k == '\r') {
-            if (console_cmd_len_ > 0) {
-                // Log command entered
-                char log_cmd[280];
-                __builtin_snprintf(log_cmd, sizeof(log_cmd), "> %s", console_cmd_);
-                console_add_log(log_cmd, 0x00818cf8u); // indigo-400 for user input
-
-                // Evaluate script in context
-                if (js_ctx_) {
-                    JSValue val = JS_Eval(js_ctx_, console_cmd_, (size_t)console_cmd_len_, "<console>", JS_EVAL_TYPE_GLOBAL);
-                    if (JS_IsException(val)) {
-                        JSValue exception = JS_GetException(js_ctx_);
-                        const char *err = JS_ToCString(js_ctx_, exception);
-                        if (err) {
-                            char err_msg[512];
-                            __builtin_snprintf(err_msg, sizeof(err_msg), "Uncaught %s", err);
-                            console_add_log(err_msg, 0x00f87171u); // Red-400
-                            JS_FreeCString(js_ctx_, err);
-                        }
-                        JS_FreeValue(js_ctx_, exception);
-                    } else {
-                        if (!JS_IsUndefined(val)) {
-                            const char *res = JS_ToCString(js_ctx_, val);
-                            if (res) {
-                                console_add_log(res, 0x002dd4bfu); // Teal-400
-                                JS_FreeCString(js_ctx_, res);
-                            }
-                        }
-                    }
-                    JS_FreeValue(js_ctx_, val);
-                } else {
-                    console_add_log("Error: JavaScript context not initialized", 0x00f87171u);
-                }
-                console_cmd_[0] = '\0';
-                console_cmd_len_ = 0;
-            }
-        } else if (k == 0x08) { // Backspace
-            if (console_cmd_len_ > 0) {
-                console_cmd_len_--;
-                console_cmd_[console_cmd_len_] = '\0';
-            }
-        } else if (k == 0x1b) { // Escape
-            console_focused_ = false;
-        } else if (k >= 0x20 && k < 0x7f && console_cmd_len_ < 254) {
-            console_cmd_[console_cmd_len_++] = (char)k;
-            console_cmd_[console_cmd_len_] = '\0';
-        }
-        
-        render();
-        vui_request_repaint(win_);
-        return;
-    }
-
     int old_focused = focused_field_;
     if (focused_field_ >= 0 && focused_field_ < MAX_FIELDS) {
         char *v = field_values_[focused_field_]; int n = (int)__builtin_strlen(v);
@@ -1209,15 +1079,6 @@ void Browser::on_key(uint32_t k) {
 }
 
 void Browser::on_mouse_move(int x, int y) {
-    if (console_show_ && y >= content_h()) {
-        if (hover_link_ != -1) {
-            hover_link_ = -1;
-            render();
-            vui_request_repaint(win_);
-        }
-        return;
-    }
-
     if (scroll_dragging_) {
         int track_h = content_h();
         int knob_h = track_h * content_h() / layout_.height;
@@ -1250,22 +1111,6 @@ void Browser::on_mouse_move(int x, int y) {
 }
 
 void Browser::on_click(int x, int y) {
-    if (console_show_ && y >= content_h()) {
-        focused_field_ = -1;
-        console_focused_ = true;
-        vui_clear_focus(win_);
-        render();
-        vui_request_repaint(win_);
-        return;
-    }
-    console_focused_ = false;
-
-    // Dispatch JS event first
-    dom_node *target_node = node_at(x, y);
-    if (target_node) {
-        dispatch_click_event(target_node);
-    }
-
     if (x >= win_w_ - SCROLLBAR_W) {
         focused_field_ = -1;
         int track_h = content_h();
@@ -1334,700 +1179,8 @@ void Browser::on_scroll(int dy) {
 }
 
 void Browser::on_resize(int w, int h) {
-    if (w < 80) w = 80; if (h < 60) h = 60;
-    if (w > BROW_MAX_W) w = BROW_MAX_W;
-    if (h > BROW_MAX_H) h = BROW_MAX_H;
-    win_w_ = w; win_h_ = h;
-    if (w_canvas_) {
-        vui_set_size(w_canvas_, win_w_, win_h_ - BAR_H);
-    }
-    if (dom_.root) {
-        layout_dom_only();
-    } else {
-        layout_current();
-    }
-}
-
-
-/* ---- JavaScript/QuickJS integration functions ------------------------ */
-
-dom_node *Browser::find_node_by_id(dom_node *node, const char *id) {
-    if (!node) return nullptr;
-    if (node->type == DOM_ELEMENT) {
-        const char *node_id = dom_attr(node, "id");
-        if (node_id && __builtin_strcmp(node_id, id) == 0) {
-            return node;
-        }
-    }
-    for (dom_node *c = node->first_child; c; c = c->next_sibling) {
-        dom_node *found = find_node_by_id(c, id);
-        if (found) return found;
-    }
-    return nullptr;
-}
-
-dom_node *Browser::js_unwrap_node(JSContext *ctx, JSValueConst val) {
-    JSValue ptr_val = JS_GetPropertyStr(ctx, val, "__node_ptr__");
-    double dptr = 0;
-    if (JS_ToFloat64(ctx, &dptr, ptr_val)) {
-        JS_FreeValue(ctx, ptr_val);
-        return nullptr;
-    }
-    JS_FreeValue(ctx, ptr_val);
-    return (dom_node *)(uintptr_t)dptr;
-}
-
-JSValue Browser::js_element_get_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)argc; (void)argv;
-    dom_node *node = js_unwrap_node(ctx, this_val);
-    if (!node) return JS_UNDEFINED;
-    for (dom_node *c = node->first_child; c; c = c->next_sibling) {
-        if (c->type == DOM_TEXT && c->text) {
-            return JS_NewString(ctx, c->text);
-        }
-    }
-    return JS_NewString(ctx, "");
-}
-
-JSValue Browser::js_element_set_text(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    if (argc < 1) return JS_UNDEFINED;
-    dom_node *node = js_unwrap_node(ctx, this_val);
-    if (!node) return JS_UNDEFINED;
-    const char *text = JS_ToCString(ctx, argv[0]);
-    if (!text) return JS_UNDEFINED;
-    
-    dom_node *text_node = nullptr;
-    for (dom_node *c = node->first_child; c; c = c->next_sibling) {
-        if (c->type == DOM_TEXT) {
-            text_node = c;
-            break;
-        }
-    }
-    
-    Browser *b = Browser::s_instance_;
-    char *new_str = strdup(text);
-    if (b->dynamic_string_count_ < Browser::MAX_DYN_STRS) {
-        b->dynamic_strings_[b->dynamic_string_count_++] = new_str;
-    } else {
-        free(new_str);
-    }
-    JS_FreeCString(ctx, text);
-    
-    if (text_node) {
-        text_node->text = new_str;
-    } else {
-        dom_add_text_node(&b->dom_, node, new_str);
-    }
-    
-    b->layout_dom_only();
-    return JS_UNDEFINED;
-}
-
-JSValue Browser::js_wrap_node(JSContext *ctx, dom_node *node) {
-    if (!node) return JS_NULL;
-    JSValue obj = JS_NewObject(ctx);
-    JS_SetPropertyStr(ctx, obj, "__node_ptr__", JS_NewFloat64(ctx, (double)(uintptr_t)node));
-    JS_DefinePropertyGetSet(ctx, obj,
-                            JS_NewAtom(ctx, "innerText"),
-                            JS_NewCFunction(ctx, js_element_get_text, "get", 0),
-                            JS_NewCFunction(ctx, js_element_set_text, "set", 1),
-                            JS_PROP_CONFIGURABLE | JS_PROP_WRITABLE);
-    if (node->type == DOM_ELEMENT) {
-        JS_SetPropertyStr(ctx, obj, "appendChild", JS_NewCFunction(ctx, js_element_append_child, "appendChild", 1));
-        JS_SetPropertyStr(ctx, obj, "addEventListener", JS_NewCFunction(ctx, js_element_add_event_listener, "addEventListener", 2));
-        JS_SetPropertyStr(ctx, obj, "getAttribute", JS_NewCFunction(ctx, js_element_get_attribute, "getAttribute", 1));
-        JS_SetPropertyStr(ctx, obj, "setAttribute", JS_NewCFunction(ctx, js_element_set_attribute, "setAttribute", 2));
-        JS_SetPropertyStr(ctx, obj, "querySelector", JS_NewCFunction(ctx, js_element_query_selector, "querySelector", 1));
-        
-        JSValue global = JS_GetGlobalObject(ctx);
-        JSValue setup_fn = JS_GetPropertyStr(ctx, global, "_setupElement");
-        if (JS_IsFunction(ctx, setup_fn)) {
-            JSValue ret = JS_Call(ctx, setup_fn, global, 1, &obj);
-            JS_FreeValue(ctx, ret);
-        }
-        JS_FreeValue(ctx, setup_fn);
-        JS_FreeValue(ctx, global);
-    }
-    return obj;
-}
-
-JSValue Browser::js_document_get_element_by_id(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    if (argc < 1) return JS_UNDEFINED;
-    const char *id = JS_ToCString(ctx, argv[0]);
-    if (!id) return JS_UNDEFINED;
-    
-    Browser *b = Browser::s_instance_;
-    dom_node *node = find_node_by_id(b->dom_.root, id);
-    JS_FreeCString(ctx, id);
-    
-    if (!node) return JS_NULL;
-    return js_wrap_node(ctx, node);
-}
-
-JSValue Browser::js_print(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    for (int i = 0; i < argc; i++) {
-        const char *str = JS_ToCString(ctx, argv[i]);
-        if (str) {
-            vos_log(VOS_LOG_APP, str);
-            if (s_instance_) {
-                s_instance_->console_add_log(str, 0x00e2e8fcu); // Slate-200 for standard logs
-            }
-            JS_FreeCString(ctx, str);
-        }
-    }
-    return JS_UNDEFINED;
-}
-
-JSValue Browser::js_console_warn(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    for (int i = 0; i < argc; i++) {
-        const char *str = JS_ToCString(ctx, argv[i]);
-        if (str) {
-            vos_log(VOS_LOG_APP, str);
-            if (s_instance_) {
-                s_instance_->console_add_log(str, 0x00fbbf24u); // Amber-400 for warnings
-            }
-            JS_FreeCString(ctx, str);
-        }
-    }
-    return JS_UNDEFINED;
-}
-
-JSValue Browser::js_console_error(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    for (int i = 0; i < argc; i++) {
-        const char *str = JS_ToCString(ctx, argv[i]);
-        if (str) {
-            vos_log(VOS_LOG_APP, str);
-            if (s_instance_) {
-                s_instance_->console_add_log(str, 0x00f87171u); // Red-400 for errors
-            }
-            JS_FreeCString(ctx, str);
-        }
-    }
-    return JS_UNDEFINED;
-}
-
-JSValue Browser::js_console_info(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    for (int i = 0; i < argc; i++) {
-        const char *str = JS_ToCString(ctx, argv[i]);
-        if (str) {
-            vos_log(VOS_LOG_APP, str);
-            if (s_instance_) {
-                s_instance_->console_add_log(str, 0x0093c5fdu); // Blue-300 for info logs
-            }
-            JS_FreeCString(ctx, str);
-        }
-    }
-    return JS_UNDEFINED;
-}
-
-void Browser::js_init() {
-    js_free();
-    js_rt_ = JS_NewRuntime();
-    if (!js_rt_) return;
-    js_ctx_ = JS_NewContext(js_rt_);
-    if (!js_ctx_) {
-        JS_FreeRuntime(js_rt_);
-        js_rt_ = nullptr;
-        return;
-    }
-    
-    JSValue global = JS_GetGlobalObject(js_ctx_);
-    JS_SetPropertyStr(js_ctx_, global, "print", JS_NewCFunction(js_ctx_, js_print, "print", 1));
-    JS_SetPropertyStr(js_ctx_, global, "window", JS_DupValue(js_ctx_, global));
-    JS_SetPropertyStr(js_ctx_, global, "addEventListener", JS_NewCFunction(js_ctx_, js_window_add_event_listener, "addEventListener", 2));
-    
-    JSValue console = JS_NewObject(js_ctx_);
-    JS_SetPropertyStr(js_ctx_, console, "log", JS_NewCFunction(js_ctx_, js_print, "log", 1));
-    JS_SetPropertyStr(js_ctx_, console, "warn", JS_NewCFunction(js_ctx_, js_console_warn, "warn", 1));
-    JS_SetPropertyStr(js_ctx_, console, "error", JS_NewCFunction(js_ctx_, js_console_error, "error", 1));
-    JS_SetPropertyStr(js_ctx_, console, "info", JS_NewCFunction(js_ctx_, js_console_info, "info", 1));
-    JS_SetPropertyStr(js_ctx_, global, "console", console);
-    
-    JSValue doc_obj = JS_NewObject(js_ctx_);
-    JS_SetPropertyStr(js_ctx_, doc_obj, "getElementById", JS_NewCFunction(js_ctx_, js_document_get_element_by_id, "getElementById", 1));
-    JS_SetPropertyStr(js_ctx_, doc_obj, "createElement", JS_NewCFunction(js_ctx_, js_document_create_element, "createElement", 1));
-    JS_SetPropertyStr(js_ctx_, doc_obj, "createTextNode", JS_NewCFunction(js_ctx_, js_document_create_text_node, "createTextNode", 1));
-    JS_SetPropertyStr(js_ctx_, doc_obj, "addEventListener", JS_NewCFunction(js_ctx_, js_document_add_event_listener, "addEventListener", 2));
-    JS_SetPropertyStr(js_ctx_, doc_obj, "querySelector", JS_NewCFunction(js_ctx_, js_document_query_selector, "querySelector", 1));
-    JS_SetPropertyStr(js_ctx_, global, "document", doc_obj);
-    
-    const char *setup_script = 
-        "window._setupElement = function(el) {\n"
-        "    const target = {};\n"
-        "    el.style = new Proxy(target, {\n"
-        "        get(t, prop) {\n"
-        "            const styleAttr = el.getAttribute('style') || '';\n"
-        "            const styles = {};\n"
-        "            styleAttr.split(';').forEach(s => {\n"
-        "                const parts = s.split(':');\n"
-        "                if (parts.length >= 2) {\n"
-        "                    const key = parts[0].trim().toLowerCase();\n"
-        "                    const val = parts.slice(1).join(':').trim();\n"
-        "                    const camelKey = key.replace(/-([a-z])/g, g => g[1].toUpperCase());\n"
-        "                    styles[camelKey] = val;\n"
-        "                }\n"
-        "            });\n"
-        "            return styles[prop] || '';\n"
-        "        },\n"
-        "        set(t, prop, value) {\n"
-        "            const styleAttr = el.getAttribute('style') || '';\n"
-        "            const styles = {};\n"
-        "            styleAttr.split(';').forEach(s => {\n"
-        "                const parts = s.split(':');\n"
-        "                if (parts.length >= 2) {\n"
-        "                    const key = parts[0].trim().toLowerCase();\n"
-        "                    const val = parts.slice(1).join(':').trim();\n"
-        "                    styles[key] = val;\n"
-        "                }\n"
-        "            });\n"
-        "            const kebabKey = prop.replace(/([A-Z])/g, g => '-' + g[0].toLowerCase());\n"
-        "            if (value === null || value === undefined || value === '') {\n"
-        "                delete styles[kebabKey];\n"
-        "            } else {\n"
-        "                styles[kebabKey] = value;\n"
-        "            }\n"
-        "            const newStyleStr = Object.keys(styles)\n"
-        "                .map(k => k + ':' + styles[k])\n"
-        "                .join(';');\n"
-        "            el.setAttribute('style', newStyleStr);\n"
-        "            return true;\n"
-        "        }\n"
-        "    });\n"
-        "};\n";
-    JSValue val = JS_Eval(js_ctx_, setup_script, strlen(setup_script), "<setup>", JS_EVAL_TYPE_GLOBAL);
-    JS_FreeValue(js_ctx_, val);
-    
-    JS_FreeValue(js_ctx_, global);
-}
-
-void Browser::js_free() {
-    if (js_ctx_) {
-        for (int i = 0; i < event_listener_count_; ++i) {
-            JS_FreeValue(js_ctx_, event_listeners_[i].callback);
-        }
-        event_listener_count_ = 0;
-        JS_FreeContext(js_ctx_);
-        js_ctx_ = nullptr;
-    }
-    if (js_rt_) {
-        JS_FreeRuntime(js_rt_);
-        js_rt_ = nullptr;
-    }
-    for (int i = 0; i < dynamic_string_count_; i++) {
-        if (dynamic_strings_[i]) free(dynamic_strings_[i]);
-        dynamic_strings_[i] = nullptr;
-    }
-    dynamic_string_count_ = 0;
-}
-
-void Browser::execute_script_node(dom_node *node) {
-    if (!node) return;
-    if (node->type == DOM_ELEMENT && __builtin_strcmp(node->tag, "script") == 0) {
-        for (dom_node *c = node->first_child; c; c = c->next_sibling) {
-            if (c->type == DOM_TEXT && c->text && c->text[0] != '\0') {
-                JSValue val = JS_Eval(js_ctx_, c->text, strlen(c->text), "<script>", JS_EVAL_TYPE_GLOBAL);
-                if (JS_IsException(val)) {
-                    JSValue exception = JS_GetException(js_ctx_);
-                    const char *err = JS_ToCString(js_ctx_, exception);
-                    if (err) {
-                        blogf("JS Exception: %s", err);
-                        if (s_instance_) {
-                            char err_msg[512];
-                            __builtin_snprintf(err_msg, sizeof(err_msg), "[Script Error] %s", err);
-                            s_instance_->console_add_log(err_msg, 0x00f87171u); // Red-400
-                        }
-                        JS_FreeCString(js_ctx_, err);
-                    }
-                    JS_FreeValue(js_ctx_, exception);
-                }
-                JS_FreeValue(js_ctx_, val);
-            }
-        }
-    }
-    for (dom_node *c = node->first_child; c; c = c->next_sibling) {
-        execute_script_node(c);
-    }
-}
-
-void Browser::execute_scripts() {
-    if (!js_ctx_ || !dom_.root) return;
-    execute_script_node(dom_.root);
-}
-
-void Browser::layout_dom_only() {
-    if (!dom_.root) return;
-    std::lock_guard<std::mutex> lk(layout_mutex_);
-    wl_free(&layout_); wl_init(&layout_);
-    layout_engine_.layout(&layout_, dom_.root, content_w());
-    clamp_scroll();
-    render();
-    vui_request_repaint(win_);
-}
-
-void Browser::toggle_console() {
-    console_show_ = !console_show_;
-    if (console_show_) {
-        console_focused_ = true;
-        vui_clear_focus(win_);
-    } else {
-        console_focused_ = false;
-    }
-    if (dom_.root) {
-        layout_dom_only();
-    } else {
-        render();
-        vui_request_repaint(win_);
-    }
-}
-
-void Browser::console_add_log(const char *text, uint32_t color) {
-    if (console_log_count_ < MAX_CONSOLE_LOGS) {
-        ConsoleLog &log = console_logs_[console_log_count_];
-        __builtin_strncpy(log.text, text, sizeof(log.text) - 1);
-        log.text[sizeof(log.text) - 1] = '\0';
-        log.color = color;
-        console_log_count_++;
-    } else {
-        ConsoleLog &log = console_logs_[MAX_CONSOLE_LOGS - 1];
-        __builtin_strncpy(log.text, text, sizeof(log.text) - 1);
-        log.text[sizeof(log.text) - 1] = '\0';
-        log.color = color;
-    }
-}
-
-JSValue Browser::js_document_create_element(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (argc < 1) return JS_UNDEFINED;
-    const char *tag = JS_ToCString(ctx, argv[0]);
-    if (!tag) return JS_UNDEFINED;
-    
-    Browser *b = Browser::s_instance_;
-    dom_node *node = dom_add_element_node(&b->dom_, nullptr, tag);
-    JS_FreeCString(ctx, tag);
-    
-    if (!node) return JS_NULL;
-    return js_wrap_node(ctx, node);
-}
-
-JSValue Browser::js_document_create_text_node(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (argc < 1) return JS_UNDEFINED;
-    const char *text = JS_ToCString(ctx, argv[0]);
-    if (!text) return JS_UNDEFINED;
-    
-    Browser *b = Browser::s_instance_;
-    char *new_str = strdup(text);
-    if (b->dynamic_string_count_ < Browser::MAX_DYN_STRS) {
-        b->dynamic_strings_[b->dynamic_string_count_++] = new_str;
-    } else {
-        free(new_str);
-    }
-    JS_FreeCString(ctx, text);
-    
-    dom_node *node = dom_add_text_node(&b->dom_, nullptr, new_str);
-    if (!node) return JS_NULL;
-    return js_wrap_node(ctx, node);
-}
-
-JSValue Browser::js_element_append_child(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    if (argc < 1) return JS_UNDEFINED;
-    dom_node *parent = js_unwrap_node(ctx, this_val);
-    dom_node *child = js_unwrap_node(ctx, argv[0]);
-    if (!parent || !child) return JS_UNDEFINED;
-    if (parent->type != DOM_ELEMENT) return JS_UNDEFINED;
-    
-    dom_append_child(parent, child);
-    
-    Browser::s_instance_->layout_dom_only();
-    return argv[0];
-}
-
-JSValue Browser::js_element_add_event_listener(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    if (argc < 2) return JS_UNDEFINED;
-    dom_node *node = js_unwrap_node(ctx, this_val);
-    if (!node) return JS_UNDEFINED;
-    
-    const char *type = JS_ToCString(ctx, argv[0]);
-    if (!type) return JS_UNDEFINED;
-    
-    Browser::s_instance_->add_event_listener(node, type, argv[1]);
-    JS_FreeCString(ctx, type);
-    return JS_UNDEFINED;
-}
-
-JSValue Browser::js_window_add_event_listener(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (argc < 2) return JS_UNDEFINED;
-    
-    const char *type = JS_ToCString(ctx, argv[0]);
-    if (!type) return JS_UNDEFINED;
-    
-    Browser::s_instance_->add_event_listener(nullptr, type, argv[1]);
-    JS_FreeCString(ctx, type);
-    return JS_UNDEFINED;
-}
-
-JSValue Browser::js_document_add_event_listener(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (argc < 2) return JS_UNDEFINED;
-    
-    const char *type = JS_ToCString(ctx, argv[0]);
-    if (!type) return JS_UNDEFINED;
-    
-    Browser *b = Browser::s_instance_;
-    b->add_event_listener(b->dom_.root, type, argv[1]);
-    JS_FreeCString(ctx, type);
-    return JS_UNDEFINED;
-}
-
-void Browser::add_event_listener(dom_node *node, const char *type, JSValue callback) {
-    if (event_listener_count_ < MAX_EVENT_LISTENERS) {
-        EventListener &el = event_listeners_[event_listener_count_++];
-        el.node = node;
-        __builtin_strncpy(el.type, type, sizeof(el.type) - 1);
-        el.type[sizeof(el.type) - 1] = '\0';
-        el.callback = JS_DupValue(js_ctx_, callback);
-    }
-}
-
-void Browser::dispatch_click_event(dom_node *node) {
-    if (!js_ctx_) return;
-    
-    // Bubble up the DOM tree
-    for (dom_node *curr = node; curr; curr = curr->parent) {
-        // 1. Run inline onclick attribute
-        if (curr->type == DOM_ELEMENT) {
-            const char *onclick_code = dom_attr(curr, "onclick");
-            if (onclick_code && onclick_code[0]) {
-                JSValue val = JS_Eval(js_ctx_, onclick_code, strlen(onclick_code), "<onclick>", JS_EVAL_TYPE_GLOBAL);
-                if (JS_IsException(val)) {
-                    JSValue exception = JS_GetException(js_ctx_);
-                    const char *err = JS_ToCString(js_ctx_, exception);
-                    if (err) {
-                        blogf("onclick Exception: %s", err);
-                        char err_msg[512];
-                        __builtin_snprintf(err_msg, sizeof(err_msg), "[onclick Error] %s", err);
-                        console_add_log(err_msg, 0x00f87171u);
-                        JS_FreeCString(js_ctx_, err);
-                    }
-                    JS_FreeValue(js_ctx_, exception);
-                }
-                JS_FreeValue(js_ctx_, val);
-            }
-        }
-        
-        // 2. Run registered event listeners for "click"
-        for (int i = 0; i < event_listener_count_; ++i) {
-            if (event_listeners_[i].node == curr && __builtin_strcmp(event_listeners_[i].type, "click") == 0) {
-                JSValue ret = JS_Call(js_ctx_, event_listeners_[i].callback, JS_UNDEFINED, 0, nullptr);
-                if (JS_IsException(ret)) {
-                    JSValue exception = JS_GetException(js_ctx_);
-                    const char *err = JS_ToCString(js_ctx_, exception);
-                    if (err) {
-                        blogf("listener Exception: %s", err);
-                        char err_msg[512];
-                        __builtin_snprintf(err_msg, sizeof(err_msg), "[Listener Error] %s", err);
-                        console_add_log(err_msg, 0x00f87171u);
-                        JS_FreeCString(js_ctx_, err);
-                    }
-                    JS_FreeValue(js_ctx_, exception);
-                }
-                JS_FreeValue(js_ctx_, ret);
-            }
-        }
-    }
-    
-    // 3. Dispatch to window event listeners (where node is nullptr)
-    for (int i = 0; i < event_listener_count_; ++i) {
-        if (event_listeners_[i].node == nullptr && __builtin_strcmp(event_listeners_[i].type, "click") == 0) {
-            JSValue ret = JS_Call(js_ctx_, event_listeners_[i].callback, JS_UNDEFINED, 0, nullptr);
-            if (JS_IsException(ret)) {
-                JSValue exception = JS_GetException(js_ctx_);
-                const char *err = JS_ToCString(js_ctx_, exception);
-                if (err) {
-                    blogf("window listener Exception: %s", err);
-                    char err_msg[512];
-                    __builtin_snprintf(err_msg, sizeof(err_msg), "[Window Listener Error] %s", err);
-                    console_add_log(err_msg, 0x00f87171u);
-                    JS_FreeCString(js_ctx_, err);
-                }
-                JS_FreeValue(js_ctx_, exception);
-            }
-            JS_FreeValue(js_ctx_, ret);
-        }
-    }
-}
-
-static bool attr_name_eq(const char *a, const char *b) {
-    if (!a || !b) return false;
-    while (*a && *b) {
-        char ca = (*a >= 'A' && *a <= 'Z') ? (*a + 32) : *a;
-        char cb = (*b >= 'A' && *b <= 'Z') ? (*b + 32) : *b;
-        if (ca != cb) return false;
-        a++;
-        b++;
-    }
-    return *a == *b;
-}
-
-static bool class_list_contains(const char *class_list, const char *cls) {
-    if (!class_list || !cls) return false;
-    int cls_len = strlen(cls);
-    const char *p = class_list;
-    while (*p) {
-        while (*p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
-            p++;
-        }
-        if (!*p) break;
-        const char *start = p;
-        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') {
-            p++;
-        }
-        int len = p - start;
-        if (len == cls_len && strncmp(start, cls, len) == 0) {
-            return true;
-        }
-    }
-    return false;
-}
-
-static bool tag_name_eq(const char *tag_in_dom, const char *selector) {
-    if (!tag_in_dom || !selector) return false;
-    while (*tag_in_dom && *selector) {
-        char c1 = *tag_in_dom;
-        char c2 = (*selector >= 'A' && *selector <= 'Z') ? (*selector + 32) : *selector;
-        if (c1 != c2) return false;
-        tag_in_dom++;
-        selector++;
-    }
-    return *tag_in_dom == *selector;
-}
-
-void Browser::dom_set_attribute(dom_node *node, const char *name, const char *value) {
-    if (!node || !name || !value) return;
-    for (int i = 0; i < node->nattrs; ++i) {
-        if (attr_name_eq(node->attrs[i].name, name)) {
-            char *new_val = strdup(value);
-            if (dynamic_string_count_ < MAX_DYN_STRS) {
-                dynamic_strings_[dynamic_string_count_++] = new_val;
-            }
-            node->attrs[i].value = new_val;
-            return;
-        }
-    }
-    int new_nattrs = node->nattrs + 1;
-    struct dom_attr *new_attrs = (struct dom_attr *)realloc(node->attrs, new_nattrs * sizeof(struct dom_attr));
-    if (!new_attrs) return;
-    node->attrs = new_attrs;
-    char *new_name = strdup(name);
-    char *new_val = strdup(value);
-    if (dynamic_string_count_ < MAX_DYN_STRS) {
-        dynamic_strings_[dynamic_string_count_++] = new_name;
-    }
-    if (dynamic_string_count_ < MAX_DYN_STRS) {
-        dynamic_strings_[dynamic_string_count_++] = new_val;
-    }
-    node->attrs[node->nattrs].name = new_name;
-    node->attrs[node->nattrs].value = new_val;
-    node->nattrs = new_nattrs;
-}
-
-JSValue Browser::js_element_get_attribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    if (argc < 1) return JS_UNDEFINED;
-    dom_node *node = js_unwrap_node(ctx, this_val);
-    if (!node || node->type != DOM_ELEMENT) return JS_NULL;
-    const char *name = JS_ToCString(ctx, argv[0]);
-    if (!name) return JS_UNDEFINED;
-    const char *val = dom_attr(node, name);
-    JS_FreeCString(ctx, name);
-    if (!val) return JS_NULL;
-    return JS_NewString(ctx, val);
-}
-
-JSValue Browser::js_element_set_attribute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    if (argc < 2) return JS_UNDEFINED;
-    dom_node *node = js_unwrap_node(ctx, this_val);
-    if (!node || node->type != DOM_ELEMENT) return JS_UNDEFINED;
-    const char *name = JS_ToCString(ctx, argv[0]);
-    const char *value = JS_ToCString(ctx, argv[1]);
-    if (!name || !value) {
-        if (name) JS_FreeCString(ctx, name);
-        if (value) JS_FreeCString(ctx, value);
-        return JS_UNDEFINED;
-    }
-    Browser::s_instance_->dom_set_attribute(node, name, value);
-    JS_FreeCString(ctx, name);
-    JS_FreeCString(ctx, value);
-    Browser::s_instance_->layout_dom_only();
-    return JS_UNDEFINED;
-}
-
-bool Browser::matches_selector(dom_node *node, const char *selector) {
-    if (!node || node->type != DOM_ELEMENT || !selector || !selector[0]) return false;
-    if (selector[0] == '#') {
-        const char *id_val = dom_attr(node, "id");
-        return id_val && strcmp(id_val, selector + 1) == 0;
-    } else if (selector[0] == '.') {
-        const char *class_val = dom_attr(node, "class");
-        return class_list_contains(class_val, selector + 1);
-    } else {
-        return tag_name_eq(node->tag, selector);
-    }
-}
-
-dom_node *Browser::find_node_by_selector(dom_node *node, const char *selector) {
-    if (!node) return nullptr;
-    for (dom_node *c = node->first_child; c; c = c->next_sibling) {
-        if (matches_selector(c, selector)) {
-            return c;
-        }
-        dom_node *found = find_node_by_selector(c, selector);
-        if (found) return found;
-    }
-    return nullptr;
-}
-
-JSValue Browser::js_document_query_selector(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    (void)this_val;
-    if (argc < 1) return JS_UNDEFINED;
-    const char *selector = JS_ToCString(ctx, argv[0]);
-    if (!selector) return JS_UNDEFINED;
-    Browser *b = Browser::s_instance_;
-    dom_node *found = b->find_node_by_selector(b->dom_.root, selector);
-    JS_FreeCString(ctx, selector);
-    if (!found) return JS_NULL;
-    return js_wrap_node(ctx, found);
-}
-
-JSValue Browser::js_element_query_selector(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv) {
-    if (argc < 1) return JS_UNDEFINED;
-    dom_node *node = js_unwrap_node(ctx, this_val);
-    if (!node) return JS_UNDEFINED;
-    const char *selector = JS_ToCString(ctx, argv[0]);
-    if (!selector) return JS_UNDEFINED;
-    Browser *b = Browser::s_instance_;
-    dom_node *found = b->find_node_by_selector(node, selector);
-    JS_FreeCString(ctx, selector);
-    if (!found) return JS_NULL;
-    return js_wrap_node(ctx, found);
-}
-
-dom_node *Browser::node_at(int x, int y) const {
-    int content_x = PAGE_PAD;
-    int docx = x - content_x, docy = y + scroll_;
-    for (int i = 0; i < layout_.run_count; ++i) {
-        const wl_run &r = layout_.runs[i];
-        if (docx >= r.x && docx < r.x + r.w && docy >= r.y && docy < r.y + r.h) {
-            if (r.node) return r.node;
-        }
-    }
-    return nullptr;
+    if (w < 80) w = 80; if (h < 60) h = 60; if (w > BROW_MAX_W) w = BROW_MAX_W; if (h > BROW_MAX_H) h = BROW_MAX_H;
+    win_w_ = w; win_h_ = h; if (w_canvas_) vui_set_size(w_canvas_, win_w_, win_h_ - BAR_H); if (html_buf_) layout_current();
 }
 
 int main() { static Browser browser; browser.run(); }
-
-
