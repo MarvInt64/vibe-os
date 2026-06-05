@@ -1379,7 +1379,8 @@ static void render_window_surface(struct desktop_state *desktop, int index) {
     build_app_draw_context(desktop, &local_window, focused, &app_ctx);
     app_ctx.fb = fb;
     fb_reset_clip(fb);
-    fb_fill_rect(fb, 0, 0, window->width, window->height, WINDOW_TRANSPARENT_KEY);
+    fb_fill_rect(fb, 0, 0, window->width, window->height,
+                 g_chrome_theme.surface);
     if (!window_frameless(window)) {
         draw_window_frame(desktop, fb, &local_window, focused);
     }
