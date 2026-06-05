@@ -79,9 +79,11 @@ ap_prot_mode:
     mov fs, ax
     mov gs, ax
 
-    /* Enable PAE. */
+    /* Enable PAE + SSE (OSFXSR | OSXMMEXCPT), mirroring boot.S so this core can
+     * run the same userspace/FPU code the boot CPU does. Without OSFXSR/EM-clear
+     * an SSE instruction or fxsave/fxrstor in a process dispatched here faults. */
     mov eax, cr4
-    or  eax, (1 << 5)
+    or  eax, (1 << 5) | (1 << 9) | (1 << 10)
     mov cr4, eax
 
     /* Reuse the BSP's page tables (identity 0-4 GB). */
@@ -94,9 +96,10 @@ ap_prot_mode:
     or  eax, (1 << 8)
     wrmsr
 
-    /* Enable paging -> activate long mode. */
+    /* Enable paging -> activate long mode; set MP and clear EM for SSE. */
     mov eax, cr0
-    or  eax, (1 << 31) | (1 << 0)
+    or  eax, (1 << 31) | (1 << 0) | (1 << 1)   /* PG | PE | MP */
+    and eax, ~(1 << 2)                          /* clear EM */
     mov cr0, eax
 
     /* Far jump into 64-bit code (selector 0x18 = 64-bit code). */

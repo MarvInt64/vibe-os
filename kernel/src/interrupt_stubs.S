@@ -14,7 +14,8 @@
 .global spurious_interrupt_stub
 .global ap_load_tables
 .global ap_timer_stub
-.extern ap_timer_tick
+.extern process_ap_timer
+.extern process_run_slice_return
 
 .extern syscall_handle_interrupt
 .extern timer_handle_interrupt
@@ -74,32 +75,40 @@ ap_load_tables:
     lidt [rsi]
     ret
 
-/* Local APIC timer handler for application processors (vector 0x40). Saves the
- * caller-clobbered registers, runs the C tick, and returns. ap_timer_tick()
- * sends the Local APIC EOI itself. */
+/* Local APIC timer handler for application processors (vector 0x40). Mirrors
+ * timer_interrupt_stub: save the full register frame, take the big kernel lock,
+ * run process_ap_timer, then either resume the interrupted process or, if it
+ * preempted one, unwind to the AP's scheduler loop via process_run_slice_return
+ * (the per-CPU resume slot makes this land back in this AP's dispatch call). */
 ap_timer_stub:
-    push rax
-    push rcx
-    push rdx
+    push r15
+    push r14
+    push r13
+    push r12
+    push r11
+    push r10
+    push r9
+    push r8
     push rsi
     push rdi
-    push r8
-    push r9
-    push r10
-    push r11
     push rbp
-    call ap_timer_tick
-    pop rbp
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rdi
-    pop rsi
-    pop rdx
-    pop rcx
-    pop rax
-    iretq
+    push rdx
+    push rcx
+    push rbx
+    push rax
+
+    call bkl_acquire
+
+    mov rdi, rsp
+    call process_ap_timer
+    test eax, eax
+    jnz .ap_timer_deschedule
+
+    mov rdi, rsp
+    jmp interrupt_restore_user_context
+
+.ap_timer_deschedule:
+    jmp process_run_slice_return
 
 interrupt_restore_user_context:
     /* Leaving the kernel: drop the big kernel lock. rdi holds the frame pointer

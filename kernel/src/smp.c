@@ -26,15 +26,13 @@
 #include "acpi.h"
 #include "apic.h"
 #include "alloc.h"
+#include "bkl.h"
 #include "cpu.h"
 #include "interrupts.h"
+#include "process.h"
 #include "serial.h"
 #include "string.h"
 #include "types.h"
-
-/* Number of kmalloc/kfree cycles each AP runs to exercise the now-SMP-safe
- * heap concurrently with the other cores. */
-#define AP_HEAP_CYCLES 4000u
 
 /* Physical address the AP trampoline is copied to and where the APs start
  * executing. Must be page-aligned and < 1 MB (real-mode reachable); the SIPI
@@ -64,22 +62,12 @@ static void delay_spin(volatile uint32_t iterations) {
 }
 
 /*
- * Local APIC timer interrupt handler for an AP (called from ap_timer_stub).
- * Counts a per-CPU tick and acknowledges the interrupt. No shared state, so no
- * lock is needed; this is the per-CPU heartbeat the scheduler will hook into.
- */
-void ap_timer_tick(void) {
-    this_cpu()->ticks++;
-    lapic_eoi();
-}
-
-/*
  * C entry point for an application processor (called from ap_boot.S on the
- * AP's own stack, in 64-bit mode). The AP becomes a real interrupt-driven CPU:
- * it loads the shared GDT/IDT, sets up its per-CPU data and Local APIC, starts
- * its own Local APIC timer, then runs an interrupt-driven idle loop. It is no
- * longer parked with interrupts off — it wakes on every timer tick. There is
- * still no scheduler here, so the idle loop just halts between ticks.
+ * AP's own stack, in 64-bit mode). The AP becomes a full scheduling CPU: it
+ * loads its own GDT/TSS + the shared IDT, sets up its per-CPU data and Local
+ * APIC, starts its Local APIC timer, then runs the scheduler loop — picking and
+ * running userspace processes (under the big kernel lock) just like the boot
+ * CPU does, in parallel with it.
  */
 void ap_main(void) {
     /* Claim our per-CPU slot, then build and load this core's own GDT + TSS
@@ -94,42 +82,21 @@ void ap_main(void) {
 
     lapic_timer_start(AP_TIMER_VECTOR);
 
-    /* Real concurrent kernel work: hammer the shared heap. Every cycle a block
-     * is allocated, stamped with a CPU-unique byte, verified, and freed — all
-     * through the SMP-safe kmalloc/kfree, while the other APs (and soon the BSP
-     * booting the desktop) do the same. A surviving stamp + a clean heap
-     * afterwards proves the heap lock holds under multi-CPU contention. */
-    struct cpu *me = this_cpu();
-    unsigned char stamp = (unsigned char)(0xA0 + me->index);
-    for (unsigned i = 0; i < AP_HEAP_CYCLES; ++i) {
-        unsigned size = 32u + (i & 0xFFu);
-        unsigned char *p = (unsigned char *)kmalloc(size);
-        if (!p) continue;
-        p[0] = stamp;
-        p[size - 1] = stamp;
-        if (p[0] == stamp && p[size - 1] == stamp)
-            me->allocs++;
-        kfree(p);
-    }
+    /* Scheduler loop. Take the big kernel lock, dispatch one ready process that
+     * is not already running on another core (process_run_ready_slice releases
+     * the lock on the way into userspace and re-takes it on return), release the
+     * lock, then either spin if work remains or idle until the next timer tick.
+     * The lock is never held across the idle halt, so the boot CPU and the other
+     * APs keep running. */
+    for (;;) {
+        bkl_acquire();
+        int result = process_run_ready_slice();
+        bkl_release();
 
-    /* Interrupt-driven idle: wake on the timer, tick, halt again. */
-    for (;;) __asm__ volatile("sti; hlt");
-}
-
-/* Print each CPU's timer-tick count, proving every core is taking its own
- * Local APIC timer interrupts (i.e. running real interrupt-driven code). */
-static void smp_report(void) {
-    for (unsigned i = 0; i < cpu_count(); ++i) {
-        struct cpu *c = cpu_get(i);
-        serial_write("SMP: cpu");
-        serial_write_hex_u64(i);
-        serial_write(" apic_id=");
-        serial_write_hex_u64(c->apic_id);
-        serial_write(" ticks=");
-        serial_write_hex_u64(c->ticks);
-        serial_write(" heap_allocs=");
-        serial_write_hex_u64(c->allocs);
-        serial_write("\n");
+        if (result == PROCESS_RUN_NONE)
+            __asm__ volatile("sti; hlt");   /* nothing to run; wake on next tick */
+        else
+            __asm__ volatile("pause");
     }
 }
 
@@ -197,16 +164,11 @@ void smp_boot_aps(void) {
     serial_write_hex_u64(info->cpu_count);
     serial_write("\n");
 
-    /* Wait (bounded) until every AP has taken at least one timer tick, proving
-     * the per-CPU Local APIC timers are firing, then report. */
-    for (int round = 0; round < 200; ++round) {
-        unsigned ticking = 0;
-        for (unsigned i = 1; i < cpu_count(); ++i)
-            if (cpu_get(i)->ticks > 0) ticking++;
-        if (ticking + 1 >= cpu_count()) break;   /* all APs ticked (cpu0 = BSP) */
-        delay_spin(200000);
-    }
-    smp_report();
+    /* The APs are now in their scheduler loops, blocked on the big kernel lock
+     * which the boot CPU still holds; they begin running processes as soon as
+     * the boot CPU first releases it (idle or a process dispatch in the main
+     * loop). We must NOT wait here for them to make progress — that would
+     * deadlock, since their timer handlers also need the lock we hold. */
 }
 
 unsigned smp_cpu_count(void) { return g_cpus_online; }

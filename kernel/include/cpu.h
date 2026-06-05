@@ -59,6 +59,11 @@ struct cpu {
      * CPU_RESUME_* offsets there (checked by _Static_assert in cpu.c). */
     unsigned long   resume_rsp;     /* parked scheduler kernel stack pointer  */
     unsigned long   resume_result;  /* run-result code handed back to caller  */
+
+    /* Process time-slices dispatched on this CPU (a busy-work measure for the
+     * task manager). Placed after the GS-relative resume fields so adding it
+     * never shifts their fixed offsets. */
+    volatile unsigned long slices;
 };
 
 /* Claim the next per-CPU slot for the calling CPU, record its APIC id, and

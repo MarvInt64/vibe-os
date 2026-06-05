@@ -159,6 +159,8 @@ int process_spawn_path(const char *path, const struct fd_ops *stdio_ops, void *s
 extern uint32_t g_desktop_uid;
 int process_run_ready_slice(void);
 int timer_handle_interrupt(struct interrupt_frame *frame);
+/* Application-processor Local APIC timer handler (preempts the AP's process). */
+int process_ap_timer(struct interrupt_frame *frame);
 
 /* Called from inside a blocking kernel operation (e.g. the network wait loops)
  * to suspend the current process and let the scheduler run the desktop and

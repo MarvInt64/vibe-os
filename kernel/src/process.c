@@ -27,6 +27,7 @@
 #include "audio.h"
 #include "clipboard.h"
 #include "cpu.h"
+#include "apic.h"
 #include "string.h"
 #include "elf.h"
 #include "ext2_fs.h"
@@ -1759,6 +1760,7 @@ int process_run_ready_slice(void) {
     g_current_process = process;
     process->state = PROCESS_STATE_RUNNING;
     process->running_on_cpu = (int32_t)this_cpu()->index;   /* claim for this CPU */
+    this_cpu()->slices++;                                   /* per-CPU busy count */
     ++process->switch_count;
     paging_load_cr3(process->cr3);   /* activate this process's private address space */
 
@@ -2948,6 +2950,32 @@ int timer_handle_interrupt(struct interrupt_frame *frame) {
 
     if ((frame->cs & 0x03u) != 0x03u) {
         return 0;
+    }
+
+    ++process->runtime_ticks;
+    ++process->preempt_count;
+    process->context = *frame;
+    process->state = PROCESS_STATE_READY;
+    g_kernel_resume_result = PROCESS_RUN_YIELDED;
+    g_current_process = 0;
+    return 1;
+}
+
+/* Local APIC timer handler for an application processor (vector 0x40). Unlike
+ * the boot CPU's timer it does NOT drive the global clock (timer_tick) or wake
+ * sleepers — that stays the BSP's job; it only counts this core's ticks, EOIs
+ * its own Local APIC, and preempts whatever process is running on this core.
+ * Returns 1 to deschedule (back to the AP's scheduler loop), 0 to resume. */
+int process_ap_timer(struct interrupt_frame *frame) {
+    this_cpu()->ticks++;
+    lapic_eoi();
+
+    struct process *process = g_current_process;
+    if (frame == 0 || process == 0) {
+        return 0;
+    }
+    if ((frame->cs & 0x03u) != 0x03u) {
+        return 0;   /* interrupted kernel/idle, nothing to preempt */
     }
 
     ++process->runtime_ticks;

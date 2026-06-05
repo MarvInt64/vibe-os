@@ -703,7 +703,11 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
             }
         }
         if (run_result == PROCESS_RUN_NONE) {
+            /* Nothing to dispatch: drop the big kernel lock so the APs can run
+             * kernel code while the boot CPU is idle-halted, then re-take it. */
+            bkl_release();
             __asm__ volatile("sti; hlt; cli");
+            bkl_acquire();
         } else {
             /* Work is pending (a process is runnable or parked on blocking I/O).
              * Enable interrupts so the timer keeps advancing — blocking-I/O
