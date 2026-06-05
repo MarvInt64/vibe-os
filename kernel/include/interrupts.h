@@ -57,6 +57,8 @@ struct interrupt_frame {
 void interrupts_init(void);
 /* Load the shared GDT/IDT on an application processor (no TSS load). */
 void interrupts_ap_load_tables(void);
+/* Build and load this application processor's own GDT + TSS (with ltr). */
+void interrupts_setup_ap_cpu(unsigned index);
 void interrupt_restore_user_context(const struct interrupt_frame *frame);
 int process_run_slice(const struct interrupt_frame *frame);
 

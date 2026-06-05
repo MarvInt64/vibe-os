@@ -82,14 +82,13 @@ void ap_timer_tick(void) {
  * still no scheduler here, so the idle loop just halts between ticks.
  */
 void ap_main(void) {
-    /* Switch off the trampoline GDT onto the runtime GDT (so vector selectors
-     * match the IDT gates) and load the shared IDT — without ltr, since a
-     * ring-0 idle AP makes no privilege transition and the single TSS is busy. */
-    interrupts_ap_load_tables();
+    /* Claim our per-CPU slot, then build and load this core's own GDT + TSS
+     * (its own ring-0 stack) plus the shared IDT. The table load reloads the gs
+     * selector and clears the gs base, so reprogram the gs base afterwards. */
+    unsigned idx = cpu_register(lapic_id());
+    interrupts_setup_ap_cpu(idx);
+    cpu_set_gs_base(idx);
 
-    /* cpu_register programs the GS base last, so it must run after the table
-     * load above (which reloads the gs selector and clears the base). */
-    cpu_register(lapic_id());
     lapic_enable_this_cpu();
     __atomic_add_fetch(&g_cpus_online, 1, __ATOMIC_SEQ_CST);
 

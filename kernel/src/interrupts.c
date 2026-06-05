@@ -24,9 +24,12 @@
 
 #include "interrupts.h"
 #include "apic.h"
+#include "alloc.h"
+#include "cpu.h"
 #include "journal.h"
 #include "process.h"
 #include "serial.h"
+#include "string.h"
 #include "timer.h"
 
 #define TIMER_VECTOR 0x20u
@@ -230,6 +233,39 @@ void interrupts_init(void) {
 /* Called by an application processor to load the shared GDT/IDT (no TSS). */
 void interrupts_ap_load_tables(void) {
     ap_load_tables(&g_gdt_desc, &g_idt_desc);
+}
+
+/* Per-CPU GDT and TSS for the application processors. Each AP needs its own TSS
+ * (its own ring-0 stack pointer, rsp0) for the day it takes a trap from
+ * userspace, and therefore its own GDT to hold a non-busy TSS descriptor — the
+ * boot CPU's TSS is already marked busy in the shared runtime GDT. */
+#define AP_RSP0_STACK_SIZE 16384u
+static uint64_t    g_cpu_gdt[CPU_MAX][7] __attribute__((aligned(16)));
+static struct tss64 g_cpu_tss[CPU_MAX];
+
+/* Build this AP's private GDT (base descriptors copied from the runtime GDT,
+ * plus a TSS descriptor for its own TSS), give the TSS a fresh ring-0 stack,
+ * and load GDT + IDT + task register. Must run on the CPU being set up. */
+void interrupts_setup_ap_cpu(unsigned index) {
+    if (index == 0 || index >= CPU_MAX) return;   /* cpu0 is the BSP, set up in init */
+
+    uint64_t *gdt = g_cpu_gdt[index];
+    for (size_t i = 0; i < 5; ++i) gdt[i] = g_runtime_gdt[i];
+
+    struct tss64 *tss = &g_cpu_tss[index];
+    memset(tss, 0, sizeof(*tss));
+    uint8_t *stack = (uint8_t *)kmalloc(AP_RSP0_STACK_SIZE);
+    tss->rsp0 = stack ? (uintptr_t)(stack + AP_RSP0_STACK_SIZE) : 0;
+    tss->iomap_base = (uint16_t)sizeof(*tss);
+    set_tss_descriptor(gdt, tss);
+
+    struct descriptor_ptr gdt_desc;
+    gdt_desc.limit = (uint16_t)(sizeof(g_cpu_gdt[index]) - 1u);
+    gdt_desc.base = (uint64_t)(uintptr_t)gdt;
+
+    /* Reuses the BSP loader: lgdt + segment reload + lidt + ltr(TSS_SELECTOR).
+     * ltr targets this GDT's own (non-busy) TSS descriptor. */
+    interrupt_load_runtime_tables(&gdt_desc, &g_idt_desc, TSS_SELECTOR);
 }
 
 /* Point the TSS ring-0 stack (rsp0) at the kernel stack of the process that is

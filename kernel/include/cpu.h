@@ -50,6 +50,10 @@ struct cpu {
  * point this CPU's GS base at the slot. Returns the assigned index. */
 unsigned cpu_register(unsigned apic_id);
 
+/* (Re)program the calling CPU's GS base to point at slot 'index'. Needed after
+ * loading a GDT, which reloads the gs selector and clears the base. */
+void cpu_set_gs_base(unsigned index);
+
 /* Number of registered CPUs, and indexed access to their structs. */
 unsigned cpu_count(void);
 struct cpu *cpu_get(unsigned index);

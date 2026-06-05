@@ -60,6 +60,11 @@ unsigned cpu_register(unsigned apic_id) {
     return idx;
 }
 
+void cpu_set_gs_base(unsigned index) {
+    struct cpu *c = (index < CPU_MAX) ? &g_cpus[index] : (struct cpu *)0;
+    if (c) write_gs_base((uint64_t)(uintptr_t)c);
+}
+
 unsigned cpu_count(void) { return g_cpu_count; }
 
 struct cpu *cpu_get(unsigned index) {
