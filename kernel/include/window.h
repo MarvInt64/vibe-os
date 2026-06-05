@@ -234,4 +234,16 @@ int desktop_app_set_menubar(struct desktop_state *desktop, uint32_t pid, int win
 void desktop_fill_status(struct desktop_state *desktop, struct winsys_desktop_status *out);
 void desktop_dispatch_menu_action(struct desktop_state *desktop, uint32_t action_id);
 
+
+/* Mark a region of a direct-mapped window framebuffer as dirty - the
+ * compositor reads directly from the bound content_storage. */
+int desktop_window_flush(struct desktop_state *desktop, int win_id,
+                         int x, int y, int w, int h);
+
+/* Validate a window and return its content_storage for direct mapping.
+ * Returns the content_storage pointer (NULL if invalid).
+ * *width and *height are set on success. */
+uint32_t *desktop_window_get_storage(struct desktop_state *desktop, int win_id,
+                                     int *width, int *height);
+
 #endif

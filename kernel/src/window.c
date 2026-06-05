@@ -3430,3 +3430,25 @@ int desktop_shell_dock_active(const struct desktop_state *desktop) {
     }
     return 0;
 }
+
+int desktop_window_flush(struct desktop_state *desktop, int win_id,
+                         int x, int y, int w, int h) {
+    if (!desktop) return -1;
+    mark_window_dirty(desktop, win_id);
+    int cx, cy;
+    app_content_origin(desktop, win_id, &cx, &cy);
+    struct rect r = {cx + x, cy + y, w, h};
+    mark_dirty_rect(desktop, r);
+    return 0;
+}
+
+uint32_t *desktop_window_get_storage(struct desktop_state *desktop, int win_id,
+                                     int *width, int *height) {
+    if (!desktop) return 0;
+    int slot = slot_index(win_id);
+    if (slot < 0 || slot >= MAX_USER_APPS || !desktop->user_apps[slot].created)
+        return 0;
+    if (width)  *width  = desktop->user_apps[slot].content_width;
+    if (height) *height = desktop->user_apps[slot].content_height;
+    return desktop->user_apps[slot].content_storage;
+}

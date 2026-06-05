@@ -125,7 +125,19 @@ enum syscall_number {
 	/* Query per-CPU information (SMP). rdi = struct cpu_info_snapshot* buf (user),
 	 * rsi = max entries (capacity). Fills buf with up to max entries and returns
 	 * the number of CPUs written (<= max), or <0 on failure. */
-	SYS_CPU_INFO = 64
+	SYS_CPU_INFO = 64,
+	/* Map the window content storage into the caller's address space.
+	 * rdi = win_id.  Returns the user-visible virtual address of the
+	 * framebuffer (0 on failure).  rdx = stride (pixels), r10 = width,
+	 * r8 = height.  The app draws directly into this buffer and then
+	 * calls SYS_WINDOW_FLUSH to mark dirty regions. */
+	SYS_WINDOW_BIND_FB = 65,
+	/* Mark a dirty rectangle in a direct-mapped window framebuffer.
+	 * rdi = win_id, rsi = (x<<16)|y, rdx = (w<<16)|h.
+	 * No pixel data is transferred - the kernel reads directly from the
+	 * bound framebuffer.  Returns 0 on success. */
+	SYS_WINDOW_FLUSH = 66,
+
 };
 
 struct system_info_snapshot {
