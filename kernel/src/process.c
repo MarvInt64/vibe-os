@@ -1455,6 +1455,13 @@ static int process_spawn_named_from_parent(struct process *parent, const char *n
             return -SYSCALL_EINVAL;
         }
         usum_check(snap, (uint32_t)slot, "load_image(vfs)");
+        /* Inherit CWD so relative paths in spawned programs resolve correctly. */
+        {
+            size_t k;
+            for (k = 0; k + 1 < sizeof(g_processes[slot].cwd) && parent->cwd[k]; ++k)
+                g_processes[slot].cwd[k] = parent->cwd[k];
+            g_processes[slot].cwd[k] = '\0';
+        }
         return (int)g_processes[slot].pid;
     }
 
@@ -1489,6 +1496,13 @@ static int process_spawn_named_from_parent(struct process *parent, const char *n
         usum_check(snap, (uint32_t)slot, "load_image(ext2)");
         kfree(buf);
         if (!ok) return -SYSCALL_EINVAL;
+        /* Inherit CWD so relative paths in spawned programs resolve correctly. */
+        {
+            size_t k;
+            for (k = 0; k + 1 < sizeof(g_processes[slot].cwd) && parent->cwd[k]; ++k)
+                g_processes[slot].cwd[k] = parent->cwd[k];
+            g_processes[slot].cwd[k] = '\0';
+        }
         return (int)g_processes[slot].pid;
     }
 }
