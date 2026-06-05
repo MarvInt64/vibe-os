@@ -1435,6 +1435,14 @@ static void render_window_surface(struct desktop_state *desktop, int index) {
  *   The source alpha channel and the global window alpha are combined into a
  *   single effective alpha to avoid a second multiplication per pixel.
  */
+
+/* Exact division by 255 for v in [0, 65025] without a divide instruction:
+ * (v + 1 + (v >> 8)) >> 8. Integer division is slow (especially under TCG), and
+ * the alpha-blend inner loop did four of them per pixel — this removes them. */
+static inline uint32_t div255(uint32_t v) {
+    return (v + 1u + (v >> 8)) >> 8;
+}
+
 static void blit_window_surface_region(struct framebuffer *dest,
                                        const struct framebuffer *src,
                                        int dest_x, int dest_y,
@@ -1491,16 +1499,16 @@ static void blit_window_surface_region(struct framebuffer *dest,
 
                 sa  = px >> 24;
                 if (sa == 0u) sa = 255u;
-                eff = (sa * alpha) / 255u;
+                eff = div255(sa * alpha);
                 if (eff == 0u) continue;
                 if (eff >= 255u) { dst_row[x] = px; continue; }
 
                 d  = dst_row[x];
                 sr = (px >> 16) & 255u; sg = (px >>  8) & 255u; sb = px & 255u;
                 dr = (d  >> 16) & 255u; dg = (d  >>  8) & 255u; db = d  & 255u;
-                r = (sr * eff + dr * (255u - eff)) / 255u;
-                g = (sg * eff + dg * (255u - eff)) / 255u;
-                b = (sb * eff + db * (255u - eff)) / 255u;
+                r = div255(sr * eff + dr * (255u - eff));
+                g = div255(sg * eff + dg * (255u - eff));
+                b = div255(sb * eff + db * (255u - eff));
                 dst_row[x] = (r << 16) | (g << 8) | b;
             }
         }
