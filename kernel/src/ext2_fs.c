@@ -854,15 +854,23 @@ uint32_t ext2_mkdir(struct ext2_filesystem *fs, const char *path, uint16_t mode)
     
     if (!path || path[0] != '/') return 0;
     
-    last_slash = strrchr(path, '/');
-    if (last_slash == path) {
-        strcpy(parent_path, "/");
+    /* Strip trailing slashes so "dir/" yields name="dir", not "". */
+    {
+        size_t plen = strlen(path);
+        while (plen > 1 && path[plen - 1] == '/') --plen;
+        if (plen >= 256) return 0;
+        memcpy(parent_path, path, plen);
+        parent_path[plen] = '\0';
+    }
+    last_slash = strrchr(parent_path, '/');
+    if (last_slash == parent_path) {
+        /* Parent is root, e.g. "/dir" after stripping. */
+        parent_path[1] = '\0';
         strcpy(name, last_slash + 1);
     } else {
-        size_t parent_len = last_slash - path;
-        memcpy(parent_path, path, parent_len);
-        parent_path[parent_len] = '\0';
+        size_t parent_len = (size_t)(last_slash - parent_path);
         strcpy(name, last_slash + 1);
+        parent_path[parent_len] = '\0';
     }
     
     if (name[0] == '\0') return 0;
