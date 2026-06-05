@@ -348,6 +348,10 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(LD) -nostdlib -static -T user/linker.ld -o build/user/cpptest.elf $(LIBC_CRT0) build/user/cpptest.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/cpptest.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/cpptest.elf /bin/cpptest
+	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -c user/adduser.cpp -o build/user/adduser.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/adduser.elf $(LIBC_CRT0) build/user/adduser.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/adduser.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/adduser.elf /bin/adduser
 	$(MAKE) doom
 	@echo "Installed apps to $(DISK_IMG). They load from disk at runtime."
 

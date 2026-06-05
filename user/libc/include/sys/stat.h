@@ -35,6 +35,13 @@ struct stat {
     uint16_t st_gid;    /* owner group ID */
 };
 
+/* These are C-linkage symbols in libc (sys.c), so wrap the declarations in
+ * extern "C" for C++ callers — otherwise the call site is name-mangled and
+ * fails to link against the unmangled libc symbol. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 int stat(const char *path, struct stat *s);
 
 /*
@@ -51,10 +58,6 @@ int chmod(const char *path, int mode);
  * Returns 0 on success, -1 on error.
  */
 int chown(const char *path, unsigned int uid, unsigned int gid);
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 int mkdir(const char *path, int mode);
 
