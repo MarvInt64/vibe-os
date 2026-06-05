@@ -2943,6 +2943,13 @@ int timer_handle_interrupt(struct interrupt_frame *frame) {
     timer_tick();
     this_cpu()->ticks++;          /* per-CPU total ticks (for utilisation) */
     process_wake_ready(timer_tick_count());
+
+    /* Feed the audio DMA from the timer IRQ (100 Hz) rather than the main loop,
+     * so playback stays glitch-free even when the main loop is slow (e.g. busy
+     * compositing many windows). audio_tick() only touches MMIO + the SPSC
+     * voice rings, so it is safe here; the BKL serialises it against syscalls. */
+    audio_tick();
+
     timer_acknowledge_irq();
 
     if (frame == 0 || process == 0) {

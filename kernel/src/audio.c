@@ -130,9 +130,14 @@ static struct audio_voice *voice_for_pid(uint32_t pid) {
         if (g_voices[i].pid == 0 && free_slot < 0) free_slot = i;
     }
     if (free_slot >= 0) {
-        g_voices[free_slot].pid  = pid;
+        /* Initialise the ring pointers BEFORE publishing pid, so audio_tick()
+         * (which may now run from the timer IRQ and preempt this) never sees a
+         * claimed voice with stale head/tail. The barrier keeps the compiler
+         * from reordering the pid store ahead of the pointer stores. */
         g_voices[free_slot].head = 0;
         g_voices[free_slot].tail = 0;
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        g_voices[free_slot].pid  = pid;
         return &g_voices[free_slot];
     }
     return 0; /* no free slot — caller gets silence */

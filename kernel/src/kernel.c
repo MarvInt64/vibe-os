@@ -502,8 +502,9 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
         int had_dirty = 0;
         int run_result;
 
-        /* Process audio at the highest priority to ensure stable sample feed. */
-        audio_tick();
+        /* Audio is now fed from the timer IRQ (timer_handle_interrupt) at a
+         * steady 100 Hz, so it stays glitch-free regardless of how long this
+         * main-loop iteration takes (heavy compositing, busy processes, ...). */
 
         input_poll(&mouse, &keyboard);
         net_poll();
