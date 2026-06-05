@@ -2,6 +2,8 @@
 #include "process_state.h"
 #include "string_builder.h"
 #include "layout.h"
+#include <stdio.h>
+#include <string.h>
 
 /* Widget geometry constants — keep them in one place so the whole row
  * can be adjusted without hunting through the code. */
@@ -23,6 +25,83 @@ static vui_u32 ram_color(unsigned long bytes) {
     if (bytes < 8UL * 1024 * 1024)  return VUI_OK;
     if (bytes < 20UL * 1024 * 1024) return VUI_WARN;
     return VUI_DANGER;
+}
+
+/* Resolve a numeric UID to a username by parsing /etc/passwd.
+ * Returns a pointer to a static buffer (the last match is reused).
+ * Falls back to "root" for uid 0, otherwise the uid as a decimal string. */
+static const char *uid_to_name(unsigned int uid) {
+    static char result[16];
+    static char line_buf[128];
+    static bool loaded = false;
+    static char passwd_cache[1024];
+    static size_t cache_len = 0;
+
+    /* Read /etc/passwd once. */
+    if (!loaded) {
+        loaded = true;
+        FILE *fp = fopen("/etc/passwd", "r");
+        if (fp) {
+            cache_len = fread(passwd_cache, 1, sizeof(passwd_cache) - 1, fp);
+            fclose(fp);
+            if (cache_len > 0)
+                passwd_cache[cache_len] = '\0';
+        }
+    }
+
+    if (cache_len > 0) {
+        const char *p = passwd_cache;
+        while (*p) {
+            /* Copy one line. */
+            size_t li = 0;
+            while (*p && *p != '\n' && li < sizeof(line_buf) - 1)
+                line_buf[li++] = *p++;
+            line_buf[li] = '\0';
+            if (*p == '\n') p++;
+
+            /* Extract username and uid fields.
+             * Format: name:x:uid:... */
+            const char *line = line_buf;
+            /* field 0: name */
+            const char *name_start = line;
+            const char *name_end   = line;
+            while (*name_end && *name_end != ':') name_end++;
+            if (*name_end != ':') continue;
+
+            /* skip to field 2 (uid) */
+            const char *f = name_end + 1;  /* skip colon, now field 1 (x) */
+            while (*f && *f != ':') f++;
+            if (*f == ':') f++;            /* now field 2 (uid) */
+            unsigned int entry_uid = 0;
+            while (*f >= '0' && *f <= '9') {
+                entry_uid = entry_uid * 10 + (unsigned int)(*f - '0');
+                f++;
+            }
+
+            if (entry_uid == uid) {
+                size_t nlen = (size_t)(name_end - name_start);
+                if (nlen >= sizeof(result)) nlen = sizeof(result) - 1;
+                for (size_t i = 0; i < nlen; i++) result[i] = name_start[i];
+                result[nlen] = '\0';
+                return result;
+            }
+        }
+    }
+
+    /* Fallback. */
+    if (uid == 0) return "root";
+    int len = 0;
+    unsigned int n = uid;
+    if (n == 0) {
+        result[len++] = '0';
+    } else {
+        char tmp[12];
+        int ti = 0;
+        while (n) { tmp[ti++] = (char)('0' + n % 10); n /= 10; }
+        while (ti > 0) result[len++] = tmp[--ti];
+    }
+    result[len] = '\0';
+    return result;
 }
 
 void ProcessRow::init(vui_window *win, vui_widget *rows_vbox, int slot,
@@ -117,7 +196,7 @@ void ProcessRow::update(const vui_process_info &p, int cpu_tenths) {
     vui_set_text(name_label_,   name.c_str());
     vui_set_color(name_label_,  s == ProcessState::Running ? VUI_TEXT : VUI_TEXT_DIM);
 
-    vui_set_text(thread_label_, "vibe");
+    vui_set_text(thread_label_, uid_to_name(p.uid));
     vui_set_color(thread_label_, VUI_TEXT_DIM);
 
     vui_set_text(state_label_,  state_name(s));

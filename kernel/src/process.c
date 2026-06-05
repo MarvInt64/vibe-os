@@ -2879,6 +2879,7 @@ int process_get_snapshot(uint32_t slot, struct process_snapshot *snapshot) {
         snapshot->thread_count = threads ? threads : 1u;
     }
     snapshot->is_thread = process->is_thread;
+    snapshot->uid = process->uid;
     return 1;
 }
 
