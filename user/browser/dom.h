@@ -55,6 +55,10 @@ struct dom_node *dom_parse(struct dom_doc *d, const char *html, int n);
 
 /* Attribute lookup (case-insensitive). Returns value or 0. */
 const char *dom_attr(const struct dom_node *node, const char *name);
+struct dom_node *dom_add_text_node(struct dom_doc *d, struct dom_node *parent, const char *text);
+struct dom_node *dom_add_element_node(struct dom_doc *d, struct dom_node *parent, const char *tag);
+void dom_append_child(struct dom_node *parent, struct dom_node *child);
+
 
 #ifdef __cplusplus
 }

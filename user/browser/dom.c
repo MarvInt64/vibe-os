@@ -76,6 +76,7 @@ static struct dom_node *node_new(struct dom_doc *d, int type){
 }
 
 static void node_append(struct dom_node *parent, struct dom_node *child){
+    if (!parent) return;
     child->parent = parent;
     child->next_sibling = 0;
     if(parent->last_child){ parent->last_child->next_sibling = child; parent->last_child = child; }
@@ -305,3 +306,34 @@ const char *dom_attr(const struct dom_node *n, const char *name){
     for(i=0;i<n->nattrs;++i) if(ieq(n->attrs[i].name,name)) return n->attrs[i].value;
     return 0;
 }
+
+struct dom_node *dom_add_text_node(struct dom_doc *d, struct dom_node *parent, const char *text) {
+    struct dom_node *tn = node_new(d, DOM_TEXT);
+    if (!tn) return 0;
+    tn->text = (char *)text;
+    node_append(parent, tn);
+    return tn;
+}
+
+struct dom_node *dom_add_element_node(struct dom_doc *d, struct dom_node *parent, const char *tag) {
+    struct dom_node *en = node_new(d, DOM_ELEMENT);
+    if (!en) return 0;
+    int i = 0;
+    for (i = 0; i < 23 && tag[i]; ++i) {
+        char c = tag[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - ('A' - 'a'));
+        en->tag[i] = c;
+    }
+    en->tag[i] = '\0';
+    if (parent) {
+        node_append(parent, en);
+    }
+    return en;
+}
+
+void dom_append_child(struct dom_node *parent, struct dom_node *child) {
+    if (parent && child) {
+        node_append(parent, child);
+    }
+}
+

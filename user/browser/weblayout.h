@@ -16,6 +16,7 @@ extern "C" {
 #endif
 
 typedef unsigned int wl_u32;
+struct dom_node;
 
 enum { WL_TEXT = 0, WL_RULE = 1, WL_BULLET = 2, WL_RECT = 3, WL_IMAGE = 4,
        WL_FIELD = 5 /* form control: run->off = index into doc->fields */ };
@@ -35,6 +36,7 @@ struct wl_run {
     wl_u32 bg;           /* run background (0 = transparent), e.g. inline code */
     int off, len;        /* text slice into doc->pool (WL_TEXT); WL_IMAGE: src href idx */
     int link;            /* index into doc->hrefs, or -1 */
+    struct dom_node *node;
 };
 
 /* The app supplies proportional font metrics; if unset, weblayout falls back to
@@ -64,6 +66,7 @@ struct wl_doc {
     char (*hrefs)[WL_HREF_MAX]; int href_count, href_cap;
     struct wl_field *fields; int field_count, field_cap;
     int height;
+    wl_u32 bg_color;
 };
 
 void wl_init(struct wl_doc *d);
