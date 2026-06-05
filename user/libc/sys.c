@@ -472,24 +472,3 @@ struct tm *localtime_r(const time_t *timep, struct tm *r) {
     return r;
 }
 
-
-void *vos_window_bind_fb(int id, int *stride, int *width, int *height) {
-    long ret, out_dx, out_r10, out_r8;
-    __asm__ volatile(
-        "int $0x80"
-        : "=a"(ret), "=d"(out_dx), "=r"(out_r10), "=r"(out_r8)
-        : "a"((long)65), "D"((long)id)
-        : "rcx", "r11", "memory"
-    );
-    if (stride)  *stride = (int)out_dx;
-    if (width)   *width  = (int)out_r10;
-    if (height)  *height = (int)out_r8;
-    return (void *)(uintptr_t)ret;
-}
-
-int vos_window_flush(int id, int x, int y, int w, int h) {
-    return (int)__sc3(66,
-        (uint64_t)id,
-        (uint64_t)(((x & 0xffff) << 16) | (y & 0xffff)),
-        (uint64_t)(((w & 0xffff) << 16) | (h & 0xffff)));
-}

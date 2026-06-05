@@ -251,16 +251,6 @@ int vos_window_present(int id, const uint32_t *pixels, int w, int h);
 int vos_set_wallpaper(const uint32_t *pixels, int w, int h);
 /* Present only a damaged sub-rect (in content space) of the full canvas. */
 int vos_window_present_rect(int id, const uint32_t *pixels, int w, int h, int dx, int dy, int dw, int dh);
-/* Map the window content storage into the caller address space. Returns
- * the virtual address of the framebuffer (0 on failure), with *stride,
- * *width, *height set on success.  Draw directly into this buffer, then
- * call vos_window_flush() to commit dirty regions to the compositor. */
-void *vos_window_bind_fb(int id, int *stride, int *width, int *height);
-/* Mark a dirty rectangle in a direct-mapped window framebuffer.
- * No pixel data is copied — the kernel reads from the bound buffer.
- * Returns 0 on success, <0 on error. */
-int vos_window_flush(int id, int x, int y, int w, int h);
-
 /* Copy this process's spawn argument (if any) into buf; returns its length. */
 int vos_getarg(char *buf, int size);
 /* Resolve the calling user's home directory (from /etc/passwd) into buf. */

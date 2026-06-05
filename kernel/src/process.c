@@ -2403,46 +2403,6 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         return 0;
     }
 
-    if (number == SYS_WINDOW_BIND_FB) {
-        struct desktop_state *d = desktop_active();
-        if (d == 0) { frame->rax = 0; return 0; }
-        int cw = 0, ch = 0;
-        uint32_t *storage = desktop_window_get_storage(d, (int)frame->rdi, &cw, &ch);
-        if (!storage || cw <= 0 || ch <= 0) { frame->rax = 0; return 0; }
-        size_t bytes = (size_t)cw * (size_t)ch * 4u;
-        uintptr_t vaddr = (process->heap_break + 0xFFFul) & ~0xFFFul;
-        uintptr_t phys  = (uintptr_t)storage;
-        size_t npages = (bytes + 0xFFFul) >> 12;
-        uint64_t *pt = process->user_page_tables;
-        for (size_t i = 0; i < npages; ++i) {
-            size_t table_idx = ((vaddr + (i << 12)) - PROCESS_USER_BASE) >> 21;
-            size_t entry_idx = (((vaddr + (i << 12)) - PROCESS_USER_BASE) >> 12) & 0x1FFu;
-            pt[table_idx * 512u + entry_idx] = (phys + (i << 12)) | 0x07u;
-        }
-        process->fb_vaddr  = vaddr;
-        process->fb_win_id = (uint32_t)frame->rdi;
-        process->heap_break = vaddr + bytes;
-        frame->rax = (uint64_t)vaddr;
-        frame->rdx = (uint64_t)(uint32_t)cw;
-        frame->r10 = (uint64_t)(uint32_t)cw;
-        frame->r8  = (uint64_t)(uint32_t)ch;
-        /* Invalidate TLB for the newly mapped pages. */
-        for (size_t i = 0; i < npages; ++i)
-            __asm__ volatile("invlpg (%0)" :: "r"(vaddr + (i << 12)) : "memory");
-        return 0;
-    }
-
-    if (number == SYS_WINDOW_FLUSH) {
-        struct desktop_state *d = desktop_active();
-        if (d == 0) { frame->rax = (uint64_t)(-1); return 0; }
-        int x = (int)((frame->rsi >> 16) & 0xffffu);
-        int y = (int)(frame->rsi & 0xffffu);
-        int w = (int)((frame->rdx >> 16) & 0xffffu);
-        int h = (int)(frame->rdx & 0xffffu);
-        frame->rax = (uint64_t)(int64_t)desktop_window_flush(d, (int)frame->rdi, x, y, w, h);
-        return 0;
-    }
-
     if (number == SYS_EVENT_POLL) {
         /* rdi = win id, rsi = struct winsys_event* (user). Returns 1/0. */
         struct desktop_state *d = desktop_active();

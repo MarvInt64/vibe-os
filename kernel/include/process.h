@@ -100,9 +100,6 @@ struct process {
      * share the owner's heap (they share the address space). */
     uintptr_t heap_start;
     uintptr_t heap_break;
-    uintptr_t fb_vaddr;       /* mapped window framebuffer, 0 if not bound */
-    uint32_t  fb_win_id;      /* window id of the bound framebuffer      */
-
     /* Physical backing for the demand-grown heap: each SYS_SBRK growth kmallocs
      * a chunk and records it here so it can be freed when the process exits.
      * Only the address-space owner (not threads) owns/frees these. */
