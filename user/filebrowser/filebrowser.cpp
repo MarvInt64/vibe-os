@@ -23,6 +23,11 @@ static uint32_t g_canvas_pixels[BROWSER_MAX_W * BROWSER_MAX_H];
 #define TB_ROW_Y        7    // top y of the row-height controls (button/toggle/search)
 #define TB_ROW_H        34   // height of the row-height controls
 
+// Vertical layout constants shared across render() and the rect helpers.
+#define CONTENT_TOP  80      // top y of the sidebar/listing/detail panels
+#define STATUS_BAR_H 24      // height of the bottom status bar
+#define DIALOG_BAR_H 48      // height of the OPEN/SAVE action bar (dialog mode)
+
 FileBrowser *FileBrowser::instance_ = nullptr;
 
 // Custom readdir wrapper to retrieve kind and size in one syscall
@@ -150,6 +155,59 @@ void FileBrowser::init() {
 
     // Push initial history path
     navigate(current_path_, true);
+}
+
+// Configure the browser as a modal OPEN/SAVE file dialog. Called from main()
+// before run() when the app is spawned by vui_file_dialog(). The action bar
+// itself is created later in build_widgets() (which needs the open window).
+void FileBrowser::set_dialog(bool save_mode, const char *initial_path, const char *result_file) {
+    dialog_mode_ = true;
+    dialog_save_ = save_mode;
+    strncpy(result_file_, result_file ? result_file : "/tmp/fd_result", sizeof(result_file_) - 1);
+    result_file_[sizeof(result_file_) - 1] = '\0';
+    if (initial_path && initial_path[0])
+        navigate(initial_path, true);
+}
+
+// Confirm the dialog: in SAVE mode the result is current_path/<typed name>; in
+// OPEN mode it is the currently selected file. A folder selection in OPEN mode
+// just navigates into it (nothing to accept yet).
+void FileBrowser::dialog_accept() {
+    char final_path[512];
+
+    if (dialog_save_) {
+        const char *name = filename_input_ ? vui_input_text(filename_input_) : "";
+        if (!name || !name[0]) return;   // a filename is required
+        if (strcmp(current_path_, "/") == 0)
+            snprintf(final_path, sizeof(final_path), "/%s", name);
+        else
+            snprintf(final_path, sizeof(final_path), "%s/%s", current_path_, name);
+    } else {
+        if (selected_index_ < 0 || selected_index_ >= filtered_count_) return;
+        FileEntry &fe = entries_[filtered_indices_[selected_index_]];
+        if (strcmp(current_path_, "/") == 0)
+            snprintf(final_path, sizeof(final_path), "/%s", fe.name);
+        else
+            snprintf(final_path, sizeof(final_path), "%s/%s", current_path_, fe.name);
+        if (fe.kind == 2) {              // a directory: browse into it instead
+            navigate(final_path, true);
+            return;
+        }
+    }
+    dialog_finish(final_path);
+}
+
+// Abort the dialog. Leaving the result file empty signals "cancelled" to the
+// caller (vui_file_dialog reads zero bytes and returns 0).
+void FileBrowser::dialog_cancel() {
+    exit(1);
+}
+
+void FileBrowser::dialog_finish(const char *path) {
+    // SYS_WRITE_FILE truncates/creates and writes the whole buffer atomically.
+    __sc3(SYS_WRITE_FILE, (uint64_t)(size_t)result_file_,
+          (uint64_t)(size_t)path, (uint64_t)strlen(path));
+    exit(0);
 }
 
 void FileBrowser::navigate(const char *path, bool push_history) {
@@ -307,7 +365,7 @@ void FileBrowser::refresh_files() {
     int items_per_row = grid_view_ ? 4 : 1;
     int rows = (filtered_count_ + items_per_row - 1) / items_per_row;
     int content_h = rows * item_h;
-    int visible_h = 536 - 36; // Workspace height minus header row height
+    int visible_h = (content_bottom() - CONTENT_TOP) - 36; // listing height minus header row
     max_scroll_y_ = content_h - visible_h;
     if (max_scroll_y_ < 0) max_scroll_y_ = 0;
     if (scroll_y_ > max_scroll_y_) scroll_y_ = max_scroll_y_;
@@ -523,17 +581,24 @@ void FileBrowser::draw_glass_panel(int x, int y, int w, int h, uint32_t base_col
     draw_line(x + corner_r, y, x + w - corner_r, y, 0x003f4f66u);
 }
 
-// Layout columns definitions
+// Bottom Y of the three content panels: above the status bar, and above the
+// dialog action bar when present. Derived from win_h_ so a shorter dialog
+// window (opened to clear the always-on-top dock) lays out correctly. For the
+// standard 640-tall browser this evaluates to 616 (unchanged).
+int FileBrowser::content_bottom() const {
+    return win_h_ - STATUS_BAR_H - (dialog_mode_ ? DIALOG_BAR_H : 0);
+}
+
 void FileBrowser::get_sidebar_rect(int &x, int &y, int &w, int &h) {
-    x = 0; y = 80; w = 220; h = 536;
+    x = 0; y = CONTENT_TOP; w = 220; h = content_bottom() - CONTENT_TOP;
 }
 
 void FileBrowser::get_listing_rect(int &x, int &y, int &w, int &h) {
-    x = 220; y = 80; w = 460; h = 536;
+    x = 220; y = CONTENT_TOP; w = 460; h = content_bottom() - CONTENT_TOP;
 }
 
 void FileBrowser::get_detail_rect(int &x, int &y, int &w, int &h) {
-    x = 680; y = 80; w = 280; h = 536;
+    x = 680; y = CONTENT_TOP; w = 280; h = content_bottom() - CONTENT_TOP;
 }
 
 void FileBrowser::render() {
@@ -720,7 +785,7 @@ void FileBrowser::render() {
     }
 
     // Workspace column right divider
-    draw_line(680, 80, 680, 616, 0x00294058u);
+    draw_line(680, 80, 680, content_bottom(), 0x00294058u);
 
     // 6. Render Right Details Sidebar Pane
     int detail_x, detail_y, detail_w, detail_h;
@@ -884,9 +949,22 @@ void FileBrowser::render() {
         draw_text(detail_x + 60, detail_y + 120, "Select an item to view properties", 0x005c6a7eu);
     }
 
-    // 8. Bottom Status Bar (y: 616..640)
-    fill_rect(0, 616, win_w_, 24, 0x0020384fu);
-    draw_line(0, 616, win_w_, 616, 0x00294058u);
+    // 7b. Dialog action bar band (y: 568..616). The filename field and the
+    //     Open/Save + Cancel buttons are real VexUI widgets painted on top of
+    //     this band (created in build_widgets()); here we only draw the backdrop,
+    //     its top divider and — in SAVE mode — the "Name:" caption.
+    if (dialog_mode_) {
+        int bar_y = content_bottom();
+        fill_rect(0, bar_y, win_w_, DIALOG_BAR_H, 0x001b3147u);
+        draw_line(0, bar_y, win_w_, bar_y, 0x00294058u);
+        if (dialog_save_)
+            draw_text(232, bar_y + 17, "Name:", 0x009aa7bau);
+    }
+
+    // 8. Bottom Status Bar (status_y .. win_h_)
+    int status_y = win_h_ - STATUS_BAR_H;
+    fill_rect(0, status_y, win_w_, STATUS_BAR_H, 0x0020384fu);
+    draw_line(0, status_y, win_w_, status_y, 0x00294058u);
 
     // Left status summary
     char status_left[128];
@@ -901,18 +979,18 @@ void FileBrowser::render() {
     } else {
         snprintf(status_left, sizeof(status_left), "%d items", filtered_count_);
     }
-    draw_text(16, 621, status_left, 0x009aa7bau);
+    draw_text(16, status_y + 5, status_left, 0x009aa7bau);
 
     // Right status metrics & progress bar
     char status_right[64];
     snprintf(status_right, sizeof(status_right), "42.8 GB free of 128 GB");
     int size_text_w = get_text_width(status_right);
     int label_x = win_w_ - size_text_w - 130;
-    draw_text(label_x, 621, status_right, 0x009aa7bau);
+    draw_text(label_x, status_y + 5, status_right, 0x009aa7bau);
 
     // Draw nice sleek progress bar on the right side
     int bar_x = win_w_ - 116;
-    int bar_y = 624;
+    int bar_y = status_y + 8;
     int bar_w = 100;
     int bar_h = 8;
     
@@ -983,6 +1061,11 @@ void FileBrowser::on_click(int x, int y) {
 
                     if (fe.kind == 2) { // Folder
                         navigate(target_path, true);
+                    } else if (dialog_mode_) {
+                        // In a picker, a file is the result (OPEN) or fills the
+                        // filename field (SAVE) — never launches another app.
+                        if (dialog_save_) { if (filename_input_) vui_set_text(filename_input_, fe.name); }
+                        else dialog_finish(target_path);
                     } else { // File - launch editor or player!
                         const char *ext = strrchr(fe.name, '.');
                         if (ext && strcmp(ext, ".mp3") == 0) {
@@ -993,6 +1076,9 @@ void FileBrowser::on_click(int x, int y) {
                     }
                 } else {
                     selected_index_ = clicked_item;
+                    if (dialog_mode_ && dialog_save_ && filename_input_ &&
+                        entries_[filtered_indices_[clicked_item]].kind != 2)
+                        vui_set_text(filename_input_, entries_[filtered_indices_[clicked_item]].name);
                     update_preview();
                     render();
                 }
@@ -1017,6 +1103,9 @@ void FileBrowser::on_click(int x, int y) {
 
                         if (fe.kind == 2) {
                             navigate(target_path, true);
+                        } else if (dialog_mode_) {
+                            if (dialog_save_) { if (filename_input_) vui_set_text(filename_input_, fe.name); }
+                            else dialog_finish(target_path);
                         } else {
                             const char *ext = strrchr(fe.name, '.');
                             if (ext && strcmp(ext, ".mp3") == 0) {
@@ -1027,6 +1116,9 @@ void FileBrowser::on_click(int x, int y) {
                         }
                     } else {
                         selected_index_ = clicked_item;
+                        if (dialog_mode_ && dialog_save_ && filename_input_ &&
+                            entries_[filtered_indices_[clicked_item]].kind != 2)
+                            vui_set_text(filename_input_, entries_[filtered_indices_[clicked_item]].name);
                         update_preview();
                         render();
                     }
@@ -1181,6 +1273,8 @@ static void fb_search_cb(vui_widget *self)  { FileBrowser::instance()->search_ch
 static void fb_sidebar_cb(vui_widget *self) {
     FileBrowser::instance()->select_sidebar((int)(intptr_t)vui_get_user(self));
 }
+static void fb_dialog_accept_cb(vui_widget *) { FileBrowser::instance()->dialog_accept(); }
+static void fb_dialog_cancel_cb(vui_widget *) { FileBrowser::instance()->dialog_cancel(); }
 
 // ---------------------------------------------------------------------------
 // Toolbar + sidebar construction. These are real VexUI controls layered on top
@@ -1242,6 +1336,37 @@ void FileBrowser::build_widgets() {
         sidebar_widgets_[i] = row;
     }
     sync_sidebar_selection();
+
+    // --- Dialog action bar: filename field (SAVE) + accept/cancel buttons ---
+    if (dialog_mode_) {
+        int bar_y   = content_bottom();
+        int btn_h   = 28;
+        int btn_w   = 88;
+        int btn_y   = bar_y + (DIALOG_BAR_H - btn_h) / 2;
+        int cancel_x = win_w_ - 16 - btn_w;
+        int accept_x = cancel_x - 8 - btn_w;
+
+        cancel_btn_ = vui_button(win_, cancel_x, btn_y, "Cancel");
+        vui_set_bounds(cancel_btn_, cancel_x, btn_y, btn_w, btn_h);
+        vui_set_color(cancel_btn_, 0x009fb4ccu);
+        vui_set_anchor(cancel_btn_, VUI_ANCHOR_RIGHT | VUI_ANCHOR_BOTTOM);
+        vui_on_click(cancel_btn_, fb_dialog_cancel_cb);
+
+        accept_btn_ = vui_button(win_, accept_x, btn_y, dialog_save_ ? "Save" : "Open");
+        vui_set_bounds(accept_btn_, accept_x, btn_y, btn_w, btn_h);
+        vui_set_anchor(accept_btn_, VUI_ANCHOR_RIGHT | VUI_ANCHOR_BOTTOM);
+        vui_on_click(accept_btn_, fb_dialog_accept_cb);
+
+        if (dialog_save_) {
+            // "Name:" caption is painted on the canvas (render); the field starts
+            // just right of it and stretches up to the accept button.
+            int name_x = 280;
+            int name_w = accept_x - 16 - name_x;
+            if (name_w < 120) name_w = 120;
+            filename_input_ = vui_input(win_, name_x, btn_y, name_w, "filename.txt");
+            vui_set_anchor(filename_input_, VUI_ANCHOR_LEFT | VUI_ANCHOR_RIGHT | VUI_ANCHOR_BOTTOM);
+        }
+    }
 }
 
 // Reflect the active directory on the sidebar rows (highlighted selection).
@@ -1315,7 +1440,28 @@ void FileBrowser::run() {
     instance_ = this;
     canvas_pixels_ = g_canvas_pixels;
 
-    win_ = vui_window_open("Files", win_w_, win_h_);
+    if (dialog_mode_) {
+        // As a file picker, open a shorter, centred window biased toward the top
+        // of the screen so the action bar at its bottom clears the always-on-top
+        // dock (which floats over the lower screen edge).
+        uint32_t mode = vos_display_mode_get();
+        int sw = (int)((mode >> 16) & 0xffffu);
+        int sh = (int)(mode & 0xffffu);
+        if (sw <= 0) sw = 1024;
+        if (sh <= 0) sh = 768;
+        int dw = 900, dh = 500;
+        if (dw > sw - 40) dw = sw - 40;
+        if (dh > sh - 200) dh = sh - 200;
+        int dx = (sw - dw) / 2;
+        int dy = (sh - dh) / 2 - 50;        // lift away from the dock
+        if (dy < 40) dy = 40;
+        win_w_ = dw;
+        win_h_ = dh;
+        win_ = vui_window_open_ex(dialog_save_ ? "Save File" : "Open File",
+                                  win_w_, win_h_, VUI_WINDOW_POSITIONED, dx, dy);
+    } else {
+        win_ = vui_window_open("Files", win_w_, win_h_);
+    }
     if (!win_) return;
 
     // Adopt the real (possibly clamped) window size before laying anything out.

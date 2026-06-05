@@ -33,6 +33,13 @@ public:
 
     void init();
     void run();
+
+    // Dialog mode: when the file browser is spawned as a file picker by
+    // vui_file_dialog() it runs as a modal OPEN/SAVE dialog. The browsing UI is
+    // unchanged; an extra action bar (filename field + Open/Save + Cancel) is
+    // added at the bottom and the chosen path is written to result_file.
+    void set_dialog(bool save_mode, const char *initial_path, const char *result_file);
+
     void navigate(const char *path, bool push_history = true);
     void refresh_files();
     void render();
@@ -56,7 +63,14 @@ public:
     void search_changed(const char *text);
     void create_new_folder();
 
+    // Dialog action-bar handlers (invoked from VexUI widget callbacks).
+    void dialog_accept();   // confirm the current selection / typed filename
+    void dialog_cancel();   // abort without a result
+
 private:
+    // Write the chosen path to the result file and terminate the dialog. A
+    // zero-byte result (Cancel) signals "no selection" back to the caller.
+    void dialog_finish(const char *path);
     static FileBrowser *instance_;
 
     // UI Window and Framebuffer.
@@ -71,6 +85,14 @@ private:
     // list, breadcrumbs, preview and status bar are hand-rendered on the canvas).
     vui_widget *search_input_ = nullptr;
     vui_widget *sidebar_widgets_[24] = {};
+
+    // Dialog mode state (see set_dialog). dialog_mode_ off => normal browser.
+    bool dialog_mode_ = false;
+    bool dialog_save_ = false;        // SAVE (filename field) vs OPEN (pick file)
+    char result_file_[128] = {};      // path to write the chosen result into
+    vui_widget *filename_input_ = nullptr;  // SAVE-mode filename entry
+    vui_widget *accept_btn_ = nullptr;      // "Open" / "Save"
+    vui_widget *cancel_btn_ = nullptr;      // "Cancel"
 
     // Navigation and state
     char current_path_[256];
@@ -124,6 +146,7 @@ private:
     void draw_glass_panel(int x, int y, int w, int h, uint32_t base_color, int corner_r = 6);
 
     // Layout helper bounds
+    int  content_bottom() const;   // bottom Y of the content panels (above bars)
     void get_sidebar_rect(int &x, int &y, int &w, int &h);
     void get_listing_rect(int &x, int &y, int &w, int &h);
     void get_detail_rect(int &x, int &y, int &w, int &h);
