@@ -2130,7 +2130,23 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
     }
 
     if (number == SYS_PROCESS_KILL) {
-        int result = process_kill((uint32_t)frame->rdi);
+        uint32_t target_pid = (uint32_t)frame->rdi;
+        struct process *target = process_find_by_pid(target_pid);
+        int result;
+
+        if (target == 0 || target->state == PROCESS_STATE_EMPTY) {
+            frame->rax = (uint64_t)(-SYSCALL_EINVAL);
+            return 0;
+        }
+
+        /* Root may kill any process; non-root may only kill processes
+         * owned by the same UID (standard UNIX semantics). */
+        if (process->uid != 0 && process->uid != target->uid) {
+            frame->rax = (uint64_t)(-SYSCALL_EPERM);
+            return 0;
+        }
+
+        result = process_kill(target_pid);
         frame->rax = (uint64_t)(int64_t)result;
         if (process == 0 || g_current_process == 0) {
             return 1;
