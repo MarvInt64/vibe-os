@@ -26,6 +26,8 @@
 #include "acpi.h"
 #include "apic.h"
 #include "alloc.h"
+#include "cpu.h"
+#include "spinlock.h"
 #include "serial.h"
 #include "string.h"
 #include "types.h"
@@ -47,6 +49,16 @@ volatile uint64_t ap_stack_top;
 /* CPUs that have reached ap_main. The boot CPU is implicitly online. */
 static volatile unsigned g_cpus_online = 1;
 
+/* The big kernel lock and a shared counter the APs hammer through it, purely to
+ * demonstrate that the cores run kernel code concurrently and that the lock
+ * keeps a shared update race-free (g_work_total must equal the sum of every
+ * CPU's private work count if no increment was lost). */
+static spinlock_t g_bkl = SPINLOCK_INIT;
+static volatile unsigned long g_work_total;
+
+/* Each AP performs this many locked increments, then parks. */
+#define AP_WORK_UNITS 5000u
+
 /* Crude spin delay — INIT/SIPI need ~10 ms / ~200 us settling. QEMU is lenient
  * about exact timing, so a generous busy loop is sufficient at bring-up. */
 static void delay_spin(volatile uint32_t iterations) {
@@ -55,18 +67,54 @@ static void delay_spin(volatile uint32_t iterations) {
 
 /*
  * C entry point for an application processor (called from ap_boot.S on the
- * AP's own stack, in 64-bit mode). Enable this core's Local APIC, announce
- * we're alive, then park: there is no per-CPU scheduler yet, so the AP holds
- * here with interrupts disabled. A parked core only executes hlt, so it
- * generates no exceptions and needs no IDT/TSS of its own for now.
+ * AP's own stack, in 64-bit mode). Set up this core's per-CPU data and Local
+ * APIC, announce we're alive, then run a burst of real, lock-protected kernel
+ * work to prove the core executes concurrently with the others. With no
+ * per-CPU scheduler yet, the AP then parks (interrupts disabled, hlt) — a
+ * parked core only executes hlt, so it needs no IDT/TSS of its own for now.
  */
 void ap_main(void) {
+    cpu_register(lapic_id());
     lapic_enable_this_cpu();
     __atomic_add_fetch(&g_cpus_online, 1, __ATOMIC_SEQ_CST);
+
+    for (unsigned i = 0; i < AP_WORK_UNITS; ++i) {
+        spin_lock(&g_bkl);
+        g_work_total++;          /* shared: protected by the big kernel lock */
+        this_cpu()->work++;      /* private to this core                     */
+        spin_unlock(&g_bkl);
+    }
+
     for (;;) __asm__ volatile("cli; hlt");
 }
 
+/* Print each CPU's work tally and confirm the shared total is consistent —
+ * i.e. the lock lost no increments under concurrency. */
+static void smp_report(void) {
+    unsigned long sum = 0;
+    for (unsigned i = 0; i < cpu_count(); ++i) {
+        struct cpu *c = cpu_get(i);
+        sum += c->work;
+        serial_write("SMP: cpu");
+        serial_write_hex_u64(i);
+        serial_write(" apic_id=");
+        serial_write_hex_u64(c->apic_id);
+        serial_write(" work=");
+        serial_write_hex_u64(c->work);
+        serial_write("\n");
+    }
+    serial_write("SMP: work_total=");
+    serial_write_hex_u64(g_work_total);
+    serial_write(" sum_per_cpu=");
+    serial_write_hex_u64(sum);
+    serial_write(g_work_total == sum ? " (lock OK)\n" : " (LOCK LOST UPDATES!)\n");
+}
+
 void smp_boot_aps(void) {
+    /* Register the boot CPU as cpu 0 and point its GS base at its per-CPU
+     * struct, so this_cpu() works on the BSP too and APs claim slots 1, 2, ... */
+    cpu_register(apic_is_active() ? lapic_id() : 0);
+
     if (!apic_is_active()) {
         serial_write("SMP: APIC inactive, not starting APs\n");
         return;
@@ -127,6 +175,10 @@ void smp_boot_aps(void) {
     serial_write(" of ");
     serial_write_hex_u64(info->cpu_count);
     serial_write("\n");
+
+    /* Let the APs finish their work burst, then verify the shared counter. */
+    delay_spin(2000000);
+    smp_report();
 }
 
 unsigned smp_cpu_count(void) { return g_cpus_online; }
