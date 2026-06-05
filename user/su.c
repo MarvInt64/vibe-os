@@ -81,22 +81,48 @@ static long sc1(unsigned long n, unsigned long a0) {
 #define MAX_PASSWORD 128
 
 /*
- * Extract colon-delimited field `index` (0-based) from a line.
- * Overwrites the delimiter with '\0' in-place.
- * Returns pointer into `line`, or NULL if the field doesn't exist.
+ * Find the start and length of colon-delimited field `index` (0-based)
+ * within a NUL-terminated `line`.  Does NOT modify the line — the caller
+ * must copy or NUL-terminate if needed.  Returns 1 and sets *out / *out_len
+ * on success; returns 0 if the field does not exist.
  */
-static char *field_n(char *line, int index) {
-    char *start = line;
-    for (int i = 0; i < index; i++) {
+static int field_n(const char *line, int index,
+                   const char **out, size_t *out_len) {
+    const char *start = line;
+    int i;
+
+    for (i = 0; i < index; i++) {
         while (*start && *start != ':') start++;
         if (*start == ':') start++;
-        else return NULL;
+        else return 0;
     }
-    if (!*start || *start == '\n') return NULL;
-    char *end = start;
-    while (*end && *end != ':' && *end != '\n') end++;
-    *end = '\0';
-    return start;
+    if (!*start || *start == '\n') return 0;
+
+    *out = start;
+    *out_len = 0;
+    while (start[*out_len] && start[*out_len] != ':' && start[*out_len] != '\n')
+        (*out_len)++;
+    return 1;
+}
+
+/* Convenience: copy a field into a NUL-terminated buffer. */
+static int field_copy(const char *line, int index, char *buf, size_t cap) {
+    const char *s;
+    size_t n;
+    if (!field_n(line, index, &s, &n)) return 0;
+    if (n >= cap) n = cap - 1;
+    memcpy(buf, s, n);
+    buf[n] = '\0';
+    return 1;
+}
+
+/* Convenience: compare a field against a NUL-terminated string. */
+static int field_eq(const char *line, int index, const char *want) {
+    const char *s;
+    size_t n;
+    if (!field_n(line, index, &s, &n)) return 0;
+    if (strlen(want) != n) return 0;
+    return memcmp(s, want, n) == 0;
 }
 
 /*
@@ -116,15 +142,18 @@ static int lookup_user(const char *path, const char *username,
         size_t len = strlen(line);
         if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
 
-        char *name = field_n(line, 0);
-        if (!name || strcmp(name, username) != 0) continue;
+        if (!field_eq(line, 0, username)) continue;
 
         if (pw_out && pw_cap > 0) {
-            char *pw = field_n(line, pw_field);
-            size_t n = pw ? strlen(pw) : 0;
-            if (n >= pw_cap) n = pw_cap - 1;
-            if (pw) memcpy(pw_out, pw, n);
-            pw_out[n] = '\0';
+            char pw[MAX_PASSWORD];
+            if (field_copy(line, pw_field, pw, sizeof(pw))) {
+                size_t n = strlen(pw);
+                if (n >= pw_cap) n = pw_cap - 1;
+                memcpy(pw_out, pw, n);
+                pw_out[n] = '\0';
+            } else {
+                pw_out[0] = '\0';
+            }
         }
         found = 1;
     }
@@ -146,11 +175,11 @@ static int lookup_uid(const char *username) {
         size_t len = strlen(line);
         if (len > 0 && line[len - 1] == '\n') line[len - 1] = '\0';
 
-        char *name = field_n(line, 0);
-        if (!name || strcmp(name, username) != 0) continue;
+        if (!field_eq(line, 0, username)) continue;
 
-        char *uid_str = field_n(line, 2);
-        if (uid_str) uid = atoi(uid_str);
+        char uid_buf[16];
+        if (field_copy(line, 2, uid_buf, sizeof(uid_buf)))
+            uid = atoi(uid_buf);
         break;
     }
     fclose(fp);
