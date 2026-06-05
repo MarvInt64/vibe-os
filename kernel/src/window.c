@@ -242,9 +242,74 @@ static void desktop_theme_apply_color(const char *data, const char *key, uint32_
     }
 }
 
+/* Resolve a user's home directory from /etc/passwd.  Returns the length
+ * written to buf (excluding NUL), or 0 on failure — in which case buf is
+ * set to "/" as a safe fallback.  Used so the desktop follows whoever
+ * started the GUI, rather than hardcoding /home/user. */
+static int resolve_user_home(char *buf, size_t cap, uint32_t uid) {
+    char data[1024];
+    if (buf == 0 || cap < 2) return 0;
+    buf[0] = '\0';
+
+    ssize_t n = vfs_read("/etc/passwd", 0, data, sizeof(data) - 1u);
+    if (n <= 0) { copy_text(buf, cap, "/"); return 1; }
+    data[n] = '\0';
+
+    /* Walk lines: name:x:uid:gid:gecos:home:shell */
+    char *line = data;
+    while (*line) {
+        char *nl = line;
+        while (*nl && *nl != '\n') ++nl;
+        int eol = (*nl == '\n');
+        *nl = '\0';
+
+        /* Skip to field 2 (uid), counting colons manually. */
+        char *f = line;
+        for (int col = 0; col < 2; ++col) {
+            while (*f && *f != ':') ++f;
+            if (!*f) goto next_line;
+            ++f;
+        }
+        /* Parse uid. */
+        uint32_t line_uid = 0;
+        while (*f >= '0' && *f <= '9') {
+            line_uid = line_uid * 10u + (uint32_t)(*f - '0');
+            ++f;
+        }
+        if (*f != ':') goto next_line;
+
+        if (line_uid == uid) {
+            /* Found the user — field 5 is home (skip 3 more colons). */
+            for (int col = 0; col < 3; ++col) {
+                while (*f && *f != ':') ++f;
+                if (!*f) goto next_line;
+                ++f;
+            }
+            /* Copy home field. */
+            size_t i = 0;
+            while (*f && *f != ':' && *f != '\n' && i < cap - 1)
+                buf[i++] = *f++;
+            buf[i] = '\0';
+            return (int)i;
+        }
+
+next_line:
+        line = nl + (eol ? 1 : 0);
+    }
+
+    /* uid not found — fallback. */
+    copy_text(buf, cap, uid == 0 ? "/root" : "/");
+    return (int)strlen(buf);
+}
+
 static void desktop_theme_load(void) {
     char data[1024];
-    ssize_t n = vfs_read("/home/user/.config/vibeos.theme", 0, data, sizeof(data) - 1u);
+    char home[64];
+    char theme_path[96];
+    resolve_user_home(home, sizeof(home), g_desktop_uid);
+    copy_text(theme_path, sizeof(theme_path), home);
+    append_text(theme_path, sizeof(theme_path), "/.config/vibeos.theme");
+    ssize_t n = vfs_read(theme_path, 0, data, sizeof(data) - 1u);
 
     if (n <= 0) return;
     data[n] = '\0';
@@ -327,31 +392,54 @@ static void persist_launcher(struct desktop_state *desktop, int index) {
 static void desktop_refresh_launchers(struct desktop_state *desktop) {
     struct vfs_stat st;
     uint32_t index = 0;
+    char home[64], desktop_dir[96];
     desktop->launcher_count = 0;
 
-    if (!vfs_stat_path("/home/user", &st)) (void)vfs_mkdir("/home/user");
-    if (!vfs_stat_path("/home/user/Desktop", &st)) (void)vfs_mkdir("/home/user/Desktop");
-    if (!vfs_stat_path("/home/user/Desktop/Browser.desktop", &st)) {
-        static const char browser_desktop[] =
-            "Name=Browser\n"
-            "Exec=/bin/browser\n"
-            "IconColor=#64f2cc\n";
-        (void)vfs_write_all("/home/user/Desktop/Browser.desktop", browser_desktop, sizeof(browser_desktop) - 1u);
+    resolve_user_home(home, sizeof(home), g_desktop_uid);
+    copy_text(desktop_dir, sizeof(desktop_dir), home);
+    append_text(desktop_dir, sizeof(desktop_dir), "/Desktop");
+
+    if (!vfs_stat_path(home, &st)) (void)vfs_mkdir(home);
+    if (!vfs_stat_path(desktop_dir, &st)) (void)vfs_mkdir(desktop_dir);
+
+    /* Also ensure ~/.config exists so the theme file and other per-user
+     * configuration can be written without the user creating the directory
+     * by hand. */
+    {
+        char config_dir[96];
+        copy_text(config_dir, sizeof(config_dir), home);
+        append_text(config_dir, sizeof(config_dir), "/.config");
+        if (!vfs_stat_path(config_dir, &st)) (void)vfs_mkdir(config_dir);
+    }
+
+    /* Seed default Browser.desktop if none exists. */
+    {
+        char def_path[128];
+        copy_text(def_path, sizeof(def_path), desktop_dir);
+        append_text(def_path, sizeof(def_path), "/Browser.desktop");
+        if (!vfs_stat_path(def_path, &st)) {
+            static const char browser_desktop[] =
+                "Name=Browser\n"
+                "Exec=/bin/browser\n"
+                "IconColor=#64f2cc\n";
+            (void)vfs_write_all(def_path, browser_desktop, sizeof(browser_desktop) - 1u);
+        }
     }
 
     while (desktop->launcher_count < DESKTOP_LAUNCHER_MAX) {
         struct vfs_dir_entry entry;
-        char path[96];
+        char path[128];
         char data[512];
         ssize_t n;
         char color[16];
         int li;
 
-        if (!vfs_readdir("/home/user/Desktop", index++, &entry)) break;
+        if (!vfs_readdir(desktop_dir, index++, &entry)) break;
         if (entry.kind != VFS_NODE_FILE || !text_ends_with(entry.name, ".desktop")) continue;
         if (strcmp(entry.name, "Dock.desktop") == 0) continue;
 
-        copy_text(path, sizeof(path), "/home/user/Desktop/");
+        copy_text(path, sizeof(path), desktop_dir);
+        append_text(path, sizeof(path), "/");
         append_text(path, sizeof(path), entry.name);
         n = vfs_read(path, 0, data, sizeof(data) - 1u);
         if (n <= 0) continue;
@@ -1379,7 +1467,7 @@ static void render_window_surface(struct desktop_state *desktop, int index) {
     build_app_draw_context(desktop, &local_window, focused, &app_ctx);
     app_ctx.fb = fb;
     fb_reset_clip(fb);
-    fb_fill_rect(fb, 0, 0, window->width, window->height, WINDOW_TRANSPARENT_KEY);
+    fb_fill_rect(fb, 0, 0, window->width, window->height, g_chrome_theme.bg);
     if (!window_frameless(window)) {
         draw_window_frame(desktop, fb, &local_window, focused);
     }

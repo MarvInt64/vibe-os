@@ -1962,6 +1962,10 @@ vui_window *vui_window_open_inset(const char *title, int width, int height,
     int id;
     struct winsys_window_options options;
     if (!theme_loaded) {
+        /* Try to load a per-user theme.  Start with root's home (the common
+         * case on VibeOS today), then fall back to /home/user.  The theme
+         * file is optional — desktop_theme_load handles missing files. */
+        vui_load_theme("/root/.config/vibeos.theme");
         vui_load_theme("/home/user/.config/vibeos.theme");
         theme_loaded = 1;
     }

@@ -343,7 +343,32 @@ static void expand_vars(const char *src, char *dst, size_t cap,
             insert = num_buf;
             si++;
         } else if (strncmp(src + si, "HOME", 4) == 0 && !(src[si+4] >= 'A' && src[si+4] <= 'Z') && !(src[si+4] >= 'a' && src[si+4] <= 'z') && src[si+4] != '_') {
-            insert = (uid == 0) ? "/root" : "/home/user";
+            /* Resolve home directory from /etc/passwd instead of hardcoding
+             * /home/user — so su marvin gets /home/marvin, not /home/user. */
+            if (uid == 0) {
+                insert = "/root";
+            } else {
+                static char home_path[128];
+                get_username(uid, home_path, sizeof(home_path));
+                /* If get_username returns "root" or "user" (file absent), use
+                 * /root for uid 0, /home/<name> otherwise. */
+                if (uid == 0 && strcmp(home_path, "root") == 0)
+                    insert = "/root";
+                else {
+                    /* Build /home/<username> by shifting the string right
+                     * to make room for the "/home/" prefix. */
+                    home_path[127] = '\0';
+                    size_t ulen = strlen(home_path);
+                    if (ulen > 120) ulen = 120;
+                    /* Shift right by 6 (copy from the end to avoid clobbering). */
+                    for (size_t k = ulen + 1; k > 0; --k)
+                        home_path[k + 5] = home_path[k - 1];
+                    home_path[0] = '/'; home_path[1] = 'h';
+                    home_path[2] = 'o'; home_path[3] = 'm';
+                    home_path[4] = 'e'; home_path[5] = '/';
+                    insert = home_path;
+                }
+            }
             si += 4;
         } else if (strncmp(src + si, "PATH", 4) == 0 && !(src[si+4] >= 'A' && src[si+4] <= 'Z') && !(src[si+4] >= 'a' && src[si+4] <= 'z') && src[si+4] != '_') {
             insert = "/bin";

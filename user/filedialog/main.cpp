@@ -9,7 +9,8 @@
 int main() {
     char arg[256];
     char title[64] = "Select File";
-    char path[256] = "/home/user";
+    char path[256];
+    vos_home_dir(path, sizeof(path));
     bool save = false;
 
     char res_file[128] = "/tmp/fd_result";
