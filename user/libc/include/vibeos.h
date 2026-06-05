@@ -238,6 +238,8 @@ int vos_set_wallpaper(const uint32_t *pixels, int w, int h);
 int vos_window_present_rect(int id, const uint32_t *pixels, int w, int h, int dx, int dy, int dw, int dh);
 /* Copy this process's spawn argument (if any) into buf; returns its length. */
 int vos_getarg(char *buf, int size);
+/* Resolve the calling user's home directory (from /etc/passwd) into buf. */
+int vos_home_dir(char *buf, int cap);
 int vos_event_poll(int id, struct vos_event *out);         /* 1 = got event, 0 = empty */
 int vos_window_set_menu(int id, const struct vos_menu_item *items, int count);
 /* Declare the focused-window top-bar menu bar. */

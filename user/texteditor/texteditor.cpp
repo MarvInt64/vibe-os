@@ -687,15 +687,17 @@ void TextEditor::on_tick() {
 /* --------------------------------------------------------------------------- */
 
 void TextEditor::show_open_dialog() {
+    char home[256]; vos_home_dir(home, sizeof(home));
     char path[256];
-    if (vui_file_dialog("Open File", "/home/user", path, sizeof(path), 0)) {
+    if (vui_file_dialog("Open File", home, path, sizeof(path), 0)) {
         open_file(path);
     }
 }
 
 void TextEditor::show_save_dialog() {
+    char home[256]; vos_home_dir(home, sizeof(home));
     char path[256];
-    if (vui_file_dialog("Save As", "/home/user", path, sizeof(path), 1)) {
+    if (vui_file_dialog("Save As", home, path, sizeof(path), 1)) {
         save_as(path);
     }
 }

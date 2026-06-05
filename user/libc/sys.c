@@ -272,6 +272,70 @@ gid_t getgid(void) {
 }
 
 /*
+ * vos_home_dir — resolve the calling user's home directory into buf.
+ *
+ * Reads /etc/passwd (line format name:passwd:uid:gid:gecos:home:shell) and
+ * copies the home field of the entry whose uid matches getuid(). This is how
+ * the GUI apps find their working directory instead of hardcoding a path, so
+ * the dialog/editor follow whoever the session runs as (root -> /root today,
+ * a regular user -> /home/<name> once one exists and the desktop runs as it).
+ *
+ * Falls back to "/root" for uid 0, "/" otherwise, when the file or a matching
+ * entry is missing. Always NUL-terminates (when cap > 0); returns the length.
+ */
+int vos_home_dir(char *buf, int cap) {
+    if (buf == 0 || cap <= 0) return 0;
+    buf[0] = '\0';
+    unsigned int uid = (unsigned int)getuid();
+
+    int fd = vos_open_path("/etc/passwd");
+    if (fd >= 0) {
+        char data[1024];
+        ssize_t n = read(fd, data, sizeof(data) - 1);
+        close(fd);
+        if (n > 0) {
+            data[n] = '\0';
+            char *line = data;
+            while (*line) {
+                char *nl = line;
+                while (*nl && *nl != '\n') nl++;
+                char saved = *nl;
+                *nl = '\0';
+
+                /* Split the line into up to 7 ':'-separated fields in place. */
+                char *f[7];
+                int nf = 0;
+                f[nf++] = line;
+                for (char *p = line; *p && nf < 7; p++) {
+                    if (*p == ':') { *p = '\0'; f[nf++] = p + 1; }
+                }
+
+                if (nf >= 6) {
+                    unsigned int euid = 0;
+                    for (char *p = f[2]; *p >= '0' && *p <= '9'; p++)
+                        euid = euid * 10u + (unsigned int)(*p - '0');
+                    if (euid == uid && f[5][0]) {
+                        int k = 0;
+                        while (f[5][k] && k < cap - 1) { buf[k] = f[5][k]; k++; }
+                        buf[k] = '\0';
+                        return k;
+                    }
+                }
+
+                if (saved == '\0') break;
+                line = nl + 1;
+            }
+        }
+    }
+
+    const char *fb = (uid == 0) ? "/root" : "/";
+    int k = 0;
+    while (fb[k] && k < cap - 1) { buf[k] = fb[k]; k++; }
+    buf[k] = '\0';
+    return k;
+}
+
+/*
  * Change the effective user ID of the current process.
  * Root (uid 0) may change to any uid; other users may only re-set their own.
  */

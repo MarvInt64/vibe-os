@@ -110,30 +110,41 @@ def main():
         f.seek(root_blk * BS)
         f.write(bytes(dir_blk))
 
-    # Seed the standard directory skeleton so apps have somewhere to write.
-    # /home/user is the default working directory for the GUI apps (the file
-    # dialog, text editor, …); without it, saves into /home/user fail because
-    # ext2_create does not create missing parent directories. /tmp backs the
-    # file-dialog result hand-off. Reuse ext2_put's writer to avoid duplicating
-    # the directory-allocation logic here.
+    # Seed the standard directory skeleton with correct ownership/permissions.
+    # Without these, GUI saves fail because ext2_create() does not create
+    # missing parent directories.
+    #   /root  0700  root's home — the session's working directory today.
+    #   /tmp   0777  world-writable, backs the file-dialog result hand-off so it
+    #                works no matter which user the session runs as.
+    #   /home  0755  parent for future regular users (each /home/<name> is then
+    #                created 0700 and owned by that user).
+    # All are owned by root (uid 0); only root + the owner can enter a 0700 dir.
+    # Reuse ext2_put's writer to avoid duplicating the allocation logic.
     import importlib.util
     spec = importlib.util.spec_from_file_location(
         "ext2_put", os.path.join(os.path.dirname(os.path.abspath(__file__)), "ext2_put.py"))
     ext2_put = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ext2_put)
 
+    S_IFDIR = 0o40000
     fs = ext2_put.Ext2(path)
-    def ensure(parent_ino, name):
+    def seed(parent_ino, name, mode):
         ino = fs.dir_find(parent_ino, name)
-        return ino if ino else fs.mkdir(parent_ino, name)
-    home = ensure(EXT2_ROOT, "home")
-    ensure(home, "user")
-    ensure(EXT2_ROOT, "tmp")
+        if not ino:
+            ino = fs.mkdir(parent_ino, name)
+        node = bytearray(fs.read_inode(ino))
+        struct.pack_into("<H", node, 0, S_IFDIR | mode)  # mode (mkdir defaults 0755)
+        struct.pack_into("<H", node, 2, 0)               # uid = root
+        fs.write_inode(ino, node)
+        return ino
+    seed(EXT2_ROOT, "root", 0o700)
+    seed(EXT2_ROOT, "tmp",  0o777)
+    seed(EXT2_ROOT, "home", 0o755)
     fs.flush_meta()
 
     print(f"format_disk: formatted {path} ({disk_size//1024//1024} MB, "
           f"{blocks_count} blocks, {inodes_count} inodes, first_data={first_data}); "
-          f"seeded /home/user, /tmp")
+          f"seeded /root (0700), /tmp (0777), /home (0755)")
 
 if __name__ == "__main__":
     main()
