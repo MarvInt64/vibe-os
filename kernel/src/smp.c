@@ -27,7 +27,7 @@
 #include "apic.h"
 #include "alloc.h"
 #include "cpu.h"
-#include "spinlock.h"
+#include "interrupts.h"
 #include "serial.h"
 #include "string.h"
 #include "types.h"
@@ -49,15 +49,9 @@ volatile uint64_t ap_stack_top;
 /* CPUs that have reached ap_main. The boot CPU is implicitly online. */
 static volatile unsigned g_cpus_online = 1;
 
-/* The big kernel lock and a shared counter the APs hammer through it, purely to
- * demonstrate that the cores run kernel code concurrently and that the lock
- * keeps a shared update race-free (g_work_total must equal the sum of every
- * CPU's private work count if no increment was lost). */
-static spinlock_t g_bkl = SPINLOCK_INIT;
-static volatile unsigned long g_work_total;
-
-/* Each AP performs this many locked increments, then parks. */
-#define AP_WORK_UNITS 5000u
+/* Local APIC timer vector the APs run on (matches the IDT gate set up in
+ * interrupts_init); kept distinct from the BSP's IOAPIC timer (0x20). */
+#define AP_TIMER_VECTOR 0x40u
 
 /* Crude spin delay — INIT/SIPI need ~10 ms / ~200 us settling. QEMU is lenient
  * about exact timing, so a generous busy loop is sufficient at bring-up. */
@@ -66,48 +60,54 @@ static void delay_spin(volatile uint32_t iterations) {
 }
 
 /*
+ * Local APIC timer interrupt handler for an AP (called from ap_timer_stub).
+ * Counts a per-CPU tick and acknowledges the interrupt. No shared state, so no
+ * lock is needed; this is the per-CPU heartbeat the scheduler will hook into.
+ */
+void ap_timer_tick(void) {
+    this_cpu()->ticks++;
+    lapic_eoi();
+}
+
+/*
  * C entry point for an application processor (called from ap_boot.S on the
- * AP's own stack, in 64-bit mode). Set up this core's per-CPU data and Local
- * APIC, announce we're alive, then run a burst of real, lock-protected kernel
- * work to prove the core executes concurrently with the others. With no
- * per-CPU scheduler yet, the AP then parks (interrupts disabled, hlt) — a
- * parked core only executes hlt, so it needs no IDT/TSS of its own for now.
+ * AP's own stack, in 64-bit mode). The AP becomes a real interrupt-driven CPU:
+ * it loads the shared GDT/IDT, sets up its per-CPU data and Local APIC, starts
+ * its own Local APIC timer, then runs an interrupt-driven idle loop. It is no
+ * longer parked with interrupts off — it wakes on every timer tick. There is
+ * still no scheduler here, so the idle loop just halts between ticks.
  */
 void ap_main(void) {
+    /* Switch off the trampoline GDT onto the runtime GDT (so vector selectors
+     * match the IDT gates) and load the shared IDT — without ltr, since a
+     * ring-0 idle AP makes no privilege transition and the single TSS is busy. */
+    interrupts_ap_load_tables();
+
+    /* cpu_register programs the GS base last, so it must run after the table
+     * load above (which reloads the gs selector and clears the base). */
     cpu_register(lapic_id());
     lapic_enable_this_cpu();
     __atomic_add_fetch(&g_cpus_online, 1, __ATOMIC_SEQ_CST);
 
-    for (unsigned i = 0; i < AP_WORK_UNITS; ++i) {
-        spin_lock(&g_bkl);
-        g_work_total++;          /* shared: protected by the big kernel lock */
-        this_cpu()->work++;      /* private to this core                     */
-        spin_unlock(&g_bkl);
-    }
+    lapic_timer_start(AP_TIMER_VECTOR);
 
-    for (;;) __asm__ volatile("cli; hlt");
+    /* Interrupt-driven idle: wake on the timer, tick, halt again. */
+    for (;;) __asm__ volatile("sti; hlt");
 }
 
-/* Print each CPU's work tally and confirm the shared total is consistent —
- * i.e. the lock lost no increments under concurrency. */
+/* Print each CPU's timer-tick count, proving every core is taking its own
+ * Local APIC timer interrupts (i.e. running real interrupt-driven code). */
 static void smp_report(void) {
-    unsigned long sum = 0;
     for (unsigned i = 0; i < cpu_count(); ++i) {
         struct cpu *c = cpu_get(i);
-        sum += c->work;
         serial_write("SMP: cpu");
         serial_write_hex_u64(i);
         serial_write(" apic_id=");
         serial_write_hex_u64(c->apic_id);
-        serial_write(" work=");
-        serial_write_hex_u64(c->work);
+        serial_write(" ticks=");
+        serial_write_hex_u64(c->ticks);
         serial_write("\n");
     }
-    serial_write("SMP: work_total=");
-    serial_write_hex_u64(g_work_total);
-    serial_write(" sum_per_cpu=");
-    serial_write_hex_u64(sum);
-    serial_write(g_work_total == sum ? " (lock OK)\n" : " (LOCK LOST UPDATES!)\n");
 }
 
 void smp_boot_aps(void) {
@@ -176,8 +176,15 @@ void smp_boot_aps(void) {
     serial_write_hex_u64(info->cpu_count);
     serial_write("\n");
 
-    /* Let the APs finish their work burst, then verify the shared counter. */
-    delay_spin(2000000);
+    /* Wait (bounded) until every AP has taken at least one timer tick, proving
+     * the per-CPU Local APIC timers are firing, then report. */
+    for (int round = 0; round < 200; ++round) {
+        unsigned ticking = 0;
+        for (unsigned i = 1; i < cpu_count(); ++i)
+            if (cpu_get(i)->ticks > 0) ticking++;
+        if (ticking + 1 >= cpu_count()) break;   /* all APs ticked (cpu0 = BSP) */
+        delay_spin(200000);
+    }
     smp_report();
 }
 

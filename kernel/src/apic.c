@@ -36,6 +36,10 @@
 #define LAPIC_REG_ICR_LOW  0x300 /* interrupt command register, low dword     */
 #define LAPIC_REG_ICR_HIGH 0x310 /* interrupt command register, high dword    */
 #define LAPIC_ICR_DELIVERY_PENDING (1u << 12)
+#define LAPIC_REG_LVT_TIMER 0x320 /* local-vector-table entry for the timer    */
+#define LAPIC_REG_TIMER_INIT 0x380 /* timer initial count                      */
+#define LAPIC_REG_TIMER_DIV  0x3E0 /* timer divide configuration               */
+#define LAPIC_TIMER_PERIODIC (1u << 17) /* LVT timer mode bit                  */
 #define LAPIC_SVR_ENABLE 0x100  /* SVR bit 8: software-enable the Local APIC  */
 #define LAPIC_SPURIOUS_VECTOR 0xFF
 
@@ -112,6 +116,15 @@ void lapic_enable_this_cpu(void) {
     wrmsr(IA32_APIC_BASE_MSR, rdmsr(IA32_APIC_BASE_MSR) | APIC_BASE_GLOBAL_ENABLE);
     mmio_write(g_lapic_base, LAPIC_REG_SVR, LAPIC_SVR_ENABLE | LAPIC_SPURIOUS_VECTOR);
     mmio_write(g_lapic_base, LAPIC_REG_TPR, 0);
+}
+
+/* Start this CPU's Local APIC timer in periodic mode on the given vector.
+ * Divide-by-16 plus a fixed initial count gives a steady, hardware-local tick
+ * (exact rate is uncalibrated — fine for driving a per-CPU idle/scheduler). */
+void lapic_timer_start(uint8_t vector) {
+    mmio_write(g_lapic_base, LAPIC_REG_TIMER_DIV, 0x3);   /* divide by 16 */
+    mmio_write(g_lapic_base, LAPIC_REG_LVT_TIMER, (uint32_t)vector | LAPIC_TIMER_PERIODIC);
+    mmio_write(g_lapic_base, LAPIC_REG_TIMER_INIT, 2000000u);
 }
 
 /* Send an inter-processor interrupt to a specific Local APIC. icr_low carries

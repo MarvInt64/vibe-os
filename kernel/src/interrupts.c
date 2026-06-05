@@ -30,6 +30,7 @@
 #include "timer.h"
 
 #define TIMER_VECTOR 0x20u
+#define AP_TIMER_VECTOR 0x40u
 #define SPURIOUS_VECTOR 0xFFu
 
 struct descriptor_ptr {
@@ -129,6 +130,15 @@ static struct idt_entry g_idt[256] __attribute__((aligned(16)));
 static struct tss64 g_tss;
 static uint8_t g_interrupt_stack[16384] __attribute__((aligned(16)));
 
+/* The boot CPU's GDT/IDT descriptors, kept so application processors can load
+ * the same tables when they come online (see interrupts_ap_load_tables). */
+static struct descriptor_ptr g_gdt_desc;
+static struct descriptor_ptr g_idt_desc;
+
+extern void ap_load_tables(const struct descriptor_ptr *gdt_desc,
+                           const struct descriptor_ptr *idt_desc);
+extern void ap_timer_stub(void);
+
 static void set_idt_gate(uint8_t vector, void (*handler)(void), uint8_t type_attr) {
     uintptr_t address = (uintptr_t)handler;
 
@@ -160,8 +170,6 @@ static void set_tss_descriptor(uint64_t *gdt, const struct tss64 *tss) {
 }
 
 void interrupts_init(void) {
-    struct descriptor_ptr gdt_desc;
-    struct descriptor_ptr idt_desc;
     size_t i;
 
     g_runtime_gdt[0] = 0x0000000000000000ull;
@@ -199,23 +207,29 @@ void interrupts_init(void) {
     }
 
     set_idt_gate(TIMER_VECTOR, timer_interrupt_stub, 0x8eu);
+    set_idt_gate(AP_TIMER_VECTOR, ap_timer_stub, 0x8eu);  /* per-AP LAPIC timer */
     set_idt_gate(0x80u, syscall_interrupt_stub, 0xeeu);
     set_idt_gate(13u, gpfault_stub, 0x8eu);    /* #GP */
     set_idt_gate(14u, pagefault_stub, 0x8eu);  /* #PF */
     set_idt_gate(SPURIOUS_VECTOR, spurious_interrupt_stub, 0x8eu);  /* LAPIC spurious */
 
-    gdt_desc.limit = (uint16_t)(sizeof(g_runtime_gdt) - 1u);
-    gdt_desc.base = (uint64_t)(uintptr_t)g_runtime_gdt;
-    idt_desc.limit = (uint16_t)(sizeof(g_idt) - 1u);
-    idt_desc.base = (uint64_t)(uintptr_t)g_idt;
+    g_gdt_desc.limit = (uint16_t)(sizeof(g_runtime_gdt) - 1u);
+    g_gdt_desc.base = (uint64_t)(uintptr_t)g_runtime_gdt;
+    g_idt_desc.limit = (uint16_t)(sizeof(g_idt) - 1u);
+    g_idt_desc.base = (uint64_t)(uintptr_t)g_idt;
 
-    interrupt_load_runtime_tables(&gdt_desc, &idt_desc, TSS_SELECTOR);
+    interrupt_load_runtime_tables(&g_gdt_desc, &g_idt_desc, TSS_SELECTOR);
     timer_init();
 
     /* Modernise interrupt delivery: enumerate via ACPI, enable the Local APIC
      * and route the timer through the IOAPIC (masking the 8259 PIC). On legacy
      * machines without ACPI this is a no-op and we keep running on the PIC. */
     apic_init();
+}
+
+/* Called by an application processor to load the shared GDT/IDT (no TSS). */
+void interrupts_ap_load_tables(void) {
+    ap_load_tables(&g_gdt_desc, &g_idt_desc);
 }
 
 /* Point the TSS ring-0 stack (rsp0) at the kernel stack of the process that is

@@ -12,6 +12,9 @@
 .global pagefault_stub
 .global gpfault_stub
 .global spurious_interrupt_stub
+.global ap_load_tables
+.global ap_timer_stub
+.extern ap_timer_tick
 
 .extern syscall_handle_interrupt
 .extern timer_handle_interrupt
@@ -42,6 +45,55 @@ interrupt_load_runtime_tables:
 /* Local APIC spurious-interrupt handler (vector 0xFF). A spurious interrupt
  * does not need an EOI and carries no error code, so we simply return. */
 spurious_interrupt_stub:
+    iretq
+
+/* Load this CPU's GDT and IDT and reload the segment registers, WITHOUT
+ * loading a task register (ltr) — an AP shares the runtime GDT whose single TSS
+ * descriptor is already busy on the boot CPU, and a parked/idle AP never makes
+ * a privilege transition, so it needs no TSS of its own yet. rdi = gdt
+ * descriptor, rsi = idt descriptor. NB: this reloads gs to selector 0x10, which
+ * resets the gs base; the caller must (re)program the gs base afterwards. */
+ap_load_tables:
+    lgdt [rdi]
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    push 0x08
+    lea rax, [rip + .ap_tables_reloaded]
+    push rax
+    retfq
+.ap_tables_reloaded:
+    lidt [rsi]
+    ret
+
+/* Local APIC timer handler for application processors (vector 0x40). Saves the
+ * caller-clobbered registers, runs the C tick, and returns. ap_timer_tick()
+ * sends the Local APIC EOI itself. */
+ap_timer_stub:
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    push rbp
+    call ap_timer_tick
+    pop rbp
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
     iretq
 
 interrupt_restore_user_context:

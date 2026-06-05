@@ -56,4 +56,7 @@ void lapic_enable_this_cpu(void);
 /* Send an IPI (INIT / STARTUP / etc.) to another CPU's Local APIC. */
 void lapic_send_ipi(uint8_t dest_apic_id, uint32_t icr_low);
 
+/* Start the calling CPU's Local APIC timer (periodic) on the given vector. */
+void lapic_timer_start(uint8_t vector);
+
 #endif
