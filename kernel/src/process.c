@@ -337,7 +337,7 @@ static struct process *process_find_exited_child(uint32_t parent_pid, uint32_t w
     for (i = 0; i < PROCESS_MAX_COUNT; ++i) {
         struct process *process = &g_processes[i];
 
-        if (!process->loaded || process->state != PROCESS_STATE_EXITED || process->parent_pid != parent_pid) {
+        if (!process->loaded || process->state != PROCESS_STATE_EXITED || process->running_on_cpu != -1 || process->parent_pid != parent_pid) {
             continue;
         }
 
@@ -1783,6 +1783,9 @@ int process_run_ready_slice(void) {
     }
     fpu_save(process->fpu_state);             /* save whatever it left behind */
     process->running_on_cpu = -1;             /* released by this CPU */
+    if (process->state == PROCESS_STATE_EXITED) {
+        process_wake_waiter(process);
+    }
     /* Count scheduling quanta for the task manager's CPU metric.
      * The timer-interrupt handler already incremented runtime_ticks when it
      * preempted this process (and left a trace in preempt_count).  For slices
@@ -1826,6 +1829,12 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
     uint64_t number;
 
     if (process == 0 || frame == 0) {
+        g_kernel_resume_result = PROCESS_RUN_EXITED;
+        g_current_process = 0;
+        return 1;
+    }
+
+    if (process->state == PROCESS_STATE_EXITED) {
         g_kernel_resume_result = PROCESS_RUN_EXITED;
         g_current_process = 0;
         return 1;
@@ -2961,8 +2970,12 @@ int timer_handle_interrupt(struct interrupt_frame *frame) {
     ++process->runtime_ticks;
     ++process->preempt_count;
     process->context = *frame;
-    process->state = PROCESS_STATE_READY;
-    g_kernel_resume_result = PROCESS_RUN_YIELDED;
+    if (process->state == PROCESS_STATE_EXITED) {
+        g_kernel_resume_result = PROCESS_RUN_EXITED;
+    } else {
+        process->state = PROCESS_STATE_READY;
+        g_kernel_resume_result = PROCESS_RUN_YIELDED;
+    }
     g_current_process = 0;
     return 1;
 }
@@ -2988,8 +3001,12 @@ int process_ap_timer(struct interrupt_frame *frame) {
     ++process->runtime_ticks;
     ++process->preempt_count;
     process->context = *frame;
-    process->state = PROCESS_STATE_READY;
-    g_kernel_resume_result = PROCESS_RUN_YIELDED;
+    if (process->state == PROCESS_STATE_EXITED) {
+        g_kernel_resume_result = PROCESS_RUN_EXITED;
+    } else {
+        process->state = PROCESS_STATE_READY;
+        g_kernel_resume_result = PROCESS_RUN_YIELDED;
+    }
     g_current_process = 0;
     return 1;
 }
