@@ -25,6 +25,10 @@
 /* libvexui — retained-mode implementation. Syscalls + rendering hidden here. */
 #include "vexui.h"
 #include "svg.h"
+/* Forward-declare the bind/flush syscall wrappers we need directly,
+ * without pulling in <vibeos.h> (which redefines structs). */
+void *vos_window_bind_fb(int id, int *stride, int *width, int *height);
+int   vos_window_flush(int id, int x, int y, int w, int h);
 /* Keep in sync with MENUBAR_H in vexui.h */
 #define MENUBAR_H 22
 
@@ -220,6 +224,9 @@ struct vui_window {
     int active_input;
     /* Index of the W_SLIDER currently being dragged; -1 = none. */
     int active_slider;
+    int fb_stride;   /* row stride when using bound framebuffer, 0 = fallback */
+    int fb_bound;    /* 1 if g_canvas points at a kernel-bound framebuffer  */
+
     struct vui_widget widgets[VUI_MAX_WIDGETS];
     int widget_count;
     uint8_t dirty;
@@ -241,7 +248,8 @@ struct vui_window {
 };
 
 static struct vui_window g_win;
-static uint32_t g_canvas[VUI_MAX_W * VUI_MAX_H];
+static uint32_t g_canvas_fb[VUI_MAX_W * VUI_MAX_H];
+static uint32_t *g_canvas = g_canvas_fb;  /* may be redirected to bound FB */
 
 /* Damage tracking for partial presents: the union of widget rects that changed
  * since the last paint. g_dmg_full forces a whole-window present (used for
@@ -1004,6 +1012,14 @@ void vui_set_anchor(vui_widget *wd, int anchors){
 void vui_set_clear_color(vui_window *w, vui_u32 color){ if(w){ w->clear_color=color; w->dirty=1; } }
 int vui_window_width(vui_window *w){ return w?w->width:0; }
 int vui_window_height(vui_window *w){ return w?w->height:0; }
+/* Return the current framebuffer pointer (may be a kernel-bound direct
+ * mapping after BIND_FB, or the static fallback buffer).  Canvas-based
+ * apps can draw directly into this buffer for zero-copy rendering. */
+uint32_t *vui_canvas_ptr(vui_window *w) {
+    (void)w;
+    return g_canvas;
+}
+
 void vui_on_tick(vui_window *w, vui_tick_callback cb){ if(w) w->on_tick=cb; }
 void vui_on_resize(vui_window *w, vui_resize_callback cb){ if(w) w->on_resize=cb; }
 void vui_on_context_menu(vui_window *w, vui_context_callback cb){ if(w) w->on_context_menu=cb; }
@@ -1030,6 +1046,21 @@ void vui_canvas_flush(vui_window *w, vui_widget *canvas) {
     int stride = canvas->value;
     if (!pixels || stride <= 0) return;
     int x0 = canvas->x, y0 = canvas->y, cw = canvas->w, ch = canvas->h;
+
+    /* When the framebuffer is kernel-bound, the app writes directly into
+     * content_storage (no intermediate g_canvas).  The copy loop below is
+     * skipped and we just mark the dirty rectangle. */
+    if (w->fb_bound) {
+        if (x0 < 0) { cw += x0; x0 = 0; }
+        if (y0 < 0) { ch += y0; y0 = 0; }
+        if (x0 + cw > w->width)  cw = w->width  - x0;
+        if (y0 + ch > w->height) ch = w->height - y0;
+        if (cw > 0 && ch > 0)
+            vos_window_flush(w->id, x0, y0, cw, ch);
+        return;
+    }
+
+    /* Fallback: copy canvas pixels into the local g_canvas, then present. */
     for (int iy = 0; iy < ch; ++iy) {
         int py = y0 + iy;
         if (py < 0 || py >= w->height) continue;
@@ -1935,10 +1966,14 @@ static void repaint(struct vui_window *w) {
     draw_dropdown(w);
     /* Pass 3: tooltip bubble — rendered last, above everything. */
     draw_tooltip(w);
-    /* g_canvas is packed at stride w->width (see canvas_index): row y starts at
-     * y * w->width, so the present width is also the source row stride. */
-    sc6(SYS_WINDOW_PRESENT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas,
-        (uint64_t)w->width, (uint64_t)w->height, 0, 0);
+    /* When the framebuffer is kernel-bound, flushing is a zero-copy dirty-rect
+     * mark; otherwise fall back to the traditional whole-window present. */
+    if (w->fb_bound) {
+        vos_window_flush(w->id, 0, 0, w->width, w->height);
+    } else {
+        sc6(SYS_WINDOW_PRESENT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas,
+            (uint64_t)w->width, (uint64_t)w->height, 0, 0);
+    }
     dmg_reset();
 }
 
@@ -1989,6 +2024,21 @@ vui_window *vui_window_open_inset(const char *title, int width, int height,
         for (;;) { do_yield(); }   /* unreachable safety net */
     }
     g_win.id=id; g_win.width=width; g_win.height=height; g_win.open=1;
+    /* Attempt to bind the window content storage directly into our address
+     * space.  On success g_canvas points straight at the compositor
+     * back-buffer — every pixel we write lands there with zero intermediate
+     * copies.  Falls back to the static g_canvas_fb when the kernel does
+     * not support BIND_FB (older VibeOS or non-user-app windows). */
+    {
+        int fb_stride = 0, fb_w = 0, fb_h = 0;
+        void *fb = vos_window_bind_fb(id, &fb_stride, &fb_w, &fb_h);
+        if (fb && fb_stride > 0 && fb_w > 0 && fb_h > 0) {
+            g_canvas = (uint32_t *)fb;
+            g_win.fb_stride = fb_stride;
+            g_win.fb_bound  = 1;
+        }
+    }
+
     g_win.mouse_x=-1; g_win.mouse_y=-1; g_win.mouse_down=0;
     g_win.clear_color=g_theme.bg;
     g_win.widget_count=0; g_win.dirty=1; g_win.on_tick=0; g_win.on_resize=0; g_win.on_context_menu=0; g_win.on_key=0; g_win.on_scroll=0; g_win.on_mouse_move=0; g_win.on_mouse_click=0; g_win.on_mouse_release=0;

@@ -190,6 +190,7 @@ void vui_set_anchor(vui_widget *wgt, int anchors);
 void vui_set_clear_color(vui_window *w, vui_u32 color);
 int vui_window_width(vui_window *w);
 int vui_window_height(vui_window *w);
+vui_u32 *vui_canvas_ptr(vui_window *w);
 void vui_on_tick(vui_window *w, vui_tick_callback cb);
 void vui_on_resize(vui_window *w, vui_resize_callback cb);
 void vui_on_context_menu(vui_window *w, vui_context_callback cb);
