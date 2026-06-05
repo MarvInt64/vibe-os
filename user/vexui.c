@@ -25,10 +25,6 @@
 /* libvexui — retained-mode implementation. Syscalls + rendering hidden here. */
 #include "vexui.h"
 #include "svg.h"
-/* Forward-declare the bind/flush syscall wrappers we need directly,
- * without pulling in <vibeos.h> (which redefines structs). */
-void *vos_window_bind_fb(int id, int *stride, int *width, int *height);
-int   vos_window_flush(int id, int x, int y, int w, int h);
 /* Keep in sync with MENUBAR_H in vexui.h */
 #define MENUBAR_H 22
 
@@ -1056,7 +1052,7 @@ void vui_canvas_flush(vui_window *w, vui_widget *canvas) {
         if (x0 + cw > w->width)  cw = w->width  - x0;
         if (y0 + ch > w->height) ch = w->height - y0;
         if (cw > 0 && ch > 0)
-            vos_window_flush(w->id, x0, y0, cw, ch);
+            sc3(66, (uint64_t)w->id, (uint64_t)(((x0 & 0xffff) << 16) | (y0 & 0xffff)), (uint64_t)(((cw & 0xffff) << 16) | (ch & 0xffff)));
         return;
     }
 
@@ -1969,7 +1965,7 @@ static void repaint(struct vui_window *w) {
     /* When the framebuffer is kernel-bound, flushing is a zero-copy dirty-rect
      * mark; otherwise fall back to the traditional whole-window present. */
     if (w->fb_bound) {
-        vos_window_flush(w->id, 0, 0, w->width, w->height);
+        sc3(66, (uint64_t)w->id, 0, (uint64_t)(((w->width & 0xffff) << 16) | (w->height & 0xffff)));
     } else {
         sc6(SYS_WINDOW_PRESENT, (uint64_t)w->id, (uint64_t)(size_t)g_canvas,
             (uint64_t)w->width, (uint64_t)w->height, 0, 0);
@@ -2031,7 +2027,16 @@ vui_window *vui_window_open_inset(const char *title, int width, int height,
      * not support BIND_FB (older VibeOS or non-user-app windows). */
     {
         int fb_stride = 0, fb_w = 0, fb_h = 0;
-        void *fb = vos_window_bind_fb(id, &fb_stride, &fb_w, &fb_h);
+        long fb_addr, fb_dx, fb_r10, fb_r8;
+        __asm__ volatile(
+            "int \$0x80"
+            : "=a"(fb_addr), "=d"(fb_dx), "=r"(fb_r10), "=r"(fb_r8)
+            : "a"(65), "D"((long)id)
+            : "rcx", "r11", "memory"
+        );
+        void *fb = (void *)(unsigned long)fb_addr;
+        if (fb && fb_dx > 0) { fb_stride = (int)fb_dx; fb_w = (int)fb_r10; fb_h = (int)fb_r8; }
+        else { fb_stride = 0; fb_w = 0; fb_h = 0; }
         if (fb && fb_stride > 0 && fb_w > 0 && fb_h > 0) {
             g_canvas = (uint32_t *)fb;
             g_win.fb_stride = fb_stride;
