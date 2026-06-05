@@ -60,6 +60,9 @@ endif
 # layer needs it for entropy (otherwise it falls back to an insecure seed).
 QEMU_CPU ?= max
 QEMU_MEM ?= 512M
+# Number of CPU cores to expose. SMP support brings the APs online; override
+# with e.g. `make run-serial QEMU_SMP="-smp 2"` or QEMU_SMP= to force one core.
+QEMU_SMP ?= -smp 4
 QEMU_AUDIO ?= -audiodev coreaudio,id=audio0,out.frequency=48000,out.mixing-engine=on -device AC97,audiodev=audio0
 
 CFLAGS := -target x86_64-none-elf -ffreestanding -fno-stack-protector -fno-pie -mno-red-zone -mcmodel=kernel -mgeneral-regs-only -mno-mmx -mno-sse -mno-sse2 -fno-vectorize -fno-slp-vectorize -fno-builtin -Wall -Wextra -Wpedantic -std=c11 -Ikernel/include -Ithird_party/bearssl/inc -MMD -MP -O2
@@ -424,19 +427,19 @@ kernel: user $(OUT_DIR)/vibeos.elf
 iso: $(OUT_DIR)/vibeos.iso
 
 run: $(OUT_DIR)/vibeos.iso $(DISK_IMG)
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) $(QEMU_DISK)
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_SMP) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) $(QEMU_DISK)
 
 run-disk: $(OUT_DIR)/vibeos.elf
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) -drive file=$(OUT_DIR)/disk.img,format=raw,index=0,media=disk
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_SMP) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) -drive file=$(OUT_DIR)/disk.img,format=raw,index=0,media=disk
 
 run-disk-serial: $(OUT_DIR)/vibeos.elf
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) -hda $(OUT_DIR)/disk.img -serial stdio -monitor none
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_SMP) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) -hda $(OUT_DIR)/disk.img -serial stdio -monitor none
 
 run-debug: $(OUT_DIR)/vibeos.iso $(DISK_IMG)
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) $(QEMU_DISK) -no-shutdown
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_SMP) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) $(QEMU_DISK) -no-shutdown
 
 run-serial: $(OUT_DIR)/vibeos.iso $(DISK_IMG)
-	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) $(QEMU_DISK) -serial stdio -monitor none
+	$(QEMU) -boot d -cdrom $(OUT_DIR)/vibeos.iso -m $(QEMU_MEM) -vga std -no-reboot -cpu $(QEMU_CPU) $(QEMU_SMP) $(QEMU_ACCEL) $(QEMU_NET) $(QEMU_NET_DUMP) $(QEMU_AUDIO) $(QEMU_DISK) -serial stdio -monitor none
 
 clean:
 	rm -rf $(OUT_DIR)
