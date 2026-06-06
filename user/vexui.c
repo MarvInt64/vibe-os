@@ -95,15 +95,62 @@ struct winsys_window_options {
     int32_t shadow_inset_top;
 };
 
+#ifdef ARCH_ARM64
+static inline ssize_t sc1(uint64_t n, uint64_t a0) {
+    register long x8 __asm__("x8") = (long)n;
+    register long x0 __asm__("x0") = (long)a0;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8) : "memory");
+    return (ssize_t)x0;
+}
+#else
 static inline ssize_t sc1(uint64_t n, uint64_t a0) {
     ssize_t r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(n), "D"(a0) : "rcx","r11","memory"); return r;
 }
+#endif
+#ifdef ARCH_ARM64
+static inline ssize_t sc2(uint64_t n, uint64_t a0, uint64_t a1) {
+    register long x8 __asm__("x8") = (long)n;
+    register long x0 __asm__("x0") = (long)a0;
+    register long x1 __asm__("x1") = (long)a1;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8),"r"(x1) : "memory");
+    return (ssize_t)x0;
+}
+#else
 static inline ssize_t sc2(uint64_t n, uint64_t a0, uint64_t a1) {
     ssize_t r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(n),"D"(a0),"S"(a1) : "rcx","r11","memory"); return r;
 }
+#endif
+#ifdef ARCH_ARM64
+static inline ssize_t sc3(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2) {
+    register long x8 __asm__("x8") = (long)n;
+    register long x0 __asm__("x0") = (long)a0;
+    register long x1 __asm__("x1") = (long)a1;
+    register long x2 __asm__("x2") = (long)a2;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8),"r"(x1),"r"(x2) : "memory");
+    return (ssize_t)x0;
+}
+#else
 static inline ssize_t sc3(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2) {
     ssize_t r; __asm__ volatile("int $0x80" : "=a"(r) : "a"(n),"D"(a0),"S"(a1),"d"(a2) : "rcx","r11","memory"); return r;
 }
+#endif
+#ifdef ARCH_ARM64
+static inline ssize_t sc6(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    register long x8 __asm__("x8") = (long)n;
+    register long x0 __asm__("x0") = (long)a0;
+    register long x1 __asm__("x1") = (long)a1;
+    register long x2 __asm__("x2") = (long)a2;
+    register long x3 __asm__("x3") = (long)a3;
+    register long x4 __asm__("x4") = (long)a4;
+    register long x5 __asm__("x5") = (long)a5;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8),"r"(x1),"r"(x2),"r"(x3),"r"(x4),"r"(x5) : "memory");
+    return (ssize_t)x0;
+}
+static void do_yield(void) {
+    register long x8 __asm__("x8") = SYS_YIELD;
+    __asm__ volatile("svc #0" :: "r"(x8) : "memory");
+}
+#else
 static inline ssize_t sc6(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     ssize_t r;
     register uint64_t r10 __asm__("r10") = a3;
@@ -115,6 +162,7 @@ static inline ssize_t sc6(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uin
     return r;
 }
 static void do_yield(void){ __asm__ volatile("int $0x80"::"a"((uint64_t)SYS_YIELD):"rcx","r11","memory"); }
+#endif
 /* Sleep for `ticks` scheduler ticks — paces the UI loop so it doesn't busy-spin
  * (which starved the rest of the desktop and made periodic refreshers present
  * far faster than intended). */

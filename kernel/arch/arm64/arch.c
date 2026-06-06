@@ -24,9 +24,11 @@
 #include "../../include/syscall.h"   /* shared SYS_* numbers (x86 + arm64) */
 #include "../../include/framebuffer.h"
 #include "../../include/process.h"
+#include "../../include/timer.h"
 #include "../../include/string.h"
 #include "../../include/render.h"
 #include "../../include/window.h"
+#include "../../include/winsys.h"
 
 /* ---- Timer tick counter (incremented without GIC) --------------------- */
 static volatile uint64_t g_tick = 0;
@@ -91,6 +93,9 @@ static char g_spawn_arg[512];
 /* EL0 exception frame, as laid out by SAVE_REGS in exceptions.S:
  * regs[0..30] = x0..x30, regs[31]=sp_el0, regs[32]=elr_el1, regs[33]=spsr. */
 extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
+extern struct process g_procs[];
+extern int g_current;
+struct desktop_state *desktop_active(void);
 
 /* Copy an EL0 user string (NUL-terminated) into a kernel buffer. EL0 pointers
  * are in the alias window (0x80000000+); they are readable from EL1 (AP=01). */
@@ -110,6 +115,9 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         uint64_t a0  = regs[0];
         uint64_t a1  = regs[1];
         uint64_t a2  = regs[2];
+        uint64_t a3  = regs[3];
+        uint64_t a4  = regs[4];
+        uint64_t a5  = regs[5];
 
         /* Shared SYS_* numbers (kernel/include/syscall.h), same ABI as x86 so
          * the common libc + apps work unmodified across arches. */
@@ -222,6 +230,93 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         case SYS_EXIT:          /* 4: longjmp back into the kernel */
             arm64_return_to_kernel(a0);
             /* not reached */
+        case SYS_WINDOWMGR_START: { /* 21: mark window manager active */
+            g_desktop_uid = (g_current >= 0) ? g_procs[g_current].uid : 0;
+            regs[0] = 0;
+            return;
+        }
+        case SYS_WINDOW_CREATE: {  /* 17: create a window */
+            struct desktop_state *d = desktop_active();
+            if (!d) { regs[0] = (uint64_t)-1; return; }
+            const char *title = (const char *)(uintptr_t)a0;
+            uint32_t pid = (g_current >= 0) ? g_procs[g_current].pid : 0;
+            int result = desktop_app_create(d, pid, title, (int)a1, (int)a2);
+            regs[0] = (uint64_t)(int64_t)result;
+            return;
+        }
+        case SYS_WINDOW_CREATE_EX: { /* 35: create window with options */
+            struct desktop_state *d = desktop_active();
+            if (!d) { regs[0] = (uint64_t)-1; return; }
+            const struct winsys_window_options *opts =
+                (const struct winsys_window_options *)(uintptr_t)a0;
+            if (!opts) { regs[0] = (uint64_t)-1; return; }
+            uint32_t pid = (g_current >= 0) ? g_procs[g_current].pid : 0;
+            int result = desktop_app_create_ex(d, pid, opts);
+            regs[0] = (uint64_t)(int64_t)result;
+            return;
+        }
+        case SYS_WINDOW_PRESENT:    /* 18: present full window */
+        case SYS_WINDOW_PRESENT_RECT: { /* 38: present window rect */
+            struct desktop_state *d = desktop_active();
+            if (!d) { regs[0] = (uint64_t)-1; return; }
+            int win_id = (int)a0;
+            const uint32_t *pixels = (const uint32_t *)(uintptr_t)a1;
+            int w = (int)a2, h = (int)a3;
+            int dx = 0, dy = 0, dw = 0, dh = 0;
+            if (num == SYS_WINDOW_PRESENT_RECT) {
+                dx = (int)((a4 >> 16) & 0xffffu);
+                dy = (int)(a4 & 0xffffu);
+                dw = (int)((a5 >> 16) & 0xffffu);
+                dh = (int)(a5 & 0xffffu);
+            }
+            uint32_t pid = (g_current >= 0) ? g_procs[g_current].pid : 0;
+            int result = desktop_app_present_rect(d, pid, win_id, pixels, w, h,
+                                                   dx, dy, dw, dh);
+            regs[0] = (uint64_t)(int64_t)result;
+            return;
+        }
+        case SYS_DISPLAY_MODE: {    /* 27: get/set display resolution */
+            uint32_t rw = (uint32_t)a0, rh = (uint32_t)a1;
+            if (rw == 0) {
+                regs[0] = (uint64_t)((800u << 16) | 600u);
+            } else {
+                regs[0] = 0; /* resolution change not supported on arm64 */
+            }
+            return;
+        }
+        case SYS_SYSTEM_INFO: {     /* 39: fill system info snapshot */
+            struct system_info_snapshot *out =
+                (struct system_info_snapshot *)(uintptr_t)a0;
+            if (!out) { regs[0] = (uint64_t)-1; return; }
+            out->uptime_ticks = timer_tick_count();
+            out->timer_hz = timer_frequency_hz();
+            out->process_count = process_loaded_count();
+            out->process_max = 16;
+            out->app_window_max = 8;
+            out->cpu_count = 1;
+            out->heap_used_bytes = 0;
+            out->heap_total_bytes = 0;
+            { const char *v = "0.1.0-arm64";
+              for (int vi = 0; vi < 63 && v[vi]; vi++) out->version[vi] = v[vi];
+              out->version[63] = '\0'; }
+            { const char *b = __DATE__ " " __TIME__;
+              for (int bi = 0; bi < 63 && b[bi]; bi++) out->build[bi] = b[bi];
+              out->build[63] = '\0'; }
+            regs[0] = 0;
+            return;
+        }
+        case SYS_TEXT_DRAW: {       /* 40: draw text into a pixel buffer */
+            /* Simplified: no-op for now */
+            regs[0] = 0;
+            return;
+        }
+        case SYS_SET_WALLPAPER: {   /* 36: set wallpaper from pixel buffer */
+            struct desktop_state *d = desktop_active();
+            if (!d) { regs[0] = (uint64_t)-1; return; }
+            /* Simplified: no-op for now — wallpaper is hardcoded */
+            regs[0] = 0;
+            return;
+        }
         default:
             serial_write("[svc] unknown syscall ");
             serial_write_hex_u64(num);
@@ -739,6 +834,10 @@ static void shell_loop(void) {
 }
 
 /* ---- Kernel entry ----------------------------------------------------- */
+
+static struct desktop_state *g_desktop = 0;
+struct desktop_state *desktop_active(void) { return g_desktop; }
+
 void kernel_main_arm64(void) {
     serial_init();
 
@@ -807,17 +906,17 @@ void kernel_main_arm64(void) {
 
     /* Allocate desktop state on the heap (it's large — contains window
      * storage, app slots, icon state, etc.) */
-    struct desktop_state *desktop = (struct desktop_state *)
+    g_desktop = (struct desktop_state *)
         kmalloc(sizeof(struct desktop_state));
-    if (!desktop) { serial_write("  OOM for desktop\r\n"); shell_loop(); return; }
-    memset(desktop, 0, sizeof(struct desktop_state));
+    if (!g_desktop) { serial_write("  OOM for desktop\r\n"); shell_loop(); return; }
+    memset(g_desktop, 0, sizeof(struct desktop_state));
 
     serial_write("[gui] initialising desktop compositor...\r\n");
-    desktop_init(desktop, ramfb_width(), ramfb_height());
+    desktop_init(g_desktop, ramfb_width(), ramfb_height());
 
     serial_write("[gui] entering render loop\r\n");
     for (;;) {
-        desktop_render(desktop, &fb);
+        desktop_render(g_desktop, &fb);
         /* Poll input so the mouse cursor can move */
         virtio_input_poll();
         /* Simple frame pacing: busy-wait ~16ms (~60 FPS) */

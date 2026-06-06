@@ -41,9 +41,9 @@ struct arm64_user_context {
 };
 
 /* ---- Process table ---------------------------------------------------- */
-static struct process g_procs[ARM64_MAX_PROCS];
+struct process g_procs[ARM64_MAX_PROCS];
 static uint32_t      g_next_pid = 1;
-static int           g_current  = -1;   /* index of currently-running process, -1 = kernel */
+int           g_current  = -1;   /* index of currently-running process, -1 = kernel */
 
 /* ---- Helpers ---------------------------------------------------------- */
 static uint64_t slot_va(uint32_t slot) {
@@ -356,6 +356,3 @@ uint32_t process_running_count(void) {
 }
 uint32_t process_sleeping_count(void) { return 0; }
 
-int process_ap_timer(struct interrupt_frame *frame) {
-    (void)frame; return 0;
-}
