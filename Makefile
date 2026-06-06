@@ -123,7 +123,8 @@ ARM64_COMMON_SRCS := \
     kernel/src/ramdisk.c \
     kernel/src/elf.c \
     kernel/src/render.c \
-    kernel/src/font_atlas.c
+    kernel/src/font_atlas.c \
+    kernel/src/window.c
 
 # arm64-specific sources (in kernel/arch/arm64/):
 ARM64_ARCH_SRCS := \
@@ -135,6 +136,7 @@ ARM64_ARCH_SRCS := \
     kernel/arch/arm64/virtio_input.c \
     kernel/arch/arm64/ramfb.c \
     kernel/arch/arm64/process.c \
+    kernel/arch/arm64/stubs.c \
     kernel/arch/arm64/arch.c
 
 ARM64_ASM_SRCS := \
