@@ -2,7 +2,11 @@
 #define VIBEOS_PROCESS_H
 
 #include "fd.h"
+#ifdef ARCH_ARM64
+#include "arch_frame.h"
+#else
 #include "interrupts.h"
+#endif
 #include "syscall.h"
 #include "types.h"
 

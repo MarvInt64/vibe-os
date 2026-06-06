@@ -134,6 +134,7 @@ ARM64_ARCH_SRCS := \
     kernel/arch/arm64/virtio_blk.c \
     kernel/arch/arm64/virtio_input.c \
     kernel/arch/arm64/ramfb.c \
+    kernel/arch/arm64/process.c \
     kernel/arch/arm64/arch.c
 
 ARM64_ASM_SRCS := \

@@ -23,6 +23,7 @@
 #include "../../include/elf.h"
 #include "../../include/syscall.h"   /* shared SYS_* numbers (x86 + arm64) */
 #include "../../include/framebuffer.h"
+#include "../../include/process.h"
 #include "../../include/render.h"
 
 /* ---- Timer tick counter (incremented without GIC) --------------------- */
@@ -63,9 +64,9 @@ void arm64_sync_handler_el1(uint64_t esr, uint64_t elr, uint64_t far,
  * would otherwise corrupt the device function pointers in the next struct. */
 static struct ramdisk_device  g_blk_dev __attribute__((aligned(64)));
 static uint8_t                _pad0[64];
-static struct ext2_filesystem g_fs      __attribute__((aligned(64)));
+struct ext2_filesystem g_fs      __attribute__((aligned(64)));
 static uint8_t                _pad1[64];
-static int   g_fs_ready = 0;
+int   g_fs_ready = 0;
 static char  g_cwd[256] = "/";
 
 /* ---- Minimal open-file table for EL0 syscalls ------------------------- *
@@ -593,6 +594,22 @@ static void cmd_fb(void) {
     serial_write("  rendered via shared kernel/src/render.c — check the display\r\n");
 }
 
+
+/* Spawn a process via the process manager and run it cooperatively. */
+static void cmd_spawn(const char *path) {
+    while (*path == ' ') path++;
+    if (!*path) { serial_write("  usage: spawn <path>\r\n"); return; }
+    int pid = process_spawn_path(path, 0, 0, 0, 0);
+    if (pid <= 0) { serial_write("  spawn failed\r\n"); return; }
+    serial_write("  spawned pid=");
+    { char b[16]; int i=0; uint32_t t=(uint32_t)pid; if(!t)b[i++]='0';
+      else while(t){b[i++]=(char)('0'+t%10);t/=10;}
+      while(i--) serial_write_char(b[i]); }
+    serial_write(" -- running...\r\n");
+    process_run_ready_slice();
+    serial_write("  back in kernel\r\n");
+}
+
 /* Shell command: show or fake mouse state for testing virtio-input. */
 static void cmd_mouse(void) {
     serial_write("  mouse: x="); print_dec(g_mouse_x);
@@ -626,6 +643,7 @@ static void run_command(const char *line) {
     else if (str_eq(line, "fb"))           cmd_fb();
     else if (str_eq(line, "mouse"))        cmd_mouse();
     else if (str_eq(line, "run"))          cmd_run();
+    else if (str_starts(line, "spawn "))   cmd_spawn(line + 6);
     else if (str_starts(line, "exec "))    cmd_exec(line + 5);
     else if (str_eq(line, "pwd"))          { serial_write(g_cwd); serial_write("\r\n"); }
     else if (str_eq(line, "ls"))           cmd_ls(g_cwd);
