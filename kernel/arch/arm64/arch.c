@@ -24,7 +24,9 @@
 #include "../../include/syscall.h"   /* shared SYS_* numbers (x86 + arm64) */
 #include "../../include/framebuffer.h"
 #include "../../include/process.h"
+#include "../../include/string.h"
 #include "../../include/render.h"
+#include "../../include/window.h"
 
 /* ---- Timer tick counter (incremented without GIC) --------------------- */
 static volatile uint64_t g_tick = 0;
@@ -792,5 +794,33 @@ void kernel_main_arm64(void) {
         serial_write("[arm64] GICv2 + timer IRQ enabled (TCG path)\r\n");
     }
 
-    shell_loop();
+    /* ---- Desktop Compositor Test ---- */
+    if (ramfb_init(800, 600) != 0) {
+        serial_write("  ramfb init failed\r\n");
+        shell_loop();
+        return;
+    }
+
+    struct framebuffer fb;
+    fb_init(&fb, (uintptr_t)ramfb_buffer(), ramfb_width(), ramfb_height(),
+            ramfb_stride_px() * 4, 32);
+
+    /* Allocate desktop state on the heap (it's large — contains window
+     * storage, app slots, icon state, etc.) */
+    struct desktop_state *desktop = (struct desktop_state *)
+        kmalloc(sizeof(struct desktop_state));
+    if (!desktop) { serial_write("  OOM for desktop\r\n"); shell_loop(); return; }
+    memset(desktop, 0, sizeof(struct desktop_state));
+
+    serial_write("[gui] initialising desktop compositor...\r\n");
+    desktop_init(desktop, ramfb_width(), ramfb_height());
+
+    serial_write("[gui] entering render loop\r\n");
+    for (;;) {
+        desktop_render(desktop, &fb);
+        /* Poll input so the mouse cursor can move */
+        virtio_input_poll();
+        /* Simple frame pacing: busy-wait ~16ms (~60 FPS) */
+        for (volatile int d = 0; d < 400000; d++) { }
+    }
 }
