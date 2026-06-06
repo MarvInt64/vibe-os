@@ -211,39 +211,40 @@ run-arm64: kernel-arm64
 	  -serial stdio \
 	  -no-reboot
 
-# Build an aarch64 EL0 userspace program and install it on the disk image so
-# `exec /bin/hello-arm64` can load and run it. Linked at VA 0x90000000.
-ARM64_USER_CFLAGS := -target aarch64-none-elf -ffreestanding -fno-pie \
-    -fno-stack-protector -fno-builtin -mstrict-align -O1 -Wall -Wextra
+# Build aarch64 EL0 userspace from the SHARED libc + SHARED app sources, so the
+# exact same C (user/libc/*, user/*.c) runs on both x86_64 and arm64 — only the
+# syscall trampoline (svc vs int 0x80, behind ARCH_ARM64) differs. Linked at
+# VA 0x90000000 (see user/arm64/link.ld).
+ARM64_UCFLAGS := -target aarch64-none-elf -ffreestanding -fno-pie \
+    -fno-stack-protector -fno-builtin -mstrict-align -O1 -std=c11 \
+    -DARCH_ARM64 -Iuser/libc/include -Iuser
+ARM64_UDIR := $(OUT_DIR)/arm64/user
+ARM64_ULIBC_SRCS := sys.c string.c stdlib.c stdio.c
+
+# $(call arm64app,<src>,<diskpath>) — compile one shared C app + link with libc
+define arm64app
+	$(CC) $(ARM64_UCFLAGS) -c $(1) -o $(ARM64_UDIR)/app.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/app.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/app.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/app.elf $(2)
+endef
 
 arm64-user: $(DISK_IMG)
-	@mkdir -p $(OUT_DIR)/arm64/user
-	# --- arm64 libc (crt0 + vlibc) ---
-	$(CC) $(ARM64_USER_CFLAGS) -c user/arm64/libc/crt0.S  -o $(OUT_DIR)/arm64/user/crt0.o
-	$(CC) $(ARM64_USER_CFLAGS) -c user/arm64/libc/vlibc.c -o $(OUT_DIR)/arm64/user/vlibc.o
-	$(UAR) rcs $(OUT_DIR)/arm64/user/libc.a $(OUT_DIR)/arm64/user/vlibc.o
-	# --- freestanding demos (own _start, no libc) ---
-	$(CC) $(ARM64_USER_CFLAGS) -c user/arm64/hello.c -o $(OUT_DIR)/arm64/user/hello.o
-	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld \
-	    -o $(OUT_DIR)/arm64/user/hello.elf $(OUT_DIR)/arm64/user/hello.o
-	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/arm64/user/hello.elf /bin/hello-arm64
-	$(CC) $(ARM64_USER_CFLAGS) -c user/arm64/readfile.c -o $(OUT_DIR)/arm64/user/readfile.o
-	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld \
-	    -o $(OUT_DIR)/arm64/user/readfile.elf $(OUT_DIR)/arm64/user/readfile.o
-	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/arm64/user/readfile.elf /bin/readfile
-	# --- cat: a normal int main(argc, argv) program linked against libc ---
-	$(CC) $(ARM64_USER_CFLAGS) -Iuser/arm64 -c user/arm64/cat.c -o $(OUT_DIR)/arm64/user/cat.o
-	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld \
-	    -o $(OUT_DIR)/arm64/user/cat.elf \
-	    $(OUT_DIR)/arm64/user/crt0.o $(OUT_DIR)/arm64/user/cat.o $(OUT_DIR)/arm64/user/libc.a
-	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/arm64/user/cat.elf /bin/cat
-	# --- writefile: creat + write + read-back, int main(argc,argv) ---
-	$(CC) $(ARM64_USER_CFLAGS) -Iuser/arm64 -c user/arm64/writefile.c -o $(OUT_DIR)/arm64/user/writefile.o
-	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld \
-	    -o $(OUT_DIR)/arm64/user/writefile.elf \
-	    $(OUT_DIR)/arm64/user/crt0.o $(OUT_DIR)/arm64/user/writefile.o $(OUT_DIR)/arm64/user/libc.a
-	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/arm64/user/writefile.elf /bin/writefile
-	@echo "arm64 user programs installed: /bin/hello-arm64 /bin/readfile /bin/cat /bin/writefile"
+	@mkdir -p $(ARM64_UDIR)
+	# --- shared libc (crt0 + sys/string/stdlib/stdio + umalloc) for aarch64 ---
+	$(CC) $(ARM64_UCFLAGS) -c user/libc/crt0.c -o $(ARM64_UDIR)/crt0.o
+	@for s in $(ARM64_ULIBC_SRCS); do \
+	    $(CC) $(ARM64_UCFLAGS) -c user/libc/$$s -o $(ARM64_UDIR)/$${s%.c}.o || exit 1; \
+	done
+	$(CC) $(ARM64_UCFLAGS) -c user/umalloc.c -o $(ARM64_UDIR)/umalloc.o
+	$(CC) $(ARM64_UCFLAGS) -c user/arm64/libc_stubs.c -o $(ARM64_UDIR)/stubs.o
+	$(UAR) rcs $(ARM64_UDIR)/libc.a \
+	    $(ARM64_UDIR)/sys.o $(ARM64_UDIR)/string.o \
+	    $(ARM64_UDIR)/stdlib.o $(ARM64_UDIR)/stdio.o \
+	    $(ARM64_UDIR)/umalloc.o $(ARM64_UDIR)/stubs.o
+	# --- shared apps (same .c files x86 uses) ---
+	$(call arm64app,user/hello.c,/bin/hello)
+	@echo "arm64 user programs (shared sources) installed: /bin/hello"
 
 # ============================================================
 

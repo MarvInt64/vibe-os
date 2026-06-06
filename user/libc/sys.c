@@ -61,6 +61,15 @@ int  vos_spawn_arg(const char *path, const char *arg) { return (int)__sc2(SYS_PR
  * already-exited fast path and the blocking wake path), so capture rdx —
  * the generic __scN helpers only return rax. */
 int  vos_waitpid(int pid) {
+#ifdef ARCH_ARM64
+    /* aarch64: x8=num, x0=pid; kernel returns child pid in x0, exit code in x1. */
+    register long x8 __asm__("x8") = SYS_WAITPID;
+    register long x0 __asm__("x0") = pid;
+    register long x1 __asm__("x1");
+    __asm__ volatile("svc #0" : "+r"(x0), "=r"(x1) : "r"(x8) : "memory");
+    (void)x0;
+    return (int)x1;           /* exit code */
+#else
     long rax, rdx;
     __asm__ volatile("int $0x80"
         : "=a"(rax), "=d"(rdx)
@@ -68,6 +77,7 @@ int  vos_waitpid(int pid) {
         : "rcx", "r11", "memory");
     (void)rax;                /* rax = reaped child pid */
     return (int)rdx;          /* rdx = child exit code */
+#endif
 }
 int  vos_pty_open(void) { return (int)__sc1(SYS_PTY_OPEN, 0); }
 int  vos_spawn_pty(const char *path, int master_fd) { return (int)__sc2(SYS_SPAWN_PTY, (uint64_t)(size_t)path, (uint64_t)master_fd); }
@@ -232,8 +242,19 @@ time_t time(time_t *tloc) {
 }
 
 int readdir_at(const char *path, int idx, char *name_out, int cap, int *type_out) {
-    /* rdi=path, rsi=index, rdx=name_buf, r10=capacity → rax=result, rdx=kind */
     long ret, kind;
+#ifdef ARCH_ARM64
+    /* x8=num, x0=path,x1=idx,x2=name_buf,x3=cap → x0=result, x1=kind */
+    register long x8 __asm__("x8") = SYS_READDIR;
+    register long x0 __asm__("x0") = (long)path;
+    register long x1 __asm__("x1") = (long)idx;
+    register long x2 __asm__("x2") = (long)name_out;
+    register long x3 __asm__("x3") = (long)cap;
+    __asm__ volatile("svc #0" : "+r"(x0), "+r"(x1)
+                     : "r"(x8), "r"(x2), "r"(x3) : "memory");
+    ret = x0; kind = x1;
+#else
+    /* rdi=path, rsi=index, rdx=name_buf, r10=capacity → rax=result, rdx=kind */
     register long r10 __asm__("r10") = (long)cap;
     __asm__ volatile(
         "int $0x80"
@@ -242,6 +263,7 @@ int readdir_at(const char *path, int idx, char *name_out, int cap, int *type_out
           "S"((long)idx), "d"((long)name_out), "r"(r10)
         : "rcx", "r11", "r8", "memory"
     );
+#endif
     if (ret <= 0) return (int)ret;
     if (type_out) *type_out = (kind == 2) ? 2 : 1;
     return 1;
@@ -254,6 +276,18 @@ int stat(const char *path, struct stat *s) {
      *   rdx = vfs kind (1 = file, 2 = dir)
      *   r8  = byte size
      *   r9  = packed permission data: bits 0-15 = mode, 16-31 = uid, 32-47 = gid */
+#ifdef ARCH_ARM64
+    /* x8=num, x0=path → x0=result, x1=kind, x2=size, x3=perm-packed */
+    register long x8 __asm__("x8") = SYS_STAT;
+    register long x0 __asm__("x0") = (long)path;
+    register long x1 __asm__("x1");
+    register long x2 __asm__("x2");
+    register long x3 __asm__("x3");
+    __asm__ volatile("svc #0" : "+r"(x0), "=r"(x1), "=r"(x2), "=r"(x3)
+                     : "r"(x8) : "memory");
+    ret = x0; kind = x1;
+    long sz = x2, r9 = x3;
+#else
     register long sz  __asm__("r8") = 0;
     register long r9  __asm__("r9") = 0;
     __asm__ volatile(
@@ -262,6 +296,7 @@ int stat(const char *path, struct stat *s) {
         : "a"((long)SYS_STAT), "D"((long)path)
         : "rcx", "r11", "memory"
     );
+#endif
     if (ret < 0) return (int)ck(ret);
     if (s) {
         s->st_size = (off_t)sz;

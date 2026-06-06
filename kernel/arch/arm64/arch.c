@@ -21,6 +21,7 @@
 #include "../../include/ramdisk.h"
 #include "../../include/ext2_fs.h"
 #include "../../include/elf.h"
+#include "../../include/syscall.h"   /* shared SYS_* numbers (x86 + arm64) */
 
 /* ---- Timer tick counter (incremented without GIC) --------------------- */
 static volatile uint64_t g_tick = 0;
@@ -78,6 +79,10 @@ struct arm64_file {
 };
 static struct arm64_file g_files[ARM64_MAX_FD];
 
+/* Argument string for the currently-exec'd program (SYS_GETARG returns it).
+ * crt0.c reads this and splits it into argv — same mechanism as x86. */
+static char g_spawn_arg[512];
+
 /* EL0 exception frame, as laid out by SAVE_REGS in exceptions.S:
  * regs[0..30] = x0..x30, regs[31]=sp_el0, regs[32]=elr_el1, regs[33]=spsr. */
 extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
@@ -101,8 +106,10 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         uint64_t a1  = regs[1];
         uint64_t a2  = regs[2];
 
+        /* Shared SYS_* numbers (kernel/include/syscall.h), same ABI as x86 so
+         * the common libc + apps work unmodified across arches. */
         switch (num) {
-        case 1: {               /* write(fd, buf, len) — fd>2 to a file, else UART */
+        case SYS_WRITE: {       /* 1: write(fd, buf, len) */
             const char *buf = (const char *)(uintptr_t)a1;
             if (a0 <= 2) {      /* stdout/stderr → UART */
                 for (uint64_t i = 0; i < a2; i++)
@@ -113,29 +120,10 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 ssize_t w = ext2_write(&g_fs, f->ino, f->offset, a2, buf);
                 if (w > 0) { f->offset += (uint32_t)w; regs[0] = (uint64_t)w; }
                 else regs[0] = (uint64_t)-1;
-            } else {
-                regs[0] = (uint64_t)-1;
-            }
+            } else regs[0] = (uint64_t)-1;
             return;
         }
-        case 2: {               /* open(path) → fd (read-only) */
-            if (!g_fs_ready) { regs[0] = (uint64_t)-1; return; }
-            char path[256];
-            copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
-            uint32_t ino = ext2_lookup_inode(&g_fs, path);
-            if (!ino) { regs[0] = (uint64_t)-1; return; }
-            int fd = -1;
-            for (int i = 3; i < ARM64_MAX_FD; i++)
-                if (!g_files[i].used) { fd = i; break; }
-            if (fd < 0) { regs[0] = (uint64_t)-1; return; }
-            g_files[fd].used   = 1;
-            g_files[fd].ino    = ino;
-            g_files[fd].offset = 0;
-            g_files[fd].size   = g_fs.inode_table[ino - 1].size;
-            regs[0] = (uint64_t)fd;
-            return;
-        }
-        case 3: {               /* read(fd, buf, len) → bytes */
+        case SYS_READ: {        /* 0: read(fd, buf, len) */
             if (a0 < 3 || a0 >= ARM64_MAX_FD || !g_files[a0].used) {
                 regs[0] = (uint64_t)-1; return;
             }
@@ -149,12 +137,23 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             else regs[0] = (uint64_t)-1;
             return;
         }
-        case 5:                 /* close(fd) */
-            if (a0 >= 3 && a0 < ARM64_MAX_FD && g_files[a0].used)
-                g_files[a0].used = 0;
-            regs[0] = 0;
+        case SYS_OPEN: {        /* 7: open(path) → fd (read-only) */
+            if (!g_fs_ready) { regs[0] = (uint64_t)-1; return; }
+            char path[256];
+            copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
+            uint32_t ino = ext2_lookup_inode(&g_fs, path);
+            if (!ino) { regs[0] = (uint64_t)-1; return; }
+            int fd = -1;
+            for (int i = 3; i < ARM64_MAX_FD; i++)
+                if (!g_files[i].used) { fd = i; break; }
+            if (fd < 0) { regs[0] = (uint64_t)-1; return; }
+            g_files[fd].used   = 1; g_files[fd].writable = 0;
+            g_files[fd].ino    = ino; g_files[fd].offset = 0;
+            g_files[fd].size   = g_fs.inode_table[ino - 1].size;
+            regs[0] = (uint64_t)fd;
             return;
-        case 6: {               /* creat(path) → fd (create + open for writing) */
+        }
+        case SYS_CREAT: {       /* 14: creat(path) → writable fd */
             if (!g_fs_ready) { regs[0] = (uint64_t)-1; return; }
             char path[256];
             copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
@@ -165,15 +164,27 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             for (int i = 3; i < ARM64_MAX_FD; i++)
                 if (!g_files[i].used) { fd = i; break; }
             if (fd < 0) { regs[0] = (uint64_t)-1; return; }
-            g_files[fd].used     = 1;
-            g_files[fd].writable = 1;
-            g_files[fd].ino      = ino;
-            g_files[fd].offset   = 0;
-            g_files[fd].size     = g_fs.inode_table[ino - 1].size;
+            g_files[fd].used = 1; g_files[fd].writable = 1;
+            g_files[fd].ino  = ino; g_files[fd].offset = 0;
+            g_files[fd].size = g_fs.inode_table[ino - 1].size;
             regs[0] = (uint64_t)fd;
             return;
         }
-        case 4:                 /* exit(code) — longjmp back into the kernel */
+        case SYS_CLOSE:         /* 8 */
+            if (a0 >= 3 && a0 < ARM64_MAX_FD && g_files[a0].used)
+                g_files[a0].used = 0;
+            regs[0] = 0;
+            return;
+        case SYS_GETARG: {      /* 15: getarg(buf, cap) → len; crt0 splits argv */
+            char *ubuf = (char *)(uintptr_t)a0;
+            uint64_t cap = a1;
+            uint64_t i = 0;
+            for (; i + 1 < cap && g_spawn_arg[i]; i++) ubuf[i] = g_spawn_arg[i];
+            if (cap) ubuf[i] = '\0';
+            regs[0] = i;
+            return;
+        }
+        case SYS_EXIT:          /* 4: longjmp back into the kernel */
             arm64_return_to_kernel(a0);
             /* not reached */
         default:
@@ -466,6 +477,15 @@ static void cmd_exec(const char *cmdline) {
     path[pi] = '\0';
     if (path[0] == '\0') { serial_write("  usage: exec <path> [args]\r\n"); return; }
 
+    /* Everything after the path becomes the argument string that SYS_GETARG
+     * returns; the common crt0.c splits it into argv (argv[0]="app"). */
+    while (*p == ' ') p++;
+    {
+        size_t i = 0;
+        for (; i + 1 < sizeof(g_spawn_arg) && p[i]; i++) g_spawn_arg[i] = p[i];
+        g_spawn_arg[i] = '\0';
+    }
+
     uint32_t ino = ext2_lookup_inode(&g_fs, path);
     if (!ino) { serial_write("  not found: "); serial_write(path); serial_write("\r\n"); return; }
 
@@ -506,39 +526,15 @@ static void cmd_exec(const char *cmdline) {
     /* Make the just-written instructions visible to the I-cache */
     __asm__ volatile("dsb ish; ic ialluis; dsb ish; isb" ::: "memory");
 
-    /* ---- Build argv in the staging area (kernel writes via PA = VA-ALIAS) -- */
-    uint64_t *argv_arr = (uint64_t *)(uintptr_t)(ARGV_VA - ALIAS_OFF); /* PA */
-    char     *str_pa   = (char *)(uintptr_t)(ARGV_VA - ALIAS_OFF + 8 * 16);
-    uint64_t  str_va   = ARGV_VA + 8 * 16;   /* string area starts after 16 ptrs */
-    int argc = 0;
-
-    /* Re-tokenise the whole cmdline; each token becomes an argv entry. */
-    {
-        const char *q = cmdline;
-        while (*q && argc < 15) {
-            while (*q == ' ') q++;
-            if (!*q) break;
-            argv_arr[argc] = str_va;          /* EL0 VA of this string */
-            while (*q && *q != ' ') {
-                *str_pa++ = *q++;
-                str_va++;
-            }
-            *str_pa++ = '\0'; str_va++;
-            argc++;
-        }
-        argv_arr[argc] = 0;                    /* NULL terminator */
-    }
-
-    /* User stack top: VA 0x91000000 (PA 0x51000000), above argv staging. */
+    /* User stack top: VA 0x91000000 (PA 0x51000000). Args are delivered via
+     * SYS_GETARG (g_spawn_arg), which crt0.c splits into argv — same as x86. */
     uint64_t user_sp = (USER_VA_BASE + 0x01000000ULL) & ~0xFULL;
 
     serial_write("[exec] "); serial_write(path);
     serial_write(" entry="); serial_write_hex_u64(eh->entry);
-    serial_write(" argc="); print_dec((uint64_t)argc);
     serial_write("\r\n");
 
-    uint64_t rc = arm64_enter_user(eh->entry, user_sp,
-                                   (uint64_t)argc, ARGV_VA);
+    uint64_t rc = arm64_enter_user(eh->entry, user_sp, 0, 0);
 
     serial_write("[exec] exit code = "); serial_write_hex_u64(rc); serial_write("\r\n");
     kfree(buf);

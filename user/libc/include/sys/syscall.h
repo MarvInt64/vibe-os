@@ -81,6 +81,49 @@ enum {
     SYS_CPU_INFO      = 64
 };
 
+#ifdef ARCH_ARM64
+/* ---- aarch64 trampolines ---------------------------------------------- *
+ * Same syscall numbers and argument order as x86_64, so all libc and app code
+ * is identical across arches — only this thin asm layer differs. AArch64 Linux
+ * convention: x8 = number, x0..x5 = args, return value in x0, `svc #0` traps. */
+static inline long __sc0(long n) {
+    register long x8 __asm__("x8") = n; register long x0 __asm__("x0");
+    __asm__ volatile("svc #0":"=r"(x0):"r"(x8):"memory"); return x0;
+}
+static inline long __sc1(long n, uint64_t a0) {
+    register long x8 __asm__("x8")=n; register long x0 __asm__("x0")=(long)a0;
+    __asm__ volatile("svc #0":"+r"(x0):"r"(x8):"memory"); return x0;
+}
+static inline long __sc2(long n, uint64_t a0, uint64_t a1) {
+    register long x8 __asm__("x8")=n; register long x0 __asm__("x0")=(long)a0;
+    register long x1 __asm__("x1")=(long)a1;
+    __asm__ volatile("svc #0":"+r"(x0):"r"(x8),"r"(x1):"memory"); return x0;
+}
+static inline long __sc3(long n, uint64_t a0, uint64_t a1, uint64_t a2) {
+    register long x8 __asm__("x8")=n; register long x0 __asm__("x0")=(long)a0;
+    register long x1 __asm__("x1")=(long)a1; register long x2 __asm__("x2")=(long)a2;
+    __asm__ volatile("svc #0":"+r"(x0):"r"(x8),"r"(x1),"r"(x2):"memory"); return x0;
+}
+static inline long __sc4(long n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
+    register long x8 __asm__("x8")=n; register long x0 __asm__("x0")=(long)a0;
+    register long x1 __asm__("x1")=(long)a1; register long x2 __asm__("x2")=(long)a2;
+    register long x3 __asm__("x3")=(long)a3;
+    __asm__ volatile("svc #0":"+r"(x0):"r"(x8),"r"(x1),"r"(x2),"r"(x3):"memory"); return x0;
+}
+static inline long __sc5(long n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4) {
+    register long x8 __asm__("x8")=n; register long x0 __asm__("x0")=(long)a0;
+    register long x1 __asm__("x1")=(long)a1; register long x2 __asm__("x2")=(long)a2;
+    register long x3 __asm__("x3")=(long)a3; register long x4 __asm__("x4")=(long)a4;
+    __asm__ volatile("svc #0":"+r"(x0):"r"(x8),"r"(x1),"r"(x2),"r"(x3),"r"(x4):"memory"); return x0;
+}
+static inline long __sc6(long n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
+    register long x8 __asm__("x8")=n; register long x0 __asm__("x0")=(long)a0;
+    register long x1 __asm__("x1")=(long)a1; register long x2 __asm__("x2")=(long)a2;
+    register long x3 __asm__("x3")=(long)a3; register long x4 __asm__("x4")=(long)a4;
+    register long x5 __asm__("x5")=(long)a5;
+    __asm__ volatile("svc #0":"+r"(x0):"r"(x8),"r"(x1),"r"(x2),"r"(x3),"r"(x4),"r"(x5):"memory"); return x0;
+}
+#else
 /* Unused argument registers are explicitly zeroed: the kernel inspects rdi/rsi/
  * rdx for several syscalls (e.g. SYS_PROCESS_SPAWN reads rsi as an optional arg
  * pointer), so a stale caller value left in an unset arg register would be
@@ -109,5 +152,6 @@ static inline long __sc6(long n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t
     long r; register uint64_t r10 __asm__("r10") = a3; register uint64_t r8 __asm__("r8") = a4; register uint64_t r9 __asm__("r9") = a5;
     __asm__ volatile("int $0x80":"=a"(r):"a"(n),"D"(a0),"S"(a1),"d"(a2),"r"(r10),"r"(r8),"r"(r9):"rcx","r11","memory"); return r;
 }
+#endif /* ARCH_ARM64 */
 
-#endif
+#endif /* VIBEOS_SYS_SYSCALL_H */
