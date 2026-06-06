@@ -257,20 +257,6 @@ void audio_tick(void) {
     /* TEMP: every ~1s dump DMA underruns + each active voice's ring fill level
      * (in ms of buffered audio) to see whether the stutter is DMA-feed or
      * voice-production (doom not keeping the ring full). */
-    static uint32_t s_dbg = 0;
-    if ((++s_dbg % 100u) == 0) {
-        serial_write("AUDIO dbg: underruns=");
-        serial_write_hex_u64(g_underruns);
-        for (int vv = 0; vv < AUDIO_VOICES; vv++) {
-            if (g_voices[vv].pid == 0) continue;
-            uint32_t avail = voice_available(&g_voices[vv]);
-            /* bytes / (48000*4) * 1000 = ms; 192 bytes per ms */
-            serial_write(" v"); serial_write_hex_u64(g_voices[vv].pid);
-            serial_write("="); serial_write_hex_u64(avail / 192u);
-            serial_write("ms");
-        }
-        serial_write("\n");
-    }
 
     uint8_t  civ = bm_read8(AC97_BM_PCM_OUT_CIV);
     uint16_t sr  = bm_read16(AC97_BM_PCM_OUT_SR);

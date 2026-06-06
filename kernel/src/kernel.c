@@ -531,6 +531,9 @@ void kernel_main(uint32_t boot_magic, uintptr_t mbi_addr) {
 
         if (!window_manager_active) {
             (void)tty_handle_keyboard(&g_cli_tty, &keyboard);
+            /* Also feed serial port input into the CLI TTY so the shell
+             * is interactive over `make run-serial` (-serial stdio). */
+            (void)tty_handle_serial_input(&g_cli_tty);
             run_result = process_run_ready_slice();
             ++vga_blink_counter;
             /* Toggle the cursor every ~30 main-loop iterations (~0.4 s) so the

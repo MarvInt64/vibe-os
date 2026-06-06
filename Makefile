@@ -96,7 +96,7 @@ $(BEARSSL_LIB): $(BEARSSL_OBJS)
 
 bearssl: $(BEARSSL_LIB)
 
-.PHONY: all kernel iso run run-debug run-serial clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version
+.PHONY: all kernel iso run run-debug run-serial clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src seed-headers
 
 bump-version:
 	@./scripts/bump_version.sh
@@ -543,13 +543,56 @@ tcc: $(DISK_IMG) $(LIBC_A)
 	cp build/user/crti.o build/user/crtn.o
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/crti.o /lib/crti.o
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/crtn.o /lib/crtn.o
-	# TCC runtime library (__va_arg, __divdi3, alloca, etc.)
-	$(UCC) $(UCFLAGS) -c third_party/tcc/lib/libtcc1.c -o build/user/libtcc1.o
-	$(UAR) rcs build/user/libtcc1.a build/user/libtcc1.o
+	# TCC runtime library. The x86_64 libtcc1.a is built from the full object
+	# set tcc's own lib/Makefile uses (OBJ-x86_64): libtcc1 + COMMON_O + va_list
+	# + dsohandle. va_list.o supplies __va_arg, which tcc-compiled code (e.g. tcc
+	# itself) references — without it, linking a self-hosted tcc fails.
+	$(UCC) $(UCFLAGS) -Ithird_party/tcc -c third_party/tcc/lib/libtcc1.c   -o build/user/libtcc1.o
+	$(UCC) $(UCFLAGS) -Ithird_party/tcc -c third_party/tcc/lib/va_list.c   -o build/user/lt1_va_list.o
+	$(UCC) $(UCFLAGS) -Ithird_party/tcc -c third_party/tcc/lib/builtin.c   -o build/user/lt1_builtin.o
+	$(UCC) $(UCFLAGS) -Ithird_party/tcc -c third_party/tcc/lib/alloca.S    -o build/user/lt1_alloca.o
+	$(UCC) $(UCFLAGS) -Ithird_party/tcc -c third_party/tcc/lib/alloca-bt.S -o build/user/lt1_alloca_bt.o
+	$(UCC) $(UCFLAGS) -Ithird_party/tcc -c third_party/tcc/lib/stdatomic.c -o build/user/lt1_stdatomic.o
+	$(UCC) $(UCFLAGS) -Ithird_party/tcc -c third_party/tcc/lib/atomic.S    -o build/user/lt1_atomic.o
+	$(UCC) $(UCFLAGS) -Ithird_party/tcc -c third_party/tcc/lib/dsohandle.c -o build/user/lt1_dsohandle.o
+	$(UAR) rcs build/user/libtcc1.a build/user/libtcc1.o build/user/lt1_va_list.o \
+		build/user/lt1_builtin.o build/user/lt1_alloca.o build/user/lt1_alloca_bt.o \
+		build/user/lt1_stdatomic.o build/user/lt1_atomic.o build/user/lt1_dsohandle.o
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/libtcc1.a /lib/tcc/libtcc1.a
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/libc.a /lib/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) third_party/tcc/include/tccdefs.h /usr/include/tccdefs.h
+	# tcc's own freestanding headers (stdarg.h, stddef.h, ...) belong in
+	# {CONFIG_TCCDIR}/include = /lib/tcc/include, which tcc searches FIRST. These
+	# are the versions matched to tcc's codegen — essential for self-hosting,
+	# where tcc must compile its own source with its own stdarg/stddef.
+	@for f in third_party/tcc/include/*.h; do \
+	    b=$$(basename $$f); \
+	    python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/lib/tcc/include/$$b" ; \
+	done
 	@echo "tcc installed to $(DISK_IMG)."
+
+# ---- tcc-src: seed tcc's own source tree onto the disk for self-hosting -----
+# Puts every tcc .c/.h/.def plus the generated tccdefs_.h under /src/tcc so the
+# on-device tcc can compile tcc itself. Run with QEMU stopped. The x86_64
+# ONE_SOURCE build only #includes a subset, but seeding all sources keeps the
+# include resolution simple and the disk has ample room.
+tcc-src: $(DISK_IMG)
+	# Ensure the generated predefs header exists (mirrors the `tcc:` recipe).
+	cd third_party/tcc && clang -DC2STR conftest.c -o c2str && ./c2str include/tccdefs.h tccdefs_.h
+	@for f in third_party/tcc/*.c third_party/tcc/*.h third_party/tcc/*.def; do \
+	    b=$$(basename $$f); \
+	    python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/src/tcc/$$b" ; \
+	done
+	@for f in third_party/tcc/include/*.h; do \
+	    b=$$(basename $$f); \
+	    python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/src/tcc/include/$$b" ; \
+	done
+	# A trivial program to validate a freshly self-hosted tcc.
+	printf '#include <stdio.h>\nint main(void){ printf("self-hosted tcc works\\n"); return 0; }\n' > /tmp/_shtest.c
+	python3 scripts/ext2_put.py $(DISK_IMG) /tmp/_shtest.c /src/shtest.c
+	python3 scripts/ext2_fsck.py $(DISK_IMG)
+	@echo "tcc sources seeded to /src/tcc. On VibeOS, compile a single TU with:"
+	@echo "  tcc -c -DONE_SOURCE=0 -DCONFIG_TCC_PREDEFS=0 -I/src/tcc -I/usr/include /src/tcc/tccpp.c -o /tmp/tccpp.o"
 
 # ---- seed-headers: copy libc headers to the disk image /usr/include/ ----
 seed-headers: $(DISK_IMG)
@@ -560,3 +603,41 @@ seed-headers: $(DISK_IMG)
 		python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/usr/include/sys/$$(basename $$f)" ; \
 	done
 	@echo "Headers seeded to /usr/include/"
+
+# ---- tcc-tests: seed TCC test .c files to /tests/ on the disk image ---------
+tcc-tests: $(DISK_IMG)
+	@mkdir -p $(OUT_DIR)/user
+	# Seed all test source files so TCC can compile them inside VibeOS.
+	@for f in user/tests/*.c; do \
+		python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/tests/$$(basename $$f)" ; \
+	done
+	@echo "TCC test sources seeded to /tests/"
+
+# ---- tcc-test-all: build test_all.elf with the cross-compiler for direct use ----
+tcc-test-all: $(DISK_IMG) $(LIBC_A)
+	@mkdir -p $(OUT_DIR)/user
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/tests/test_all.c -o $(OUT_DIR)/user/test_all.o
+	$(LD) -nostdlib -static -T user/linker.ld -o $(OUT_DIR)/user/test_all.elf \
+		$(LIBC_CRT0) $(OUT_DIR)/user/test_all.o $(LIBC_A)
+	$(USTRIP) --strip-all $(OUT_DIR)/user/test_all.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/user/test_all.elf /bin/test_all
+	@echo "test_all installed to /bin/test_all"
+
+# ---- tcc-vexui: build vexui.o + test_vexui for TCC-based VexUI programs -----
+# Seeds vexui.o onto the disk so TCC can link against it inside VibeOS.
+UXCFLAGS := $(UCFLAGS) $(LIBC_INC) -Ilib/svg -Wno-unused-parameter -Wno-sign-compare
+tcc-vexui: $(DISK_IMG)
+	@mkdir -p $(OUT_DIR)/user
+	$(UCC) $(UXCFLAGS) -c user/vexui.c -o $(OUT_DIR)/user/vexui.o
+	# Also build svg.o (needed by vexui for icons)
+	$(UCC) $(UXCFLAGS) -c lib/svg/svg.c -o $(OUT_DIR)/user/svg.o
+	# Seed vexui.o + svg.o so TCC can link: tcc prog.c vexui.o svg.o libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/user/vexui.o /lib/vexui.o
+	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/user/svg.o /lib/svg.o
+	# Seed vexui.h so programs can #include <vexui.h>
+	python3 scripts/ext2_put.py $(DISK_IMG) user/vexui.h /usr/include/vexui.h
+	# Seed test_vexui.c
+	python3 scripts/ext2_put.py $(DISK_IMG) user/tests/test_vexui.c /tests/test_vexui.c
+	@echo "VexUI .o + header seeded. Compile inside VibeOS:"
+	@echo "  tcc /tests/test_vexui.c /lib/vexui.o /lib/svg.o /lib/libc.a -o /tmp/tv"
+	@echo "  /tmp/tv"

@@ -36,14 +36,103 @@ extern "C" {
 #define FP_SUBNORMAL 3
 #define FP_NORMAL    4
 
-/* ---- Simple operations (inline via compiler builtins) ------------------ */
+/* ---- Simple operations ------------------------------------------------- */
+#ifdef __TINYC__
+static __inline__ double fabs(double x)   { return x < 0.0 ? -x : x; }
+static __inline__ float  fabsf(float x)   { return x < 0.0f ? -x : x; }
+static __inline__ double fmin(double a, double b) { return a < b ? a : b; }
+static __inline__ double fmax(double a, double b) { return a > b ? a : b; }
+#else
 static __inline__ double fabs(double x)   { return __builtin_fabs(x);   }
 static __inline__ float  fabsf(float x)   { return __builtin_fabsf(x);  }
-
 static __inline__ double fmin(double a, double b) { return __builtin_fmin(a,b); }
 static __inline__ double fmax(double a, double b) { return __builtin_fmax(a,b); }
+#endif
 
-/* ---- Rounding (SSE4.1 roundsd instruction) ----------------------------- */
+/* ---- Rounding ---------------------------------------------------------- */
+/*
+ * SSE4.1 roundsd/roundss give the fastest path when available (clang).
+ * TCC doesn't support SSE constraints ("x"), so we use x87 or pure C.
+ */
+#ifdef __TINYC__
+
+/*
+ * TCC does not support SSE ("x") or x87 ("t"/"u") constraints in inline asm.
+ * All functions below are pure C — correct but slower than the SSE4.1 path.
+ */
+
+static __inline__ double floor(double x) {
+    long long ix = (long long)x;
+    if (x >= 0.0 || (double)ix == x) return (double)ix;
+    return (double)(ix - 1);
+}
+static __inline__ float floorf(float x) { return (float)floor((double)x); }
+
+static __inline__ double ceil(double x) {
+    long long ix = (long long)x;
+    if (x <= 0.0 || (double)ix == x) return (double)ix;
+    return (double)(ix + 1);
+}
+
+static __inline__ double trunc(double x) {
+    return (double)(long long)x;
+}
+
+static __inline__ double round(double x) {
+    if (x >= 0.0) return floor(x + 0.5);
+    return ceil(x - 0.5);
+}
+
+/*
+ * sqrt via Newton's method — converges quickly (quadratic).
+ * For x <= 0: returns 0 (caller should check domain).
+ */
+static __inline__ double sqrt(double x) {
+    if (x <= 0.0) return 0.0;
+    double r = x, last;
+    do { last = r; r = 0.5 * (r + x / r); } while (r != last);
+    return r;
+}
+static __inline__ float sqrtf(float x) { return (float)sqrt((double)x); }
+
+/*
+ * fmod: x - trunc(x/y) * y
+ * Use integer truncation via long long cast.
+ */
+static __inline__ double fmod(double x, double y) {
+    if (y == 0.0) return 0.0;
+    double q = (double)(long long)(x / y);
+    return x - q * y;
+}
+
+/*
+ * scalbn: x * 2^n via bit-level exponent manipulation.
+ * Avoids the slow multiply-in-a-loop approach.
+ */
+static __inline__ double scalbn(double x, int n) {
+    /* IEEE 754 double: 1 sign, 11 exponent, 52 mantissa */
+    union { double d; unsigned long long u; } u;
+    u.d = x;
+    int exp = (int)((u.u >> 52) & 0x7FFuLL);
+    /* Subnormal or zero: multiply in a loop as a simple fallback. */
+    if (exp == 0) {
+        double r = x;
+        if (n > 0) while (n-- > 0) r *= 2.0;
+        else       while (n++ < 0) r *= 0.5;
+        return r;
+    }
+    exp += n;
+    if (exp <= 0) return 0.0;  /* underflow */
+    if (exp >= 0x7FF) {        /* overflow to inf */
+        u.u = (u.u & 0x8000000000000000uLL) | 0x7FF0000000000000uLL;
+        return u.d;
+    }
+    u.u = (u.u & 0x800FFFFFFFFFFFFFuLL) | ((unsigned long long)exp << 52);
+    return u.d;
+}
+
+#else /* clang — SSE4.1 + x87 */
+
 static __inline__ double floor(double x) {
     double r;
     __asm__("roundsd $1, %1, %0" : "=x"(r) : "xm"(x));
@@ -65,12 +154,19 @@ static __inline__ double trunc(double x) {
     return r;
 }
 static __inline__ double round(double x) {
+    /*
+     * Use floor(x + 0.5) for x >= 0 and ceil(x - 0.5) for x < 0.
+     * This implements "round half away from zero" (C99 §7.12.9.6).
+     * SSE4.1 roundsd $0 is banker's rounding (round ties to even),
+     * which gives the wrong answer for .5 (e.g. round(2.5) == 2).
+     */
     double r;
-    __asm__("roundsd $0, %1, %0" : "=x"(r) : "xm"(x));
+    if (x >= 0.0)
+        __asm__("roundsd $1, %1, %0" : "=x"(r) : "xm"(x + 0.5));  /* floor */
+    else
+        __asm__("roundsd $2, %1, %0" : "=x"(r) : "xm"(x - 0.5));  /* ceil  */
     return r;
 }
-static __inline__ long   lround(double x)    { return (long)round(x); }
-static __inline__ long long llround(double x) { return (long long)round(x); }
 
 /* ---- Square root (SSE2) ----------------------------------------------- */
 static __inline__ double sqrt(double x) {
@@ -97,6 +193,11 @@ static __inline__ double fmod(double x, double y) {
     );
     return r;
 }
+
+#endif /* __TINYC__ */
+
+static __inline__ long   lround(double x)    { return (long)round(x); }
+static __inline__ long long llround(double x) { return (long long)round(x); }
 
 /* ---- Transcendentals: declared here, implemented in math.S (x87) ------ */
 double sin(double x);
@@ -134,12 +235,14 @@ float  logf(float x);
 static __inline__ double copysign(double x, double y) {
     return __builtin_copysign(x, y);
 }
+#ifndef __TINYC__
 static __inline__ double scalbn(double x, int n) {
     /* x * 2^n via ldexp */
     double r = x;
     __asm__("fildl %1\n\t fscale\n\t fstp %%st(1)" : "+t"(r) : "m"(n));
     return r;
 }
+#endif
 static __inline__ double ldexp(double x, int exp) { return scalbn(x, exp); }
 static __inline__ long double ldexpl(long double x, int exp) { return (long double)ldexp((double)x, exp); }
 static __inline__ double nearbyint(double x) { return round(x); }

@@ -555,7 +555,6 @@ static ssize_t tty_fd_write(void *object, const void *buffer, size_t count) {
  }
  }
 
- serial_write("TTY_FD_WRITE: done\n");
 
  return (ssize_t)count;
 }
@@ -708,6 +707,107 @@ int tty_handle_keyboard(struct tty *tty, const struct keyboard_state *keyboard) 
  }
 
  return dirty;
+}
+
+/*
+ * Feed bytes from the serial port (COM1) into the TTY as if they came from
+ * a keyboard.  Each byte is echoed back to serial so the remote terminal
+ * can see what is being typed.  Handles backspace (0x7F/0x08), CR→LF
+ * conversion, and Ctrl+C (0x03) for job control.
+ *
+ * Processes ALL available serial bytes in a tight loop — no 1-byte-per-tick
+ * limitation.  Returns 1 if the TTY was modified (caller should re-render
+ * the VGA screen), 0 otherwise.
+ */
+int tty_handle_serial_input(struct tty *tty) {
+    int dirty = 0;
+    int max_per_call = 64;  /* safety cap — avoid infinite loop on flood */
+
+    while (max_per_call-- > 0 && serial_can_read()) {
+        char c = serial_read_byte();
+
+        /* Ctrl+C — deliver SIGINT to the foreground process group. */
+        if (c == 0x03) {
+            process_interrupt_terminal(tty);
+            serial_write_char('^');
+            serial_write_char('C');
+            serial_write_char('\r');
+            serial_write_char('\n');
+            continue;
+        }
+
+        /* Raw input mode or ANSI screen mode: deliver bytes immediately. */
+        if (tty->ansi_mode || tty->raw_input_mode) {
+            /* Echo raw bytes so the remote terminal can see its own input. */
+            if (c == '\r') {
+                serial_write_char('\r');
+                serial_write_char('\n');
+            } else if (c == 0x7f || c == '\b') {
+                serial_write_char('\b');
+                serial_write_char(' ');
+                serial_write_char('\b');
+            } else if (c >= 0x20 || c == '\t' || c == '\n') {
+                serial_write_char(c);
+            }
+
+            /* Queue the byte for the reader (e.g. a line editor in raw mode). */
+            tty_queue_raw_input(tty, &c, 1);
+            process_wake_tty_reader(tty);
+            dirty = 1;
+            continue;
+        }
+
+        /* ── Cooked (line-buffered) mode ──────────────────────────── */
+
+        /* Backspace: remove last character from the input buffer. */
+        if (c == 0x7f || c == '\b') {
+            if (tty->input_length > 0) {
+                --tty->input_length;
+                tty->input[tty->input_length] = '\0';
+                /* Erase on the remote terminal: \b space \b */
+                serial_write_char('\b');
+                serial_write_char(' ');
+                serial_write_char('\b');
+                dirty = 1;
+            }
+            continue;
+        }
+
+        /* Enter: finalize the line and wake any reader blocked on read(). */
+        if (c == '\r' || c == '\n') {
+            size_t j;
+
+            /* Echo CR+LF to serial so the remote terminal advances a line. */
+            serial_write_char('\r');
+            serial_write_char('\n');
+
+            tty->cooked_length = tty->input_length;
+            for (j = 0; j < tty->input_length && j + 1 < TTY_INPUT_CAPACITY; ++j)
+                tty->cooked_line[j] = tty->input[j];
+            tty->cooked_line[tty->input_length] = '\0';
+            tty->line_ready = 1;
+            tty->input_length = 0;
+            tty->input[0] = '\0';
+            process_wake_tty_reader(tty);
+            dirty = 1;
+            continue;
+        }
+
+        /* Printable or whitespace (tab, etc.): echo and buffer. */
+        if ((c >= 0x20 && c <= 0x7e) || c == '\t') {
+            if (tty->input_length + 1 < TTY_INPUT_CAPACITY) {
+                tty->input[tty->input_length++] = c;
+                tty->input[tty->input_length] = '\0';
+                serial_write_char(c);   /* echo to remote terminal */
+                dirty = 1;
+            }
+        }
+    }
+
+    if (dirty)
+        tty_touch(tty);
+
+    return dirty;
 }
 
 void tty_reset(struct tty *tty) {

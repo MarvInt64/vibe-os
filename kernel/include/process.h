@@ -132,7 +132,7 @@ struct process {
      * shared image must NOT be freed — only the owning process frees it. */
     uint8_t is_thread;
     char cwd[256];
-    char spawn_arg[64];
+    char spawn_arg[512];
     char name[32];
     /* Effective user/group ID. 0 = root (all access). */
     uint32_t uid;

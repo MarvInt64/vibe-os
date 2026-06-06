@@ -81,3 +81,19 @@ void serial_write_hex_u8(uint8_t value) {
     serial_write_char(hex[(value >> 4) & 0xfu]);
     serial_write_char(hex[value & 0xfu]);
 }
+
+/*
+ * Check if COM1 has a byte ready to read.
+ * LSR (Line Status Register) at port 0x3F8+5, bit 0 = Data Ready.
+ */
+int serial_can_read(void) {
+    return (inb(0x3f8 + 5) & 0x01u) != 0;
+}
+
+/*
+ * Read one byte from COM1. Caller must ensure data is ready
+ * (serial_can_read() returned 1) or this may return garbage.
+ */
+char serial_read_byte(void) {
+    return (char)inb(0x3f8);
+}

@@ -63,7 +63,7 @@ void __attribute__((noreturn)) _start(void) {
     int code;
     int argc = 1;
     static char *argv[MAX_ARGS];
-    static char arg_buf[256];
+    static char arg_buf[512];
 
     argv[0] = "app";
 

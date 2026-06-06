@@ -296,28 +296,14 @@ int vfs_readdir(const char *path, uint32_t index, struct vfs_dir_entry *entry) {
         return 0;
     }
 
-    serial_write("VFS: readdir path=");
-    serial_write(path);
-    serial_write(" index=");
-    serial_write_hex_u64(index);
-    serial_write(" g_ext2=");
-    serial_write_hex_u64((uint64_t)g_ext2);
-    serial_write("\n");
-
     is_root = string_equals_ci(path, "/");
 
     /* 1. ext2 entries */
     if (g_ext2 != 0) {
         uint32_t ino = ext2_lookup_inode(g_ext2, path);
-        serial_write("VFS: ext2 lookup ino=");
-        serial_write_hex_u64(ino);
-        serial_write("\n");
         if (ino != 0) {
             struct ext2_dir_entry ext2_entries[32];
             int n = ext2_readdir(g_ext2, ino, ext2_entries, 32);
-            serial_write("VFS: ext2_readdir returned n=");
-            serial_write_hex_u64(n);
-            serial_write("\n");
             int i;
             for (i = 0; i < n && merged_count < 64; ++i) {
                 /* skip . and .. */
@@ -417,21 +403,6 @@ int vfs_readdir(const char *path, uint32_t index, struct vfs_dir_entry *entry) {
 }
 
 /* Return the entry at `index` */
-    serial_write("VFS: readdir merged_count=");
-    serial_write_hex_u64(merged_count);
-    serial_write(" index=");
-    serial_write_hex_u64(index);
-    serial_write("\n");
-    {
-        int i;
-        for (i = 0; i < merged_count; i++) {
-            serial_write("VFS:  entry[");
-            serial_write_hex_u64(i);
-            serial_write("]=");
-            serial_write(merged_names[i]);
-            serial_write("\n");
-        }
-    }
 
 	if (index < (uint32_t)merged_count) {
 		entry->name = merged_names[index];

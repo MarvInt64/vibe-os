@@ -1806,36 +1806,13 @@ static int process_stat_path(const char *path, uint64_t *kind_out, uint64_t *siz
 
 static int process_readdir_path(const char *path, uint32_t index, char *name_out, size_t name_capacity, uint64_t *kind_out, uint64_t *size_out) {
     struct vfs_dir_entry entry;
-    serial_write("SYSCALL: readdir path=");
-    serial_write(path);
-    serial_write(" index=");
-    serial_write_hex_u64(index);
-    serial_write(" name_out=");
-    serial_write_hex_u64((uint64_t)(uintptr_t)name_out);
-    serial_write(" capacity=");
-    serial_write_hex_u64(name_capacity);
-    serial_write("\n");
 
     if (!vfs_readdir(path, index, &entry)) {
-        serial_write("SYSCALL: readdir returns 0\n");
         return 0;
     }
-    serial_write("SYSCALL: readdir got name=");
-    serial_write(entry.name);
-    serial_write(" kind=");
-    serial_write_hex_u64(entry.kind);
-    serial_write(" size=");
-    serial_write_hex_u64(entry.size);
-    serial_write("\n");
-
-    serial_write("SYSCALL: calling process_write_user_string name_out=");
-    serial_write_hex_u64((uint64_t)(uintptr_t)name_out);
-    serial_write("\n");
     if (!process_write_user_string(name_out, name_capacity, entry.name)) {
-        serial_write("SYSCALL: process_write_user_string FAILED\n");
         return -SYSCALL_EINVAL;
     }
-    serial_write("SYSCALL: process_write_user_string succeeded\n");
 
     *kind_out = entry.kind;
     *size_out = entry.size;
@@ -2010,7 +1987,7 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
             struct process *child = process_find_by_pid((uint32_t)child_pid);
             if (child != 0) {
                 size_t k;
-                char arg[64] = "";
+                char arg[512] = "";
                 process_copy_user_string(arg, sizeof(arg), (const char *)(uintptr_t)frame->rsi);
                 for (k = 0; k + 1 < sizeof(child->spawn_arg) && arg[k]; ++k)
                     child->spawn_arg[k] = arg[k];
@@ -2767,11 +2744,6 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         }
 
         stat_ok = vfs_stat_path(path, &stat);
-        serial_write("SYS_CHDIR: stat_ok=");
-        serial_write_hex_u64(stat_ok);
-        serial_write(" kind=");
-        serial_write_hex_u64(stat.kind);
-        serial_write("\n");
 
         if (stat_ok && stat.kind == VFS_NODE_DIRECTORY) {
             for (i = 0; i < sizeof(process->cwd) - 1 && path[i] != '\0'; i++) {
@@ -2828,9 +2800,6 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 			frame->rax = (uint64_t)(-SYSCALL_ENAMETOOLONG);
 			return 0;
 		}
-		serial_write("SYS_CREAT: path=");
-		serial_write(resolved);
-		serial_write("\n");
 		int result = vfs_create(resolved);
 		if (result < 0) {
 			frame->rax = (uint64_t)result;
@@ -3491,12 +3460,6 @@ void process_wake_tty_reader(struct tty *tty) {
     struct process *process;
     ssize_t read_result;
 
-    serial_write("WAKE_TTY_READER: tty=");
-    serial_write_hex_u64((uint64_t)(uintptr_t)tty);
-    serial_write(" waiter_pid=");
-    serial_write_hex_u64(tty ? tty->waiter_pid : 0);
-    serial_write("\n");
-
     if (tty == 0 || tty->waiter_pid == 0) {
         return;
     }
@@ -3504,7 +3467,6 @@ void process_wake_tty_reader(struct tty *tty) {
     process = process_find_by_pid(tty->waiter_pid);
     tty->waiter_pid = 0;
     if (process == 0 || process->state != PROCESS_STATE_WAITING_IO) {
-        serial_write("WAKE_TTY_READER: process not found or not WAITING_IO\n");
         return;
     }
 

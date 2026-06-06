@@ -185,8 +185,10 @@ static int waitpid_ret(int pid) {
     return (int)syscall2(SYS_WAITPID, (uint64_t)pid, 0);
 }
 
-#define MAX_ARGS 8
-#define MAX_ARG_LEN 64
+/* Raised to support real toolchain invocations (tcc with many -D/-I flags and
+ * long paths) — e.g. self-hosting tcc on VibeOS. */
+#define MAX_ARGS 32
+#define MAX_ARG_LEN 128
 #define MAX_PATH 256
 /* Expand input cap to fit history lines and variable-expanded strings. */
 #define MAX_INPUT 512
@@ -1432,7 +1434,7 @@ static int is_background_app(const char *cmd) {
 }
 
 static int spawn_with_arguments(const char *path) {
-    char full_args[256];
+    char full_args[512];
     full_args[0] = '\0';
     for (int i = 1; i < g_argc && i < MAX_ARGS; ++i) {
         if (i > 1) strcat(full_args, " ");

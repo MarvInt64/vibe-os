@@ -61,7 +61,7 @@ static int format(struct sink *s, const char *fmt, va_list ap) {
         if (*fmt != '%') { emit(s, *fmt); continue; }
         ++fmt;
         {
-            int left = 0, zero = 0, width = 0, size64 = 0;
+            int left = 0, zero = 0, alt = 0, width = 0, size64 = 0;
             char prefix[3]; int plen = 0;
             char num[24]; int nlen = 0;
             int neg = 0;
@@ -70,18 +70,34 @@ static int format(struct sink *s, const char *fmt, va_list ap) {
             for (;; ++fmt) {
                 if (*fmt == '-') left = 1;
                 else if (*fmt == '0') zero = 1;
+                else if (*fmt == '#') alt = 1;
                 else if (*fmt == '+' || *fmt == ' ') ; /* ignore */
                 else break;
             }
-            /* width */
-            while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); ++fmt; }
-            /* .precision — for integers: minimum digits (zero-pad); for strings: max chars */
+            /* width — '*' takes the width from an int argument (a negative
+             * value means left-justify, per C). Used by e.g. tcc's "%*s". */
+            if (*fmt == '*') {
+                int w = va_arg(ap, int);
+                if (w < 0) { left = 1; w = -w; }
+                width = w; ++fmt;
+            } else {
+                while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); ++fmt; }
+            }
+            /* .precision — for integers: minimum digits (zero-pad); for strings: max chars.
+             * '.*' takes the precision from an int argument. */
             int prec = -1;
+            int prec_is_star = 0;
             if (*fmt == '.') {
                 ++fmt; prec = 0;
-                while (*fmt >= '0' && *fmt <= '9') { prec = prec * 10 + (*fmt - '0'); ++fmt; }
-                /* %.Nd on integers: treat as zero-filled width if wider than current */
-                if (prec > width) { width = prec; zero = 1; }
+                if (*fmt == '*') {
+                    prec = va_arg(ap, int); ++fmt; prec_is_star = 1;
+                    if (prec < 0) prec = -1;   /* negative precision = as if omitted */
+                } else {
+                    while (*fmt >= '0' && *fmt <= '9') { prec = prec * 10 + (*fmt - '0'); ++fmt; }
+                }
+                /* %.Nd on integers: treat as zero-filled width if wider than
+                 * current. Never do this for '.*' (commonly a string max-len). */
+                if (!prec_is_star && prec > width) { width = prec; zero = 1; }
             }
             /* length modifiers (all 64-bit on LP64) */
             if (*fmt == 'l') { size64 = 1; ++fmt; if (*fmt == 'l') ++fmt; }
@@ -101,14 +117,70 @@ static int format(struct sink *s, const char *fmt, va_list ap) {
                     nlen = utoa(v, 10, 0, num);
                     break;
                 }
+                case 'f': case 'F': {
+                    /* Float / double: prec digits after the decimal point.
+                     * Default precision is 6; %.0f means no decimal point.
+                     * Handles negative numbers and ±inf / nan.
+                     * Digits are stored LSB-first in num[]; the integer part
+                     * goes at the high end, fractional digits + '.' at the
+                     * low end, so reverse iteration produces "int.frac". */
+                    double fv = va_arg(ap, double);
+                    int fprec = (prec >= 0) ? prec : 6;
+                    if (fv != fv) {
+                        /* NaN */
+                        prefix[plen++] = 'n'; prefix[plen++] = 'a'; prefix[plen++] = 'n';
+                    } else {
+                        const unsigned long long *pun = (const unsigned long long *)&fv;
+                        unsigned long long bits = *pun;
+                        int isinf = ((bits & 0x7FF0000000000000ULL) == 0x7FF0000000000000ULL);
+                        if (isinf) {
+                            if (fv < 0) prefix[plen++] = '-';
+                            prefix[plen++] = 'i'; prefix[plen++] = 'n'; prefix[plen++] = 'f';
+                        } else {
+                            if (fv < 0) { neg = 1; fv = -fv; }
+                            unsigned long ipart = (unsigned long)fv;
+                            double frac = fv - (double)ipart;
+                            /* Round. */
+                            double ra = 0.5; int ri;
+                            for (ri = 0; ri < fprec; ++ri) ra *= 0.1;
+                            frac += ra;
+                            if (frac >= 1.0) { ipart++; frac -= 1.0; }
+                            /* Build integer part LSB-first at the end of the buf. */
+                            int ioff = (int)sizeof(num) - 1;
+                            unsigned long tmp = ipart;
+                            if (tmp == 0) { num[ioff--] = '0'; }
+                            else while (tmp > 0) {
+                                num[ioff--] = (char)('0' + tmp % 10); tmp /= 10;
+                            }
+                            /* Fractional digits go below the integer part. */
+                            if (fprec > 0) {
+                                num[ioff--] = '.';
+                                int fd;
+                                for (fd = fprec - 1; fd >= 0; --fd) {
+                                    frac *= 10.0;
+                                    int d = (int)frac;
+                                    num[ioff--] = (char)('0' + d);
+                                    frac -= (double)d;
+                                }
+                            }
+                            /* Copy the assembled string (ioff+1 .. sizeof(num)-1) into num[0..]. */
+                            nlen = (int)sizeof(num) - 1 - ioff;
+                            int ci; for (ci = 0; ci < nlen; ++ci) num[ci] = num[ioff + 1 + ci];
+                            if (neg) prefix[plen++] = '-';
+                        }
+                    }
+                    break;
+                }
                 case 'x': case 'X': {
                     unsigned long v = size64 ? va_arg(ap, unsigned long) : (unsigned long)va_arg(ap, unsigned int);
                     nlen = utoa(v, 16, *fmt == 'X', num);
+                    if (alt && v != 0) { prefix[plen++] = '0'; prefix[plen++] = (char)(*fmt == 'X' ? 'X' : 'x'); }
                     break;
                 }
                 case 'o': {
                     unsigned long v = size64 ? va_arg(ap, unsigned long) : (unsigned long)va_arg(ap, unsigned int);
                     nlen = utoa(v, 8, 0, num);
+                    if (alt && v != 0) prefix[plen++] = '0';
                     break;
                 }
                 case 'p': {

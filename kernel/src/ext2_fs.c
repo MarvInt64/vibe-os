@@ -1179,26 +1179,9 @@ int ext2_readdir(struct ext2_filesystem *fs, uint32_t inode_num, struct ext2_dir
     int count = 0;
     uint32_t offset;
     
-    serial_write("EXT2: readdir ENTER inode_num=");
-    serial_write_hex_u64(inode_num);
-    serial_write(" max_entries=");
-    serial_write_hex_u64(max_entries);
-    serial_write(" inodes_count=");
-    serial_write_hex_u64(fs->superblock.inodes_count);
-    serial_write("\n");
-    
     if (inode_num >= fs->superblock.inodes_count || max_entries <= 0) return 0;
-    
+
     inode = &fs->inode_table[inode_num - 1];
-    serial_write("EXT2: readdir inode=");
-    serial_write_hex_u64(inode_num);
-    serial_write(" mode=");
-    serial_write_hex_u64(inode->mode);
-    serial_write(" blocks[0]=");
-    serial_write_hex_u64(inode->block[0]);
-    serial_write(" blocks[1]=");
-    serial_write_hex_u64(inode->block[1]);
-    serial_write("\n");
     if ((inode->mode & EXT2_S_IFMT) != EXT2_S_IFDIR) return 0;
     
     block = (uint8_t *)kmalloc(fs->superblock.block_size);

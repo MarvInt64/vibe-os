@@ -81,7 +81,18 @@ struct tty {
 extern const struct fd_ops TTY_FD_OPS;
 
 void tty_init(struct tty *tty);
-int tty_handle_keyboard(struct tty *tty, const struct keyboard_state *keyboard);
+int  tty_handle_keyboard(struct tty *tty, const struct keyboard_state *keyboard);
+
+/*
+ * Read any available bytes from the serial port (COM1) and feed them
+ * into the TTY as if they came from a keyboard.  Handles backspace (0x7F),
+ * CR→LF conversion, and Ctrl+C signalling.  Characters are echoed back to
+ * serial so the remote terminal can see what is being typed.
+ *
+ * Returns 1 if the TTY was modified (caller should re-render), 0 otherwise.
+ */
+int  tty_handle_serial_input(struct tty *tty);
+
 void tty_reset(struct tty *tty);
 
 #endif
