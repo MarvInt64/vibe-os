@@ -254,12 +254,14 @@ arm64-user: $(DISK_IMG)
 	# --- shared apps (same .c files x86 uses) ---
 	$(call arm64app,user/hello.c,/bin/hello)
 	$(call arm64app,user/gfxdemo.c,/bin/gfxdemo)
+	# --- input test: polls virtio-input and prints to serial ---
+	$(call arm64app,user/inputtest.c,/bin/inputtest)
 	# --- desktop: uses the shared renderer as a userspace lib ---
 	$(CC) $(ARM64_UCFLAGS) -Ikernel/include -c user/desktop.c -o $(ARM64_UDIR)/app.o
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/app.elf \
 	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/app.o $(ARM64_UDIR)/libgfx.a $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/app.elf /bin/desktop
-	@echo "arm64 user programs installed: /bin/hello /bin/gfxdemo /bin/desktop"
+	@echo "arm64 user programs installed: /bin/hello /bin/gfxdemo /bin/inputtest /bin/desktop"
 
 # ============================================================
 
