@@ -44,6 +44,12 @@ void *memset(void *dst, int c, size_t n) {
     return dst;
 }
 
+void *memset32(void *dst, uint32_t value, size_t count) {
+    uint32_t *d = (uint32_t *)dst;
+    while (count--) *d++ = value;
+    return dst;
+}
+
 int memcmp(const void *a, const void *b, size_t n) {
     const unsigned char *x = a, *y = b;
     for (; n--; ++x, ++y) if (*x != *y) return (int)*x - (int)*y;

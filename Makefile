@@ -244,10 +244,20 @@ arm64-user: $(DISK_IMG)
 	    $(ARM64_UDIR)/sys.o $(ARM64_UDIR)/string.o \
 	    $(ARM64_UDIR)/stdlib.o $(ARM64_UDIR)/stdio.o \
 	    $(ARM64_UDIR)/umalloc.o $(ARM64_UDIR)/stubs.o
+	# --- shared graphics lib for userspace: the SAME render.c/font_atlas.c the
+	#     kernel uses, compiled against the user libc (one renderer everywhere) ---
+	$(CC) $(ARM64_UCFLAGS) -Ikernel/include -c kernel/src/render.c     -o $(ARM64_UDIR)/u_render.o
+	$(CC) $(ARM64_UCFLAGS) -Ikernel/include -c kernel/src/font_atlas.c -o $(ARM64_UDIR)/u_font.o
+	$(UAR) rcs $(ARM64_UDIR)/libgfx.a $(ARM64_UDIR)/u_render.o $(ARM64_UDIR)/u_font.o
 	# --- shared apps (same .c files x86 uses) ---
 	$(call arm64app,user/hello.c,/bin/hello)
 	$(call arm64app,user/gfxdemo.c,/bin/gfxdemo)
-	@echo "arm64 user programs (shared sources) installed: /bin/hello /bin/gfxdemo"
+	# --- desktop: uses the shared renderer as a userspace lib ---
+	$(CC) $(ARM64_UCFLAGS) -Ikernel/include -c user/desktop.c -o $(ARM64_UDIR)/app.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/app.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/app.o $(ARM64_UDIR)/libgfx.a $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/app.elf /bin/desktop
+	@echo "arm64 user programs installed: /bin/hello /bin/gfxdemo /bin/desktop"
 
 # ============================================================
 
