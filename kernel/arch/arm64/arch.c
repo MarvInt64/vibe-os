@@ -313,8 +313,11 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         case SYS_SET_WALLPAPER: {   /* 36: set wallpaper from pixel buffer */
             struct desktop_state *d = desktop_active();
             if (!d) { regs[0] = (uint64_t)-1; return; }
-            /* Simplified: no-op for now — wallpaper is hardcoded */
-            regs[0] = 0;
+            const uint32_t *pixels = (const uint32_t *)(uintptr_t)a0;
+            int w = (int)a1, h = (int)a2;
+            int result = desktop_set_wallpaper(d, pixels, w, h);
+            d->background_dirty = 1;
+            regs[0] = (uint64_t)(int64_t)result;
             return;
         }
         default:
@@ -913,6 +916,16 @@ void kernel_main_arm64(void) {
 
     serial_write("[gui] initialising desktop compositor...\r\n");
     desktop_init(g_desktop, ramfb_width(), ramfb_height());
+
+    /* Make the built-in demo windows visible so the GUI shows something
+     * even before userspace apps launch. */
+    g_desktop->windows[WINDOW_INFO].visible = 1;
+    g_desktop->windows[WINDOW_FILES].visible = 1;
+    g_desktop->windows[WINDOW_TERMINAL].visible = 1;
+    g_desktop->windows[WINDOW_TASK_MANAGER].visible = 1;
+
+    /* Spawn wallpaper to set a nice background */
+    process_spawn_path("/bin/wallpaper", 0, 0, 0, 0);
 
     serial_write("[gui] entering render loop\r\n");
     for (;;) {

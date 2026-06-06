@@ -266,10 +266,10 @@ arm64-user: $(DISK_IMG)
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/app.elf /bin/desktop
 	# --- VexUI toolkit for arm64 ---
 	$(CC) $(ARM64_UCFLAGS) -Ilib/svg -c user/vexui.c -o $(ARM64_UDIR)/vexui.o
-	# --- wallpaper: GUI app using VexUI ---
-	$(CC) $(ARM64_UCFLAGS) -Ilib/svg -Iuser/libimage -c user/wallpaper/wallpaper.c -o $(ARM64_UDIR)/app.o
+	# --- wallpaper: minimal arm64 wallpaper (no libimage dependency) ---
+	$(CC) $(ARM64_UCFLAGS) -c user/wallpaper_arm64.c -o $(ARM64_UDIR)/app.o
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/app.elf \
-	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/app.o $(ARM64_UDIR)/vexui.o $(ARM64_UDIR)/libc.a
+	    $(ARM64_UDIR)/app.o $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/app.elf /bin/wallpaper
 	@echo "arm64 user programs installed: /bin/hello /bin/gfxdemo /bin/inputtest /bin/desktop /bin/wallpaper"
 
