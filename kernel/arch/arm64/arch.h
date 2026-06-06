@@ -75,6 +75,12 @@ struct ramdisk_device;
 int virtio_blk_init(void);
 int virtio_blk_get_device(struct ramdisk_device *dev);
 
+/* ---- virtio-input ----------------------------------------------------- */
+int  virtio_input_init(void);
+void virtio_input_poll(void);
+int  virtio_input_is_ready(void);
+extern int g_mouse_x, g_mouse_y, g_mouse_buttons, g_mouse_moved;
+
 /* ---- ramfb framebuffer ------------------------------------------------ */
 int       ramfb_init(uint32_t width, uint32_t height);
 void      ramfb_clear(uint32_t argb);

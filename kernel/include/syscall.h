@@ -128,7 +128,10 @@ enum syscall_number {
 	SYS_CPU_INFO = 64,
 	/* rdi = struct vos_fb_info* → fills addr/width/height/stride for a linear
 	 * framebuffer the caller can draw into directly. 0 on success, <0 if no fb. */
-	SYS_FB_INFO = 65
+	SYS_FB_INFO = 65,
+	/* rdi = struct vos_input_state* (x,y,buttons,moved) — 0 on success.
+	 * Polls the virtio-input device and fills in the current mouse state. */
+	SYS_INPUT_POLL = 66
 };
 
 struct system_info_snapshot {

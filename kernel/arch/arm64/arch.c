@@ -196,6 +196,17 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = 0;
             return;
         }
+        case SYS_INPUT_POLL: {  /* 66: fill struct vos_input_state* with mouse state */
+            /* struct vos_input_state { int x, y, buttons, moved; }; */
+            int *out = (int *)(uintptr_t)a0;   /* EL0 ptr, EL1-readable */
+            out[0] = g_mouse_x;
+            out[1] = g_mouse_y;
+            out[2] = g_mouse_buttons;
+            out[3] = g_mouse_moved;
+            g_mouse_moved = 0;  /* clear after read */
+            regs[0] = 0;
+            return;
+        }
         case SYS_GETARG: {      /* 15: getarg(buf, cap) → len; crt0 splits argv */
             char *ubuf = (char *)(uintptr_t)a0;
             uint64_t cap = a1;
@@ -582,6 +593,20 @@ static void cmd_fb(void) {
     serial_write("  rendered via shared kernel/src/render.c — check the display\r\n");
 }
 
+/* Shell command: show or fake mouse state for testing virtio-input. */
+static void cmd_mouse(void) {
+    serial_write("  mouse: x="); print_dec(g_mouse_x);
+    serial_write(" y=");        print_dec(g_mouse_y);
+    serial_write(" buttons=");  print_dec(g_mouse_buttons);
+    serial_write(" moved=");    print_dec(g_mouse_moved);
+    serial_write("\r\n");
+    if (!virtio_input_is_ready()) {
+        serial_write("  (virtio-input not ready)\r\n");
+    } else {
+        serial_write("  virtio-input ready — move pointer over QEMU window\r\n");
+    }
+}
+
 static void cmd_cpuinfo(void) {
     serial_write("  MIDR_EL1  = "); serial_write_hex_u64(read_sysreg(midr_el1)); serial_write("\r\n");
     serial_write("  CNTFRQ    = "); print_dec(read_sysreg(cntfrq_el0) / 1000000);
@@ -599,6 +624,7 @@ static void run_command(const char *line) {
     else if (str_eq(line, "uptime"))       cmd_uptime();
     else if (str_eq(line, "cpuinfo"))      cmd_cpuinfo();
     else if (str_eq(line, "fb"))           cmd_fb();
+    else if (str_eq(line, "mouse"))        cmd_mouse();
     else if (str_eq(line, "run"))          cmd_run();
     else if (str_starts(line, "exec "))    cmd_exec(line + 5);
     else if (str_eq(line, "pwd"))          { serial_write(g_cwd); serial_write("\r\n"); }
@@ -639,9 +665,9 @@ static void shell_loop(void) {
 
         for (;;) {
             char c;
-            /* Spin until a character arrives, polling timer each iteration */
+            /* Spin until a character arrives, polling timer + input each iteration */
             while (!uart_getc_nonblock(&c))
-                ;
+                virtio_input_poll();
 
             if (c == '\r' || c == '\n') {
                 serial_write("\r\n");
@@ -690,6 +716,9 @@ void kernel_main_arm64(void) {
 
     /* Filesystem — try virtio-blk + ext2 (before timer init) */
     fs_init();
+
+    /* Input — try virtio-tablet / virtio-mouse */
+    virtio_input_init();
 
     serial_write("[arm64] detecting platform...\r\n");
     /* Detect platform FIRST so we choose the right timer path.
