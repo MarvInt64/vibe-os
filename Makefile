@@ -222,7 +222,11 @@ arm64-user: $(DISK_IMG)
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld \
 	    -o $(OUT_DIR)/arm64/user/hello.elf $(OUT_DIR)/arm64/user/hello.o
 	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/arm64/user/hello.elf /bin/hello-arm64
-	@echo "arm64 user program installed: /bin/hello-arm64"
+	$(CC) $(ARM64_USER_CFLAGS) -c user/arm64/readfile.c -o $(OUT_DIR)/arm64/user/readfile.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld \
+	    -o $(OUT_DIR)/arm64/user/readfile.elf $(OUT_DIR)/arm64/user/readfile.o
+	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/arm64/user/readfile.elf /bin/readfile
+	@echo "arm64 user programs installed: /bin/hello-arm64 /bin/readfile"
 
 # ============================================================
 

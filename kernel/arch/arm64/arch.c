@@ -55,9 +55,39 @@ void arm64_sync_handler_el1(uint64_t esr, uint64_t elr, uint64_t far,
     while (1) __asm__ volatile("wfi");
 }
 
+/* ---- Filesystem + block device (defined here, used by syscalls + shell) -
+ * 64-byte aligned with guard padding: struct-copy STP pairs that overrun
+ * would otherwise corrupt the device function pointers in the next struct. */
+static struct ramdisk_device  g_blk_dev __attribute__((aligned(64)));
+static uint8_t                _pad0[64];
+static struct ext2_filesystem g_fs      __attribute__((aligned(64)));
+static uint8_t                _pad1[64];
+static int   g_fs_ready = 0;
+static char  g_cwd[256] = "/";
+
+/* ---- Minimal open-file table for EL0 syscalls ------------------------- *
+ * Single-process model (no scheduler yet on arm64), so one global table is
+ * enough. fd 0/1/2 are reserved for stdin/stdout/stderr (UART). */
+#define ARM64_MAX_FD 16
+struct arm64_file {
+    int      used;
+    uint32_t ino;
+    uint32_t offset;
+    uint32_t size;
+};
+static struct arm64_file g_files[ARM64_MAX_FD];
+
 /* EL0 exception frame, as laid out by SAVE_REGS in exceptions.S:
  * regs[0..30] = x0..x30, regs[31]=sp_el0, regs[32]=elr_el1, regs[33]=spsr. */
 extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
+
+/* Copy an EL0 user string (NUL-terminated) into a kernel buffer. EL0 pointers
+ * are in the alias window (0x80000000+); they are readable from EL1 (AP=01). */
+static void copy_user_str(char *dst, const char *user, size_t cap) {
+    size_t i = 0;
+    for (; i + 1 < cap && user[i]; i++) dst[i] = user[i];
+    dst[i] = '\0';
+}
 
 void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                              void *sp) {
@@ -71,14 +101,53 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         uint64_t a2  = regs[2];
 
         switch (num) {
-        case 1: {               /* write(fd, buf, len) */
-            (void)a0;           /* fd ignored — everything goes to the UART */
+        case 1: {               /* write(fd, buf, len) — fd>2 to a file, else UART */
             const char *buf = (const char *)(uintptr_t)a1;
-            for (uint64_t i = 0; i < a2; i++)
-                serial_write_char(buf[i]);
-            regs[0] = a2;       /* return bytes written */
+            if (a0 <= 2) {      /* stdout/stderr → UART */
+                for (uint64_t i = 0; i < a2; i++)
+                    serial_write_char(buf[i]);
+                regs[0] = a2;
+            } else {
+                regs[0] = (uint64_t)-1; /* file write not supported yet */
+            }
             return;
         }
+        case 2: {               /* open(path) → fd (read-only) */
+            if (!g_fs_ready) { regs[0] = (uint64_t)-1; return; }
+            char path[256];
+            copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
+            uint32_t ino = ext2_lookup_inode(&g_fs, path);
+            if (!ino) { regs[0] = (uint64_t)-1; return; }
+            int fd = -1;
+            for (int i = 3; i < ARM64_MAX_FD; i++)
+                if (!g_files[i].used) { fd = i; break; }
+            if (fd < 0) { regs[0] = (uint64_t)-1; return; }
+            g_files[fd].used   = 1;
+            g_files[fd].ino    = ino;
+            g_files[fd].offset = 0;
+            g_files[fd].size   = g_fs.inode_table[ino - 1].size;
+            regs[0] = (uint64_t)fd;
+            return;
+        }
+        case 3: {               /* read(fd, buf, len) → bytes */
+            if (a0 < 3 || a0 >= ARM64_MAX_FD || !g_files[a0].used) {
+                regs[0] = (uint64_t)-1; return;
+            }
+            struct arm64_file *f = &g_files[a0];
+            uint32_t remain = (f->offset < f->size) ? (f->size - f->offset) : 0;
+            uint32_t want   = (a2 < remain) ? (uint32_t)a2 : remain;
+            if (want == 0) { regs[0] = 0; return; }
+            ssize_t got = ext2_read(&g_fs, f->ino, f->offset, want,
+                                    (void *)(uintptr_t)a1);
+            if (got > 0) { f->offset += (uint32_t)got; regs[0] = (uint64_t)got; }
+            else regs[0] = (uint64_t)-1;
+            return;
+        }
+        case 5:                 /* close(fd) */
+            if (a0 >= 3 && a0 < ARM64_MAX_FD && g_files[a0].used)
+                g_files[a0].used = 0;
+            regs[0] = 0;
+            return;
         case 4:                 /* exit(code) — longjmp back into the kernel */
             arm64_return_to_kernel(a0);
             /* not reached */
@@ -144,13 +213,6 @@ static void detect_memory(uintptr_t *hs, size_t *hz) {
  * pointers; if a struct copy goes out of bounds and overwrites these, the
  * next ramdisk_read call will jump to a garbage address (PC alignment fault).
  * Explicit alignment + 64-byte separation guards between them. */
-static struct ramdisk_device g_blk_dev  __attribute__((aligned(64)));
-static uint8_t               _pad0[64]; /* guard between structs in BSS */
-static struct ext2_filesystem g_fs      __attribute__((aligned(64)));
-static uint8_t               _pad1[64];
-static int    g_fs_ready = 0;
-static char   g_cwd[256] = "/";
-
 static void fs_init(void) {
     if (virtio_blk_init() != 0) return;
     if (virtio_blk_get_device(&g_blk_dev) != 0) return;
