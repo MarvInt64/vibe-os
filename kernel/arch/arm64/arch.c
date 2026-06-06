@@ -28,6 +28,7 @@
 #include "../../include/string.h"
 #include "../../include/render.h"
 #include "../../include/window.h"
+#include "../../include/input.h"
 #include "../../include/winsys.h"
 
 /* ---- Timer tick counter (incremented without GIC) --------------------- */
@@ -929,8 +930,27 @@ void kernel_main_arm64(void) {
 
     serial_write("[gui] entering render loop\r\n");
     for (;;) {
+        /* Feed mouse input to the compositor before rendering */
+        struct mouse_state mouse;
+        struct keyboard_state keyboard;
+        memset(&mouse, 0, sizeof(mouse));
+        memset(&keyboard, 0, sizeof(keyboard));
+        mouse.x = g_mouse_x;
+        mouse.y = g_mouse_y;
+        mouse.buttons = (uint8_t)g_mouse_buttons;
+        mouse.moved = (uint8_t)g_mouse_moved;
+        /* Edge-trigger: detect press/release transitions */
+        static int prev_buttons = 0;
+        if ((g_mouse_buttons & 1) && !(prev_buttons & 1))
+            mouse.left_pressed = 1;
+        if (!(g_mouse_buttons & 1) && (prev_buttons & 1))
+            mouse.left_released = 1;
+        prev_buttons = g_mouse_buttons;
+
+        desktop_handle_input(g_desktop, &mouse, &keyboard);
         desktop_render(g_desktop, &fb);
-        /* Poll input so the mouse cursor can move */
+
+        /* Poll input device for next frame */
         virtio_input_poll();
         /* Simple frame pacing: busy-wait ~16ms (~60 FPS) */
         for (volatile int d = 0; d < 400000; d++) { }

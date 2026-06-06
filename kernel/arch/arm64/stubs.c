@@ -14,6 +14,10 @@
 #include "../../include/types.h"
 #include "../../include/vfs.h"
 #include "../../include/journal.h"
+#include "../../include/window.h"
+#include "../../include/app.h"
+#include "../../include/framebuffer.h"
+#include "../../include/render.h"
 
 /* ---- Globals from arch.c ---------------------------------------------- */
 extern struct ext2_filesystem g_fs;
@@ -118,27 +122,34 @@ struct app_instance;
 int app_needs_redraw(struct app_instance *app) { (void)app; return 0; }
 struct app_draw_context;
 void app_draw(const struct app_instance *app, const struct app_draw_context *ctx) {
-    (void)app; (void)ctx;
+    (void)app;
+    /* Draw placeholder text in the content area so demo windows aren't blank.
+     * The window frame (title bar) is already drawn by the compositor. */
+    if (!ctx || !ctx->fb) return;
+    int cx = ctx->content_x, cy = ctx->content_y;
+    const char *title = ctx->window ? ctx->window->title : "arm64";
+    draw_text(ctx->fb, cx + 16, cy + 24, title, 0xffc0d0e0, 2);
+    draw_text(ctx->fb, cx + 16, cy + 56, "running on Apple M-series", 0xff708090, 1);
+    draw_text(ctx->fb, cx + 16, cy + 80, "shared window.c compositor", 0xff90b0e0, 1);
 }
 
 /* ---- More builtin app stubs ------------------------------------------- */
-struct app_menu_item;
-uint32_t app_menu_items(const struct app_instance *app) { (void)app; return 0; }
+int app_menu_items(struct app_instance *app, struct winsys_menu_item *out, int max) {
+    (void)app; (void)out; (void)max; return 0;
+}
 void app_menu_action(struct app_instance *app, uint32_t index) { (void)app; (void)index; }
-void app_handle_keyboard(struct app_instance *app, uint8_t scancode, int pressed) {
-    (void)app; (void)scancode; (void)pressed;
+int app_handle_keyboard(struct app_instance *app, const struct keyboard_state *keyboard) {
+    (void)app; (void)keyboard; return 0;
 }
-void app_consume_damage(struct app_instance *app) { (void)app; }
-int app_window_closed(const struct app_instance *app, uint8_t win_id) {
-    (void)app; (void)win_id; return 0;
+int app_consume_damage(struct app_instance *app, const struct app_draw_context *ctx, struct rect *damage_rect) {
+    (void)app; (void)ctx; (void)damage_rect; return 0;
 }
-uint32_t app_window_owner_pid(const struct app_instance *app, uint8_t win_id) {
-    (void)app; (void)win_id; return 0;
-}
+void app_window_closed(struct app_instance *app) { (void)app; }
+uint32_t app_window_owner_pid(struct app_instance *app) { (void)app; return 0; }
 /* Builtin app constructors — no-ops on arm64 */
-void app_init_text(void) {}
-void app_init_terminal(void) {}
-void app_init_task_manager(void) {}
+void app_init_text(struct app_instance *app, struct text_app_state *state, const char *const *lines, size_t line_count) { (void)app; (void)state; (void)lines; (void)line_count; }
+void app_init_terminal(struct app_instance *app, struct terminal_app_state *state) { (void)app; (void)state; }
+void app_init_task_manager(struct app_instance *app, struct task_manager_app_state *state, const struct desktop_state *desktop) { (void)app; (void)state; (void)desktop; }
 
 /* ---- g_desktop_uid (global, set when GUI starts) ---------------------- */
 uint32_t g_desktop_uid = 0;
