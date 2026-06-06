@@ -45,9 +45,30 @@ static uint64_t block_device(uint64_t pa) {
 }
 
 static uint64_t block_normal(uint64_t pa) {
-    /* Normal WB: AttrIndx=1, SH=inner-shareable(11), AF=1, UXN=1 */
+    /* Normal WB RAM for the kernel: EL1-only (AP=00), EL0 execute-never.
+     * Keeping this EL1-private is required — making it EL0-writable would make
+     * it implicitly non-executable at EL1, breaking kernel code execution. */
     return (pa & 0x0000FFFFC0000000ULL)
-         | (1ULL << 54)  /* UXN */
+         | (1ULL << 54)  /* UXN — no EL0 execute */
+         | (3ULL << 8)   /* SH = inner shareable */
+         | (1ULL << 10)  /* AF */
+         | (1ULL << 2)   /* AttrIndx = 1 */
+         | 0x1ULL;       /* block */
+}
+
+/* Normal WB RAM accessible AND executable from EL0 (for userspace code/stack).
+ *
+ * AP=01 (bit[6]=1) → RW at both EL0 and EL1.
+ * UXN=0            → executable at EL0.
+ * PXN=1            → NOT executable at EL1 (kernel never runs user pages; and
+ *                    an EL0-writable page is treated as PXN at EL1 anyway).
+ *
+ * Coarse 1 GB block — enough to prove the EL0 + SVC round trip. Real per-
+ * process protection needs 4 KB page tables; a later milestone. */
+static uint64_t block_user(uint64_t pa) {
+    return (pa & 0x0000FFFFC0000000ULL)
+         | (1ULL << 53)  /* PXN — not executable at EL1 */
+         | (1ULL << 6)   /* AP[1]=1 → EL0 access (AP=01: RW both) */
          | (3ULL << 8)   /* SH = inner shareable */
          | (1ULL << 10)  /* AF */
          | (1ULL << 2)   /* AttrIndx = 1 */
@@ -58,10 +79,16 @@ void arm64_mmu_init(void) {
     /* MAIR_EL1: index 0 = Device nGnRE, index 1 = Normal WB */
     write_sysreg(mair_el1, 0x00FFULL);
 
-    /* Fill L1 table (4 entries for 4 GB with T0SZ=32) */
-    boot_l1[0] = block_device(0x00000000ULL);   /* 0 – 1 GB: MMIO */
-    boot_l1[1] = block_normal(0x40000000ULL);   /* 1 – 2 GB: RAM  */
-    boot_l1[2] = 0;
+    /* Fill L1 table (4 entries for 4 GB with T0SZ=32).
+     *
+     * Block 2 (VA 0x80000000) is an EL0-accessible ALIAS of the same physical
+     * kernel RAM at PA 0x40000000. This lets us hand userspace an EL0 view of
+     * a kmalloc'd buffer without a second physical region (QEMU -m 512M only
+     * backs PA 0x40000000..0x5FFFFFFF). A kernel buffer at PA p is reachable
+     * from EL0 at virtual address (p - 0x40000000) + 0x80000000 = p + 0x40000000. */
+    boot_l1[0] = block_device(0x00000000ULL);   /* 0 – 1 GB: MMIO         */
+    boot_l1[1] = block_normal(0x40000000ULL);   /* 1 – 2 GB: kernel RAM   */
+    boot_l1[2] = block_user  (0x40000000ULL);   /* 2 – 3 GB: EL0 alias of RAM */
     boot_l1[3] = 0;
 
     /* TCR_EL1:

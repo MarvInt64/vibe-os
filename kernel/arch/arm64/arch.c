@@ -54,9 +54,48 @@ void arm64_sync_handler_el1(uint64_t esr, uint64_t elr, uint64_t far,
     while (1) __asm__ volatile("wfi");
 }
 
+/* EL0 exception frame, as laid out by SAVE_REGS in exceptions.S:
+ * regs[0..30] = x0..x30, regs[31]=sp_el0, regs[32]=elr_el1, regs[33]=spsr. */
+extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
+
 void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                              void *sp) {
-    (void)sp; (void)esr; (void)elr; (void)far;
+    uint64_t *regs = (uint64_t *)sp;
+    unsigned ec = (unsigned)((esr >> 26) & 0x3f);
+
+    if (ec == 0x15) {           /* SVC from AArch64 EL0 — a syscall */
+        uint64_t num = regs[8]; /* x8 = syscall number */
+        uint64_t a0  = regs[0];
+        uint64_t a1  = regs[1];
+        uint64_t a2  = regs[2];
+
+        switch (num) {
+        case 1: {               /* write(fd, buf, len) */
+            (void)a0;           /* fd ignored — everything goes to the UART */
+            const char *buf = (const char *)(uintptr_t)a1;
+            for (uint64_t i = 0; i < a2; i++)
+                serial_write_char(buf[i]);
+            regs[0] = a2;       /* return bytes written */
+            return;
+        }
+        case 4:                 /* exit(code) — longjmp back into the kernel */
+            arm64_return_to_kernel(a0);
+            /* not reached */
+        default:
+            serial_write("[svc] unknown syscall ");
+            serial_write_hex_u64(num);
+            serial_write("\r\n");
+            regs[0] = (uint64_t)-1;
+            return;
+        }
+    }
+
+    /* Non-syscall synchronous exception from EL0 (e.g. user fault) */
+    serial_write("\r\n!!! arm64 EL0 FAULT !!!\r\n");
+    serial_write("  EC  = "); serial_write_hex_u64(ec);  serial_write("\r\n");
+    serial_write("  ELR = "); serial_write_hex_u64(elr); serial_write("\r\n");
+    serial_write("  FAR = "); serial_write_hex_u64(far); serial_write("\r\n");
+    arm64_return_to_kernel((uint64_t)-1);
 }
 
 void arm64_unhandled_exception(uint64_t esr, uint64_t elr, uint64_t far) {
@@ -130,6 +169,7 @@ static void cmd_help(void) {
     serial_write("  mem           — heap usage\r\n");
     serial_write("  uptime        — seconds since boot\r\n");
     serial_write("  cpuinfo       — CPU registers\r\n");
+    serial_write("  run           — run an EL0 userspace demo (SVC syscalls)\r\n");
     serial_write("  ls [path]     — list directory\r\n");
     serial_write("  cat <path>    — print file\r\n");
     serial_write("  cd <path>     — change directory\r\n");
@@ -269,6 +309,46 @@ static void cmd_cd(const char *path) {
     g_cwd[i] = '\0';
 }
 
+/* Embedded EL0 demo program (from user_demo.S) */
+extern uint8_t user_demo_start[];
+extern uint8_t user_demo_end[];
+extern uint64_t arm64_enter_user(uint64_t entry, uint64_t user_sp);
+
+static void cmd_run(void) {
+    /* Copy the position-independent EL0 demo into a fresh RAM page and run it
+     * at EL0. The page is in the identity-mapped RAM block, which is mapped
+     * EL0-accessible + executable (see mmu.c block_normal). */
+    size_t len = (size_t)(user_demo_end - user_demo_start);
+    uint8_t *code = (uint8_t *)kmalloc(4096);
+    uint8_t *stack = (uint8_t *)kmalloc(8192);
+    if (!code || !stack) { serial_write("  OOM\r\n"); return; }
+
+    for (size_t i = 0; i < len; i++) code[i] = user_demo_start[i];
+    /* Ensure I-cache sees the freshly written instructions */
+    __asm__ volatile("dc cvau, %0" :: "r"(code) : "memory");
+    __asm__ volatile("dsb ish; ic ialluis; dsb ish; isb" ::: "memory");
+
+    /* The kernel buffers live at PA 0x40000000+. EL0 sees the same physical
+     * RAM through the alias mapping at +0x40000000 (VA 0x80000000+), where it
+     * is mapped EL0-accessible + executable. Convert the kernel VAs. */
+    #define EL0_ALIAS 0x40000000ULL
+    uint64_t code_el0  = (uint64_t)(uintptr_t)code  + EL0_ALIAS;
+    uint64_t stack_top = ((uint64_t)(uintptr_t)stack + 8192 + EL0_ALIAS) & ~0xFULL;
+
+    serial_write("[run] entering EL0 at ");
+    serial_write_hex_u64(code_el0);
+    serial_write("\r\n");
+
+    uint64_t code_ret = arm64_enter_user(code_el0, stack_top);
+
+    serial_write("[run] back in kernel, exit code = ");
+    serial_write_hex_u64(code_ret);
+    serial_write("\r\n");
+
+    kfree(code);
+    kfree(stack);
+}
+
 static void cmd_cpuinfo(void) {
     serial_write("  MIDR_EL1  = "); serial_write_hex_u64(read_sysreg(midr_el1)); serial_write("\r\n");
     serial_write("  CNTFRQ    = "); print_dec(read_sysreg(cntfrq_el0) / 1000000);
@@ -285,6 +365,7 @@ static void run_command(const char *line) {
     else if (str_eq(line, "mem"))          cmd_mem();
     else if (str_eq(line, "uptime"))       cmd_uptime();
     else if (str_eq(line, "cpuinfo"))      cmd_cpuinfo();
+    else if (str_eq(line, "run"))          cmd_run();
     else if (str_eq(line, "pwd"))          { serial_write(g_cwd); serial_write("\r\n"); }
     else if (str_eq(line, "ls"))           cmd_ls(g_cwd);
     else if (str_starts(line, "ls "))      cmd_ls(line + 3);

@@ -133,7 +133,9 @@ ARM64_ARCH_SRCS := \
 
 ARM64_ASM_SRCS := \
     kernel/arch/arm64/boot.S \
-    kernel/arch/arm64/exceptions.S
+    kernel/arch/arm64/exceptions.S \
+    kernel/arch/arm64/usermode.S \
+    kernel/arch/arm64/user_demo.S
 
 ARM64_CFLAGS := \
     -target aarch64-none-elf \
