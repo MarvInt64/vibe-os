@@ -113,9 +113,14 @@ static uint8_t g_queue_mem[2 * PAGE_SIZE] __attribute__((aligned(PAGE_SIZE)));
 #define G_USED   ((struct vq_used  *)(g_queue_mem + PAGE_SIZE))
 
 /* Request buffers — must be DMA-safe (in normal RAM) */
-static struct vtblk_hdr g_req_hdr  __attribute__((aligned(16)));
-static uint8_t          g_req_data [4096] __attribute__((aligned(512)));
-static uint8_t          g_req_stat [16]   __attribute__((aligned(16)));
+/* Request buffers: keep at least 64 bytes apart from each other and from
+ * any other BSS variable so that a mis-sized DMA write cannot corrupt
+ * adjacent data (such as device function pointers). */
+static uint8_t g_req_hdr_raw  [sizeof(struct vtblk_hdr) + 64] __attribute__((aligned(64)));
+static uint8_t g_req_data     [4096] __attribute__((aligned(512)));
+static uint8_t g_req_stat_raw [64]   __attribute__((aligned(64)));
+#define g_req_hdr  (*(struct vtblk_hdr *)g_req_hdr_raw)
+#define g_req_stat g_req_stat_raw
 
 static uintptr_t g_base    = 0;
 static uint64_t  g_cap_sec = 0;   /* capacity in 512-byte sectors */

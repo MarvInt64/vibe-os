@@ -113,17 +113,8 @@ static char   g_cwd[256] = "/";
 
 static void fs_init(void) {
     if (virtio_blk_init() != 0) return;
-    serial_write("[fs] virtio-blk init OK, probing ext2...\r\n");
     if (virtio_blk_get_device(&g_blk_dev) != 0) return;
-    /* Read first block to test DMA before full mount */
-    {
-        static uint8_t probe_buf[1024] __attribute__((aligned(512)));
-        int r = g_blk_dev.read_fn(g_blk_dev.io_context, 0, probe_buf, 1024);
-        serial_write("[fs] probe read result="); serial_write_hex_u64((uint64_t)(r+1));
-        serial_write(" magic="); serial_write_hex_u64(*(uint32_t*)(probe_buf));
-        serial_write("\r\n");
-        if (r != 0) return;
-    }
+    serial_write("[fs] virtio-blk OK, mounting ext2...\r\n");
     if (ext2_mount(&g_fs, &g_blk_dev) != 0) {
         serial_write("[fs] ext2_mount failed\r\n");
         return;
@@ -181,10 +172,13 @@ static void cmd_ls(const char *path) {
     if (!g_fs_ready) { serial_write("  no filesystem\r\n"); return; }
     if (!path || !*path) path = g_cwd;
 
+    /* path may come from g_cwd; ext2_lookup_inode wants an absolute path */
     uint32_t ino = ext2_lookup_inode(&g_fs, path);
     if (!ino) { serial_write("  not found: "); serial_write(path); serial_write("\r\n"); return; }
 
-    struct ext2_dir_entry entries[64];
+    /* ext2_dir_entry is 264 bytes; keep the array small so it doesn't blow the
+     * 16 KB boot stack (64 entries = 16.5 KB → stack overflow corrupting BSS). */
+    static struct ext2_dir_entry entries[64];
     int n = ext2_readdir(&g_fs, ino, entries, 64);
     if (n < 0) { serial_write("  readdir failed\r\n"); return; }
 

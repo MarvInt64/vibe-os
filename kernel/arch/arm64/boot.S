@@ -79,9 +79,9 @@ _start:
     wfi
     b    .halt
 
-/* ---- Boot stack (16 KB, 16-byte aligned) ------------------------------- */
+/* ---- Boot stack (64 KB, 16-byte aligned) ------------------------------- */
 .section ".bss.boot", "aw"
 .align 4
 boot_stack:
-    .space 16384
+    .space 65536
 boot_stack_top:
