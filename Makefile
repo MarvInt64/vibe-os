@@ -271,7 +271,26 @@ arm64-user: $(DISK_IMG)
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/app.elf \
 	    $(ARM64_UDIR)/app.o $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/app.elf /bin/wallpaper
-	@echo "arm64 user programs installed: /bin/hello /bin/gfxdemo /bin/inputtest /bin/desktop /bin/wallpaper"
+	# --- C++ runtime for arm64 (provides new/delete) ---
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti \
+	    -c user/libc/cxxabi.cpp -o $(ARM64_UDIR)/cxxabi.o
+	$(UAR) rcs $(ARM64_UDIR)/libc.a $(ARM64_UDIR)/cxxabi.o
+	# --- SVG renderer for arm64 ---
+	$(CC) $(ARM64_UCFLAGS) -Ilib/svg -c lib/svg/svg.c -o $(ARM64_UDIR)/svg.o
+	# --- Dock (C++ GUI app using VexUI) ---
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg \
+	    -c user/dock/dock.cpp -o $(ARM64_UDIR)/dock.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/dock.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/dock.o $(ARM64_UDIR)/vexui.o \
+	    $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/dock.elf /bin/dock
+	# --- Topbar (C++ GUI app, no VexUI dependency) ---
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg \
+	    -c user/topbar/topbar.cpp -o $(ARM64_UDIR)/topbar.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/topbar.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/topbar.o $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/topbar.elf /bin/topbar
+	@echo "arm64 user programs: /bin/hello /bin/gfxdemo /bin/inputtest /bin/desktop /bin/wallpaper /bin/dock /bin/topbar"
 
 # ============================================================
 

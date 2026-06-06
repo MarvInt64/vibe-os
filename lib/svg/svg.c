@@ -128,7 +128,11 @@ static void svg_copy_attr(const char *tag, const char *name, char *dst, int cap)
 #define SVG_CURVE_STEPS 24
 
 /* --- small float helpers (SSE; no libc dependency) --- */
+#ifdef ARCH_ARM64
+static inline float svg_sqrtf(float x){ float r; __asm__("fsqrt %s0, %s1" : "=w"(r) : "w"(x)); return r; }
+#else
 static inline float svg_sqrtf(float x){ float r; __asm__("sqrtss %1,%0":"=x"(r):"x"(x)); return r; }
+#endif
 static inline float svg_clampf(float v,float lo,float hi){ return v<lo?lo:(v>hi?hi:v); }
 
 typedef struct { float r, g, b, a; } svg_rgba;     /* straight alpha, 0..1 */

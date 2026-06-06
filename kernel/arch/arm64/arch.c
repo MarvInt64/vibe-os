@@ -321,6 +321,19 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = (uint64_t)(int64_t)result;
             return;
         }
+        case SYS_YIELD:         /* 3: yield — return to kernel, will be rescheduled */
+            arm64_return_to_kernel(0);
+            /* not reached */
+        case SYS_EVENT_POLL: {  /* 19: poll for window events */
+            /* rdi = win_id, rsi = struct winsys_event* (out) */
+            struct desktop_state *d = desktop_active();
+            if (!d) { regs[0] = 0; return; }
+            uint32_t pid = (g_current >= 0) ? g_procs[g_current].pid : 0;
+            struct winsys_event *out = (struct winsys_event *)(uintptr_t)a1;
+            int result = desktop_app_poll_event(d, pid, (int)a0, out);
+            regs[0] = (uint64_t)result;
+            return;
+        }
         default:
             serial_write("[svc] unknown syscall ");
             serial_write_hex_u64(num);
@@ -927,6 +940,9 @@ void kernel_main_arm64(void) {
 
     /* Spawn wallpaper to set a nice background */
     process_spawn_path("/bin/wallpaper", 0, 0, 0, 0);
+    /* Spawn dock and topbar for the full desktop experience */
+    process_spawn_path("/bin/dock", 0, 0, 0, 0);
+    process_spawn_path("/bin/topbar", 0, 0, 0, 0);
 
     serial_write("[gui] entering render loop\r\n");
     for (;;) {
@@ -950,9 +966,12 @@ void kernel_main_arm64(void) {
         desktop_handle_input(g_desktop, &mouse, &keyboard);
         desktop_render(g_desktop, &fb);
 
+        /* Run one user process slice (cooperative round-robin).
+         * Each GUI app runs briefly, makes window syscalls, then yields.
+         * The compositor regains control when the process exits or yields. */
+        process_run_ready_slice();
+
         /* Poll input device for next frame */
         virtio_input_poll();
-        /* Simple frame pacing: busy-wait ~16ms (~60 FPS) */
-        for (volatile int d = 0; d < 400000; d++) { }
     }
 }
