@@ -71,6 +71,7 @@ static char  g_cwd[256] = "/";
 #define ARM64_MAX_FD 16
 struct arm64_file {
     int      used;
+    int      writable;
     uint32_t ino;
     uint32_t offset;
     uint32_t size;
@@ -107,8 +108,13 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 for (uint64_t i = 0; i < a2; i++)
                     serial_write_char(buf[i]);
                 regs[0] = a2;
+            } else if (a0 < ARM64_MAX_FD && g_files[a0].used && g_files[a0].writable) {
+                struct arm64_file *f = &g_files[a0];
+                ssize_t w = ext2_write(&g_fs, f->ino, f->offset, a2, buf);
+                if (w > 0) { f->offset += (uint32_t)w; regs[0] = (uint64_t)w; }
+                else regs[0] = (uint64_t)-1;
             } else {
-                regs[0] = (uint64_t)-1; /* file write not supported yet */
+                regs[0] = (uint64_t)-1;
             }
             return;
         }
@@ -148,6 +154,25 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 g_files[a0].used = 0;
             regs[0] = 0;
             return;
+        case 6: {               /* creat(path) → fd (create + open for writing) */
+            if (!g_fs_ready) { regs[0] = (uint64_t)-1; return; }
+            char path[256];
+            copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
+            uint32_t ino = ext2_lookup_inode(&g_fs, path);
+            if (!ino) ino = ext2_create(&g_fs, path, 0100644);
+            if (!ino) { regs[0] = (uint64_t)-1; return; }
+            int fd = -1;
+            for (int i = 3; i < ARM64_MAX_FD; i++)
+                if (!g_files[i].used) { fd = i; break; }
+            if (fd < 0) { regs[0] = (uint64_t)-1; return; }
+            g_files[fd].used     = 1;
+            g_files[fd].writable = 1;
+            g_files[fd].ino      = ino;
+            g_files[fd].offset   = 0;
+            g_files[fd].size     = g_fs.inode_table[ino - 1].size;
+            regs[0] = (uint64_t)fd;
+            return;
+        }
         case 4:                 /* exit(code) — longjmp back into the kernel */
             arm64_return_to_kernel(a0);
             /* not reached */

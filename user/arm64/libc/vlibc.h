@@ -15,6 +15,7 @@ long sys_write(int fd, const void *buf, unsigned long len);
 long sys_open(const char *path);
 long sys_read(int fd, void *buf, unsigned long len);
 long sys_close(int fd);
+long sys_creat(const char *path);   /* create/truncate + open for writing */
 void sys_exit(int code) __attribute__((noreturn));
 
 /* ---- convenience ------------------------------------------------------ */

@@ -237,7 +237,13 @@ arm64-user: $(DISK_IMG)
 	    -o $(OUT_DIR)/arm64/user/cat.elf \
 	    $(OUT_DIR)/arm64/user/crt0.o $(OUT_DIR)/arm64/user/cat.o $(OUT_DIR)/arm64/user/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/arm64/user/cat.elf /bin/cat
-	@echo "arm64 user programs installed: /bin/hello-arm64 /bin/readfile /bin/cat"
+	# --- writefile: creat + write + read-back, int main(argc,argv) ---
+	$(CC) $(ARM64_USER_CFLAGS) -Iuser/arm64 -c user/arm64/writefile.c -o $(OUT_DIR)/arm64/user/writefile.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld \
+	    -o $(OUT_DIR)/arm64/user/writefile.elf \
+	    $(OUT_DIR)/arm64/user/crt0.o $(OUT_DIR)/arm64/user/writefile.o $(OUT_DIR)/arm64/user/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/arm64/user/writefile.elf /bin/writefile
+	@echo "arm64 user programs installed: /bin/hello-arm64 /bin/readfile /bin/cat /bin/writefile"
 
 # ============================================================
 

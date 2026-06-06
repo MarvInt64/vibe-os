@@ -20,6 +20,7 @@ long sys_read(int fd, void *buf, unsigned long len) {
     return syscall3(3, fd, (long)buf, (long)len);
 }
 long sys_close(int fd)           { return syscall3(5, fd, 0, 0); }
+long sys_creat(const char *path) { return syscall3(6, (long)path, 0, 0); }
 void sys_exit(int code)          { syscall3(4, code, 0, 0); __builtin_unreachable(); }
 
 size_t strlen_(const char *s) {
