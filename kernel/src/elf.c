@@ -42,7 +42,12 @@ int elf64_validate(const void *image, size_t size) {
         return 0;
     }
 
-    if (header->type != ELF_TYPE_EXEC || header->machine != ELF_MACHINE_X86_64 || header->version != ELF_VERSION_CURRENT) {
+#ifdef ARCH_ARM64
+    #define ELF_MACHINE_NATIVE ELF_MACHINE_AARCH64
+#else
+    #define ELF_MACHINE_NATIVE ELF_MACHINE_X86_64
+#endif
+    if (header->type != ELF_TYPE_EXEC || header->machine != ELF_MACHINE_NATIVE || header->version != ELF_VERSION_CURRENT) {
         return 0;
     }
 

@@ -20,6 +20,7 @@
 #include "../../include/alloc.h"
 #include "../../include/ramdisk.h"
 #include "../../include/ext2_fs.h"
+#include "../../include/elf.h"
 
 /* ---- Timer tick counter (incremented without GIC) --------------------- */
 static volatile uint64_t g_tick = 0;
@@ -169,7 +170,8 @@ static void cmd_help(void) {
     serial_write("  mem           — heap usage\r\n");
     serial_write("  uptime        — seconds since boot\r\n");
     serial_write("  cpuinfo       — CPU registers\r\n");
-    serial_write("  run           — run an EL0 userspace demo (SVC syscalls)\r\n");
+    serial_write("  run           — run the built-in EL0 demo (SVC syscalls)\r\n");
+    serial_write("  exec <path>   — load+run an aarch64 ELF from disk at EL0\r\n");
     serial_write("  ls [path]     — list directory\r\n");
     serial_write("  cat <path>    — print file\r\n");
     serial_write("  cd <path>     — change directory\r\n");
@@ -349,6 +351,73 @@ static void cmd_run(void) {
     kfree(stack);
 }
 
+/* ---- ELF loader for EL0 programs read from disk ----------------------- *
+ * arm64 user ELFs are linked for VA 0x90000000 (see user/arm64 linker).
+ * The EL0-alias maps VA 0x80000000.. → PA 0x40000000.., so a user virtual
+ * address v is backed by physical address (v - 0x40000000), which the kernel
+ * (EL1) reaches through its identity map at the same PA. We copy each LOAD
+ * segment to that PA and enter EL0 at the ELF entry point. */
+#define USER_VA_BASE 0x90000000ULL
+#define ALIAS_OFF    0x40000000ULL   /* user VA → kernel/PA offset */
+
+static void cmd_exec(const char *path) {
+    if (!g_fs_ready) { serial_write("  no filesystem\r\n"); return; }
+    if (!path || !*path) { serial_write("  usage: exec <path>\r\n"); return; }
+
+    uint32_t ino = ext2_lookup_inode(&g_fs, path);
+    if (!ino) { serial_write("  not found: "); serial_write(path); serial_write("\r\n"); return; }
+
+    struct ext2_inode *node = &g_fs.inode_table[ino - 1];
+    uint32_t fsize = node->size;
+    if (fsize == 0 || fsize > (4u << 20)) { serial_write("  bad size\r\n"); return; }
+
+    uint8_t *buf = (uint8_t *)kmalloc(fsize);
+    if (!buf) { serial_write("  OOM\r\n"); return; }
+    ssize_t got = ext2_read(&g_fs, ino, 0, fsize, buf);
+    if (got <= 0) { serial_write("  read error\r\n"); kfree(buf); return; }
+
+    if (!elf64_validate(buf, (size_t)got)) {
+        serial_write("  not a valid aarch64 ELF executable\r\n");
+        kfree(buf); return;
+    }
+
+    struct elf64_header *eh = (struct elf64_header *)buf;
+    struct elf64_program_header *ph =
+        (struct elf64_program_header *)(buf + eh->program_header_offset);
+
+    /* Copy each PT_LOAD segment to PA = vaddr - ALIAS_OFF */
+    for (int i = 0; i < eh->program_header_count; i++) {
+        if (ph[i].type != ELF_PROGRAM_TYPE_LOAD) continue;
+        uint64_t vaddr = ph[i].virtual_address;
+        if (vaddr < USER_VA_BASE) {
+            serial_write("  segment below USER_VA_BASE — bad link address\r\n");
+            kfree(buf); return;
+        }
+        uint8_t *dst = (uint8_t *)(uintptr_t)(vaddr - ALIAS_OFF);  /* kernel view = PA */
+        /* copy file_size bytes, zero the rest up to memory_size (.bss) */
+        for (uint64_t b = 0; b < ph[i].file_size; b++)
+            dst[b] = buf[ph[i].offset + b];
+        for (uint64_t b = ph[i].file_size; b < ph[i].memory_size; b++)
+            dst[b] = 0;
+    }
+
+    /* Make the just-written instructions visible to the I-cache */
+    __asm__ volatile("dsb ish; ic ialluis; dsb ish; isb" ::: "memory");
+
+    /* User stack: high end of a page well above the loaded image.
+     * VA 0x91000000 (PA 0x51000000) — separate from code at 0x90000000. */
+    uint64_t user_sp = (USER_VA_BASE + 0x01000000ULL) & ~0xFULL;
+
+    serial_write("[exec] "); serial_write(path);
+    serial_write(" entry="); serial_write_hex_u64(eh->entry);
+    serial_write("\r\n");
+
+    uint64_t rc = arm64_enter_user(eh->entry, user_sp);
+
+    serial_write("[exec] exit code = "); serial_write_hex_u64(rc); serial_write("\r\n");
+    kfree(buf);
+}
+
 static void cmd_cpuinfo(void) {
     serial_write("  MIDR_EL1  = "); serial_write_hex_u64(read_sysreg(midr_el1)); serial_write("\r\n");
     serial_write("  CNTFRQ    = "); print_dec(read_sysreg(cntfrq_el0) / 1000000);
@@ -366,6 +435,7 @@ static void run_command(const char *line) {
     else if (str_eq(line, "uptime"))       cmd_uptime();
     else if (str_eq(line, "cpuinfo"))      cmd_cpuinfo();
     else if (str_eq(line, "run"))          cmd_run();
+    else if (str_starts(line, "exec "))    cmd_exec(line + 5);
     else if (str_eq(line, "pwd"))          { serial_write(g_cwd); serial_write("\r\n"); }
     else if (str_eq(line, "ls"))           cmd_ls(g_cwd);
     else if (str_starts(line, "ls "))      cmd_ls(line + 3);

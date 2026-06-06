@@ -110,7 +110,7 @@ $(BEARSSL_LIB): $(BEARSSL_OBJS)
 
 bearssl: $(BEARSSL_LIB)
 
-.PHONY: all kernel iso run run-debug run-serial run-arm64 clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src seed-headers kernel-arm64
+.PHONY: all kernel iso run run-debug run-serial run-arm64 clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src seed-headers kernel-arm64 arm64-user
 
 # ============================================================
 # arm64 build — targeting QEMU virt machine.
@@ -120,7 +120,8 @@ ARM64_COMMON_SRCS := \
     kernel/src/alloc.c \
     kernel/src/string.c \
     kernel/src/ext2_fs.c \
-    kernel/src/ramdisk.c
+    kernel/src/ramdisk.c \
+    kernel/src/elf.c
 
 # arm64-specific sources (in kernel/arch/arm64/):
 ARM64_ARCH_SRCS := \
@@ -203,10 +204,25 @@ run-arm64: kernel-arm64
 	  -m 512M \
 	  -smp 1 \
 	  -kernel $(OUT_DIR)/vibeos-arm64.elf \
+	  -drive file=$(DISK_IMG),if=none,id=hd0,format=raw \
+	  -device virtio-blk-device,drive=hd0 \
 	  -nographic \
 	  -serial stdio \
 	  -monitor none \
 	  -no-reboot
+
+# Build an aarch64 EL0 userspace program and install it on the disk image so
+# `exec /bin/hello-arm64` can load and run it. Linked at VA 0x90000000.
+ARM64_USER_CFLAGS := -target aarch64-none-elf -ffreestanding -fno-pie \
+    -fno-stack-protector -fno-builtin -mstrict-align -O1 -Wall -Wextra
+
+arm64-user: $(DISK_IMG)
+	@mkdir -p $(OUT_DIR)/arm64/user
+	$(CC) $(ARM64_USER_CFLAGS) -c user/arm64/hello.c -o $(OUT_DIR)/arm64/user/hello.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld \
+	    -o $(OUT_DIR)/arm64/user/hello.elf $(OUT_DIR)/arm64/user/hello.o
+	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/arm64/user/hello.elf /bin/hello-arm64
+	@echo "arm64 user program installed: /bin/hello-arm64"
 
 # ============================================================
 
