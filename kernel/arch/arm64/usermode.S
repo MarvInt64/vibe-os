@@ -37,7 +37,8 @@ arm64_enter_user:
     mov  x10, sp
     str  x10, [x9, #96]
 
-    /* Configure the EL0 return:
+    /* Args: x0=entry, x1=user_sp, x2=argc, x3=argv.
+     * Configure the EL0 return:
      *   ELR_EL1  = entry point (x0)
      *   SP_EL0   = user stack (x1)
      *   SPSR_EL1 = 0 → EL0t, DAIF clear (interrupts enabled at EL0)
@@ -46,9 +47,10 @@ arm64_enter_user:
     msr  sp_el0, x1
     msr  spsr_el1, xzr
 
-    /* Zero the GP registers handed to userspace (don't leak kernel data) */
-    mov  x0,  xzr
-    mov  x1,  xzr
+    /* Hand argc/argv to the entry point in x0/x1 (crt0 expects them). */
+    mov  x0, x2                  /* argc */
+    mov  x1, x3                  /* argv */
+    /* Zero the remaining GP registers (don't leak kernel data) */
     mov  x2,  xzr
     mov  x3,  xzr
     mov  x4,  xzr

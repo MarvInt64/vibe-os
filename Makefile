@@ -218,6 +218,11 @@ ARM64_USER_CFLAGS := -target aarch64-none-elf -ffreestanding -fno-pie \
 
 arm64-user: $(DISK_IMG)
 	@mkdir -p $(OUT_DIR)/arm64/user
+	# --- arm64 libc (crt0 + vlibc) ---
+	$(CC) $(ARM64_USER_CFLAGS) -c user/arm64/libc/crt0.S  -o $(OUT_DIR)/arm64/user/crt0.o
+	$(CC) $(ARM64_USER_CFLAGS) -c user/arm64/libc/vlibc.c -o $(OUT_DIR)/arm64/user/vlibc.o
+	$(UAR) rcs $(OUT_DIR)/arm64/user/libc.a $(OUT_DIR)/arm64/user/vlibc.o
+	# --- freestanding demos (own _start, no libc) ---
 	$(CC) $(ARM64_USER_CFLAGS) -c user/arm64/hello.c -o $(OUT_DIR)/arm64/user/hello.o
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld \
 	    -o $(OUT_DIR)/arm64/user/hello.elf $(OUT_DIR)/arm64/user/hello.o
@@ -226,7 +231,13 @@ arm64-user: $(DISK_IMG)
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld \
 	    -o $(OUT_DIR)/arm64/user/readfile.elf $(OUT_DIR)/arm64/user/readfile.o
 	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/arm64/user/readfile.elf /bin/readfile
-	@echo "arm64 user programs installed: /bin/hello-arm64 /bin/readfile"
+	# --- cat: a normal int main(argc, argv) program linked against libc ---
+	$(CC) $(ARM64_USER_CFLAGS) -Iuser/arm64 -c user/arm64/cat.c -o $(OUT_DIR)/arm64/user/cat.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld \
+	    -o $(OUT_DIR)/arm64/user/cat.elf \
+	    $(OUT_DIR)/arm64/user/crt0.o $(OUT_DIR)/arm64/user/cat.o $(OUT_DIR)/arm64/user/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/arm64/user/cat.elf /bin/cat
+	@echo "arm64 user programs installed: /bin/hello-arm64 /bin/readfile /bin/cat"
 
 # ============================================================
 

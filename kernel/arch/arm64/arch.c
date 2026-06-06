@@ -376,7 +376,8 @@ static void cmd_cd(const char *path) {
 /* Embedded EL0 demo program (from user_demo.S) */
 extern uint8_t user_demo_start[];
 extern uint8_t user_demo_end[];
-extern uint64_t arm64_enter_user(uint64_t entry, uint64_t user_sp);
+extern uint64_t arm64_enter_user(uint64_t entry, uint64_t user_sp,
+                                 uint64_t argc, uint64_t argv);
 
 static void cmd_run(void) {
     /* Copy the position-independent EL0 demo into a fresh RAM page and run it
@@ -403,7 +404,7 @@ static void cmd_run(void) {
     serial_write_hex_u64(code_el0);
     serial_write("\r\n");
 
-    uint64_t code_ret = arm64_enter_user(code_el0, stack_top);
+    uint64_t code_ret = arm64_enter_user(code_el0, stack_top, 0, 0);
 
     serial_write("[run] back in kernel, exit code = ");
     serial_write_hex_u64(code_ret);
@@ -422,9 +423,23 @@ static void cmd_run(void) {
 #define USER_VA_BASE 0x90000000ULL
 #define ALIAS_OFF    0x40000000ULL   /* user VA → kernel/PA offset */
 
-static void cmd_exec(const char *path) {
+/* argv staging area in the user region: VA 0x90F00000 (PA 0x50F00000),
+ * below the stack top (0x91000000) and above the loaded image (0x90000000). */
+#define ARGV_VA 0x90F00000ULL
+
+static void cmd_exec(const char *cmdline) {
     if (!g_fs_ready) { serial_write("  no filesystem\r\n"); return; }
-    if (!path || !*path) { serial_write("  usage: exec <path>\r\n"); return; }
+    if (!cmdline || !*cmdline) { serial_write("  usage: exec <path> [args]\r\n"); return; }
+
+    /* Split the command line into the program path (arg0) and a copy we can
+     * tokenise in place. */
+    char path[256];
+    size_t pi = 0;
+    const char *p = cmdline;
+    while (*p == ' ') p++;
+    while (*p && *p != ' ' && pi + 1 < sizeof(path)) path[pi++] = *p++;
+    path[pi] = '\0';
+    if (path[0] == '\0') { serial_write("  usage: exec <path> [args]\r\n"); return; }
 
     uint32_t ino = ext2_lookup_inode(&g_fs, path);
     if (!ino) { serial_write("  not found: "); serial_write(path); serial_write("\r\n"); return; }
@@ -466,15 +481,39 @@ static void cmd_exec(const char *path) {
     /* Make the just-written instructions visible to the I-cache */
     __asm__ volatile("dsb ish; ic ialluis; dsb ish; isb" ::: "memory");
 
-    /* User stack: high end of a page well above the loaded image.
-     * VA 0x91000000 (PA 0x51000000) — separate from code at 0x90000000. */
+    /* ---- Build argv in the staging area (kernel writes via PA = VA-ALIAS) -- */
+    uint64_t *argv_arr = (uint64_t *)(uintptr_t)(ARGV_VA - ALIAS_OFF); /* PA */
+    char     *str_pa   = (char *)(uintptr_t)(ARGV_VA - ALIAS_OFF + 8 * 16);
+    uint64_t  str_va   = ARGV_VA + 8 * 16;   /* string area starts after 16 ptrs */
+    int argc = 0;
+
+    /* Re-tokenise the whole cmdline; each token becomes an argv entry. */
+    {
+        const char *q = cmdline;
+        while (*q && argc < 15) {
+            while (*q == ' ') q++;
+            if (!*q) break;
+            argv_arr[argc] = str_va;          /* EL0 VA of this string */
+            while (*q && *q != ' ') {
+                *str_pa++ = *q++;
+                str_va++;
+            }
+            *str_pa++ = '\0'; str_va++;
+            argc++;
+        }
+        argv_arr[argc] = 0;                    /* NULL terminator */
+    }
+
+    /* User stack top: VA 0x91000000 (PA 0x51000000), above argv staging. */
     uint64_t user_sp = (USER_VA_BASE + 0x01000000ULL) & ~0xFULL;
 
     serial_write("[exec] "); serial_write(path);
     serial_write(" entry="); serial_write_hex_u64(eh->entry);
+    serial_write(" argc="); print_dec((uint64_t)argc);
     serial_write("\r\n");
 
-    uint64_t rc = arm64_enter_user(eh->entry, user_sp);
+    uint64_t rc = arm64_enter_user(eh->entry, user_sp,
+                                   (uint64_t)argc, ARGV_VA);
 
     serial_write("[exec] exit code = "); serial_write_hex_u64(rc); serial_write("\r\n");
     kfree(buf);
