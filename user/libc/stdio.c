@@ -580,3 +580,65 @@ FILE *fdopen(int fd, const char *mode) {
     }
     return fp;
 }
+
+/* ---- freopen: close existing stream, open new file on the same FILE ----
+ * POSIX: freopen() first closes the file associated with fp (ignoring
+ * errors), then opens 'path' with 'mode' and associates it with fp.
+ * Returns fp on success, NULL on failure (original fp is closed either way).
+ */
+FILE *freopen(const char *path, const char *mode, FILE *fp) {
+    if (!fp || !path || !mode) return (FILE *)0;
+
+    /* Flush and close the existing stream. */
+    fflush(fp);
+    if (fp->fd >= 0) {
+        close(fp->fd);
+        fp->fd = -1;
+    }
+    if (fp->own_buf && fp->buf) {
+        free(fp->buf);
+        fp->buf = (unsigned char *)0;
+        fp->bufcap = 0;
+    }
+    fp->bufpos = fp->buflen = 0;
+    fp->flags = 0;
+
+    /* Open the new file. */
+    int nfd = -1;
+    /* Decode mode string: r=read, w=write, a=append (same as fopen). */
+    int mflags = 0;
+    const char *m = mode;
+    while (*m) {
+        switch (*m++) {
+            case 'r': mflags |= 0x01; break;            /* _F_READ */
+            case 'w': mflags |= 0x02; break;            /* _F_WRITE */
+            case 'a': mflags |= 0x06; break;            /* _F_WRITE|_F_APPEND */
+            case 'b': break;                            /* binary (no-op) */
+            case '+': mflags |= 0x03; break;            /* read+write */
+        }
+    }
+
+    extern int vos_open_path(const char *);
+    extern int vos_creat_path(const char *);
+    if (mflags & 0x02) {
+        /* Write/append: create if not exists. */
+        nfd = vos_open_path(path);
+        if (nfd < 0) nfd = vos_creat_path(path);
+        if (nfd >= 0 && !(mflags & 0x04)) lseek(nfd, 0, SEEK_SET); /* truncate */
+        if (nfd >= 0 && (mflags & 0x04)) lseek(nfd, 0, SEEK_END);  /* append */
+    } else {
+        nfd = vos_open_path(path);
+    }
+    if (nfd < 0) return (FILE *)0;
+
+    fp->fd = nfd;
+    fp->flags = mflags;
+    fp->bufmode = _IOFBF;
+    fp->own_buf = 1;
+    fp->buf = (unsigned char *)malloc(BUFSIZ);
+    fp->bufcap = fp->buf ? BUFSIZ : 0;
+    fp->bufpos = fp->buflen = 0;
+    fp->mem = (const unsigned char *)0;
+    fp->mem_len = fp->mem_pos = 0;
+    return fp;
+}

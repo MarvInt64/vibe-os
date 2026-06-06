@@ -15,7 +15,7 @@ struct tty;
 #define PROCESS_MAX_COUNT 48
 #define PROCESS_USER_BASE 0x20000000u
 #define PROCESS_USER_TEMPLATE_BASE PROCESS_USER_BASE
-#define PROCESS_USER_REGION_BYTES 0x02000000u
+#define PROCESS_USER_REGION_BYTES 0x10000000u  /* 256 MB */
 #define PROCESS_USER_STACK_SIZE 0x100000u
 /* 32 MB virtual user slot per process. The ELF image/BSS grows upward from
  * PROCESS_USER_BASE; the stack owns the top 1 MB. Keep this well above the
@@ -103,7 +103,7 @@ struct process {
     /* Physical backing for the demand-grown heap: each SYS_SBRK growth kmallocs
      * a chunk and records it here so it can be freed when the process exits.
      * Only the address-space owner (not threads) owns/frees these. */
-#define PROCESS_HEAP_MAX_CHUNKS 32
+#define PROCESS_HEAP_MAX_CHUNKS 2048
     void *heap_chunks[PROCESS_HEAP_MAX_CHUNKS];
     uint32_t heap_chunk_count;
     uint8_t loaded;

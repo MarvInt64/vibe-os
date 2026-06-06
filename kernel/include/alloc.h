@@ -31,6 +31,11 @@ void kfree(void *ptr);
 size_t kmalloc_get_free(void);
 size_t kmalloc_get_total(void);
 size_t kmalloc_get_used(void);
+/* Walk the whole main-heap free list and dump diagnostics to serial: total
+ * blocks, reachable free/used bytes, and the first block whose header fails the
+ * sanity check (which truncates the free-list walk and strands all memory after
+ * it). Used to tell genuine exhaustion apart from free-list corruption. */
+void kmalloc_debug_dump(void);
 void kmalloc_set_physical_total(size_t total_bytes);
 size_t kmalloc_get_physical_total(void);
 size_t kmalloc_get_physical_used(void);

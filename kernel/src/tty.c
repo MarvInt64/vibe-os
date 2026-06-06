@@ -518,13 +518,13 @@ static ssize_t tty_fd_write(void *object, const void *buffer, size_t count) {
  return -SYSCALL_EINVAL;
  }
 
- serial_write("TTY_FD_WRITE: tty=");
- serial_write_hex_u64((uint64_t)(uintptr_t)tty);
- serial_write(" count=");
- serial_write_hex_u64(count);
- serial_write(" ansi_mode=");
- serial_write_hex_u64(tty->ansi_mode);
- serial_write("\n");
+//  serial_write("TTY_FD_WRITE: tty=");
+//  serial_write_hex_u64((uint64_t)(uintptr_t)tty);
+//  serial_write(" count=");
+//  serial_write_hex_u64(count);
+//  serial_write(" ansi_mode=");
+//  serial_write_hex_u64(tty->ansi_mode);
+//  serial_write("\n");
 
  /* Check if we should switch to ANSI mode (if we see escape sequences) */
  if (!tty->ansi_mode) {

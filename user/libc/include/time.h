@@ -24,6 +24,12 @@ struct tm {
 time_t time(time_t *tloc);
 struct tm *localtime_r(const time_t *timep, struct tm *result);
 
+/* localtime — convenience wrapper using a static buffer (not thread-safe) */
+static inline struct tm *localtime(const time_t *timep) {
+    static struct tm buf;
+    return localtime_r(timep, &buf);
+}
+
 
 #ifdef __cplusplus
 }

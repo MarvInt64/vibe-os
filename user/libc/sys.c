@@ -485,3 +485,17 @@ int ioctl(int fd, unsigned long request, ...) {
 /* dup2 — duplicate file descriptor (stub) */
 int dup2(int oldfd, int newfd) { (void)oldfd; return newfd; }
 
+/* ---- mmap / munmap stubs (for TCC -run support only) ------------------- */
+void *mmap(void *addr, unsigned long len, int prot, int flags, int fd, long off) {
+    (void)addr; (void)len; (void)prot; (void)flags; (void)fd; (void)off;
+    return (void *)0;  /* MAP_FAILED — no mmap on VibeOS */
+}
+int munmap(void *addr, unsigned long len) {
+    (void)addr; (void)len;
+    return -1;
+}
+int mprotect(void *addr, unsigned long len, int prot) {
+    (void)addr; (void)len; (void)prot;
+    return -1;
+}
+

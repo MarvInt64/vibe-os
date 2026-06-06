@@ -141,6 +141,7 @@ static __inline__ double scalbn(double x, int n) {
     return r;
 }
 static __inline__ double ldexp(double x, int exp) { return scalbn(x, exp); }
+static __inline__ long double ldexpl(long double x, int exp) { return (long double)ldexp((double)x, exp); }
 static __inline__ double nearbyint(double x) { return round(x); }
 static __inline__ double rint(double x) { return round(x); }
 static __inline__ long lrint(double x) { return (long)round(x); }

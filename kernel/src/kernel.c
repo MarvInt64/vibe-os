@@ -135,10 +135,10 @@ static void kernel_init_heap_from_bootinfo(uintptr_t mbi_addr) {
 
   if (!multiboot2_memory_info(mbi_addr, heap_start, &mem)) {
     serial_write("VIBEOS: no multiboot memory map; using conservative heap fallback\n");
-    kmalloc_init(heap_start, 32 * 1024 * 1024);
-    gfx_heap_init(heap_start + 32 * 1024 * 1024, 12 * 1024 * 1024);
-    image_heap_init(heap_start + 44 * 1024 * 1024, 20 * 1024 * 1024);
-    kmalloc_set_physical_total(heap_start + 64 * 1024 * 1024);
+    kmalloc_init(heap_start, 256 * 1024 * 1024);
+    gfx_heap_init(heap_start + 256 * 1024 * 1024, 64 * 1024 * 1024);
+    image_heap_init(heap_start + 320 * 1024 * 1024, 96 * 1024 * 1024);
+    kmalloc_set_physical_total(heap_start + 416 * 1024 * 1024);
     return;
   }
 

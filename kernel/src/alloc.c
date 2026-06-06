@@ -26,6 +26,7 @@
 #include "string.h"
 #include "paging.h"
 #include "tty.h"
+#include "serial.h"
 #include "spinlock.h"
 #include <stddef.h>
 
@@ -224,6 +225,86 @@ size_t kmalloc_get_total(void) {
 
 size_t kmalloc_get_used(void) {
     return g_used;
+}
+
+void kmalloc_debug_dump(void) {
+    alloc_header_t *curr;
+    size_t blocks = 0, free_bytes = 0, used_bytes = 0;
+    int truncated = 0;
+    unsigned long flags = spin_lock_irqsave(&g_heap_lock);
+
+    serial_write("HEAPDUMP base=");
+    serial_write_hex_u64((uint64_t)g_heap_base);
+    serial_write(" size=");
+    serial_write_hex_u64((uint64_t)g_heap_size);
+    serial_write(" end=");
+    serial_write_hex_u64((uint64_t)heap_end_addr());
+    serial_write("\n");
+
+    {
+        /* Track the four largest live blocks so a single giant allocation is
+         * obvious among many small ones (average size hides that). */
+        uintptr_t top_at[4] = {0,0,0,0};
+        size_t top_sz[4] = {0,0,0,0};
+        size_t big1m = 0; /* count of live blocks >= 1 MB */
+
+        curr = g_heap_start;
+        while (curr != NULL) {
+            if (!block_in_heap(curr)) {
+                serial_write("HEAPDUMP corrupt block at=");
+                serial_write_hex_u64((uint64_t)(uintptr_t)curr);
+                serial_write(" off=");
+                serial_write_hex_u64((uint64_t)((uintptr_t)curr - g_heap_base));
+                serial_write(" stranded=");
+                serial_write_hex_u64((uint64_t)(heap_end_addr() - (uintptr_t)curr));
+                serial_write("\n");
+                truncated = 1;
+                break;
+            }
+            blocks++;
+            if (curr->is_free) {
+                free_bytes += curr->size;
+            } else {
+                used_bytes += curr->size;
+                if (curr->size >= (1u << 20)) big1m++;
+                if (curr->size > top_sz[3]) {
+                    int j = 3;
+                    top_sz[3] = curr->size;
+                    top_at[3] = (uintptr_t)curr;
+                    while (j > 0 && top_sz[j] > top_sz[j-1]) {
+                        size_t ts = top_sz[j-1]; uintptr_t ta = top_at[j-1];
+                        top_sz[j-1] = top_sz[j]; top_at[j-1] = top_at[j];
+                        top_sz[j] = ts; top_at[j] = ta;
+                        j--;
+                    }
+                }
+            }
+            curr = curr->next;
+        }
+
+        serial_write("HEAPDUMP big>=1M=");
+        serial_write_hex_u64((uint64_t)big1m);
+        serial_write(" top4_sz=");
+        serial_write_hex_u64((uint64_t)top_sz[0]); serial_write(",");
+        serial_write_hex_u64((uint64_t)top_sz[1]); serial_write(",");
+        serial_write_hex_u64((uint64_t)top_sz[2]); serial_write(",");
+        serial_write_hex_u64((uint64_t)top_sz[3]);
+        serial_write(" top1_at=");
+        serial_write_hex_u64((uint64_t)top_at[0]);
+        serial_write("\n");
+    }
+
+    serial_write("HEAPDUMP blocks=");
+    serial_write_hex_u64((uint64_t)blocks);
+    serial_write(" reachable_free=");
+    serial_write_hex_u64((uint64_t)free_bytes);
+    serial_write(" reachable_used=");
+    serial_write_hex_u64((uint64_t)used_bytes);
+    serial_write(" g_used=");
+    serial_write_hex_u64((uint64_t)g_used);
+    serial_write(truncated ? " TRUNCATED\n" : " ok\n");
+
+    spin_unlock_irqrestore(&g_heap_lock, flags);
 }
 
 void kmalloc_set_physical_total(size_t total_bytes) {

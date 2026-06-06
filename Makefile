@@ -505,3 +505,47 @@ nano: $(DISK_IMG) $(LIBC_A)
 	$(USTRIP) --strip-all build/user/nano.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/nano.elf /bin/nano
 	@echo "nano installed to $(DISK_IMG)."
+
+# ---- tcc (Tiny C Compiler, VibeOS port) ---------------------------------
+# ONE_SOURCE mode: tcc.c includes all other .c files → single compilation.
+# -DCONFIG_TCC_PREDEFS=0: load predefines from tccdefs.h at runtime.
+TCC_CFLAGS := $(UCFLAGS) $(LIBC_INC) -Ithird_party/tcc \
+  -Wno-incompatible-function-pointer-types -Wno-unused-function \
+  -DCONFIG_TCC_PREDEFS=0
+
+tcc: $(DISK_IMG) $(LIBC_A)
+	@mkdir -p build/user
+	# Pre-build step: generate tccdefs_.h from tccdefs.h (c2str tool)
+	cd third_party/tcc && clang -DC2STR conftest.c -o c2str && ./c2str include/tccdefs.h tccdefs_.h
+	$(UCC) $(TCC_CFLAGS) -c third_party/tcc/tcc.c -o build/user/tcc.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/tcc.elf \
+		$(LIBC_CRT0) build/user/tcc.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/tcc.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/tcc.elf /bin/tcc
+	# Seed toolchain: crt0, libc, headers, tccdefs.h
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/libc/crt0.o /lib/crt0.o
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/libc/crt0.o /lib/crt1.o
+	# Minimal crti.o / crtn.o — empty objects (TCC needs them to exist but we
+	# don't use .init/.fini sections on VibeOS).
+	echo '/* empty */' > /tmp/_empty.c
+	$(UCC) $(UCFLAGS) -c /tmp/_empty.c -o build/user/crti.o
+	cp build/user/crti.o build/user/crtn.o
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/crti.o /lib/crti.o
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/crtn.o /lib/crtn.o
+	# TCC runtime library (__va_arg, __divdi3, alloca, etc.)
+	$(UCC) $(UCFLAGS) -c third_party/tcc/lib/libtcc1.c -o build/user/libtcc1.o
+	$(UAR) rcs build/user/libtcc1.a build/user/libtcc1.o
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/libtcc1.a /lib/tcc/libtcc1.a
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/libc.a /lib/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) third_party/tcc/include/tccdefs.h /usr/include/tccdefs.h
+	@echo "tcc installed to $(DISK_IMG)."
+
+# ---- seed-headers: copy libc headers to the disk image /usr/include/ ----
+seed-headers: $(DISK_IMG)
+	@for f in user/libc/include/*.h; do \
+		python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/usr/include/$$(basename $$f)" ; \
+	done
+	@for f in user/libc/include/sys/*.h; do \
+		python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/usr/include/sys/$$(basename $$f)" ; \
+	done
+	@echo "Headers seeded to /usr/include/"

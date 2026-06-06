@@ -133,6 +133,7 @@ static void split_block(struct block *b, umsize_t need) {
         rest->prev = b;
         rest->next = b->next;
         if (rest->next) rest->next->prev = rest;
+        else g_tail = rest;   /* b was the tail; rest is now the last block */
         b->next = rest;
         b->size = need;
     }

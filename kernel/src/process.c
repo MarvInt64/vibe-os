@@ -580,6 +580,7 @@ static uint64_t process_sbrk(struct process *process, int64_t increment) {
     size_t i;
 
     if (owner == 0 || owner->user_page_tables == 0 || owner->heap_start == 0) {
+        serial_write("SBRK: owner/heap_start null\n");
         return (uint64_t)(uintptr_t)-1;
     }
     old_break = owner->heap_break;
@@ -587,15 +588,24 @@ static uint64_t process_sbrk(struct process *process, int64_t increment) {
         return (uint64_t)old_break;
     }
     if (increment < 0) {
+        serial_write("SBRK: negative increment\n");
         return (uint64_t)(uintptr_t)-1;
     }
     if ((uintptr_t)increment > ~(uintptr_t)0 - old_break) {
+        serial_write("SBRK: overflow\n");
         return (uint64_t)(uintptr_t)-1;
     }
 
     new_break = old_break + (uintptr_t)increment;
     if (new_break < old_break ||
         new_break > owner->user_virtual_base + PROCESS_USER_IMAGE_SIZE) {
+        serial_write("SBRK: limit exceeded old=");
+        serial_write_hex_u64(old_break);
+        serial_write(" new=");
+        serial_write_hex_u64(new_break);
+        serial_write(" max=");
+        serial_write_hex_u64(owner->user_virtual_base + PROCESS_USER_IMAGE_SIZE);
+        serial_write("\n");
         return (uint64_t)(uintptr_t)-1;
     }
 
@@ -606,32 +616,126 @@ static uint64_t process_sbrk(struct process *process, int64_t increment) {
         return (uint64_t)old_break;
     }
 
-    if (owner->heap_chunk_count >= PROCESS_HEAP_MAX_CHUNKS) {
-        return (uint64_t)(uintptr_t)-1;
-    }
     map_size = (size_t)(new_page_end - old_page_end);
-    allocation = process_kmalloc_no_image_overlap(map_size + 0x1000u, 0, "sbrk_heap");
-    if (allocation == 0) {
-        return (uint64_t)(uintptr_t)-1;
-    }
-    pages = align_ptr_4k(allocation);
-    memory_zero(pages, map_size);
 
-    for (i = 0; i < map_size / 0x1000u; ++i) {
-        uintptr_t va = old_page_end + (i * 0x1000u);
-        size_t page = (size_t)((va - owner->user_virtual_base) / 0x1000u);
-        size_t table = page / 512u;
-        size_t entry = page % 512u;
+    /* Back the new heap pages with physical memory from the shared kernel heap.
+     * Each page is mapped individually into the process page tables below, so
+     * the backing store does NOT need to be one contiguous run. Allocate it in
+     * modest batches rather than a single giant kmalloc: a 256 KB+ contiguous
+     * request can fail on a fragmented main heap even when hundreds of MB are
+     * free, whereas a 64 KB run is almost always available. Batching makes
+     * heap growth robust against main-heap fragmentation. */
+    {
+        const uint32_t chunk_start = owner->heap_chunk_count;
+        size_t mapped = 0;
+        int failed = 0;
 
-        if (table >= PROCESS_USER_PAGE_TABLE_COUNT) {
-            kfree(allocation);
+        while (mapped < map_size) {
+            /* Try to satisfy the whole remaining growth with one contiguous
+             * chunk; on a healthy heap that means one chunk per grow. Only if
+             * the main heap is too fragmented to serve it do we halve the batch
+             * (down to a single page) and take the growth in pieces — each page
+             * is mapped individually, so contiguity is never actually required. */
+            size_t batch = map_size - mapped;
+            size_t b;
+
+            allocation = 0;
+            for (;;) {
+                if (owner->heap_chunk_count >= PROCESS_HEAP_MAX_CHUNKS) {
+                    serial_write("SBRK: max chunks count=");
+                    serial_write_hex_u64(owner->heap_chunk_count);
+                    serial_write(" pid=");
+                    serial_write_hex_u64(process->pid);
+                    serial_write(" owner_pid=");
+                    serial_write_hex_u64(owner->pid);
+                    serial_write(" free=");
+                    serial_write_hex_u64(kmalloc_get_free());
+                    serial_write("\n");
+                    failed = 1;
+                    break;
+                }
+                allocation = kmalloc(batch + 0x1000u);
+                if (allocation != 0) {
+                    break;
+                }
+                if (batch <= 0x1000u) {
+                    /* Even a single page is unavailable: the main heap is truly
+                     * exhausted, not merely fragmented. */
+                    serial_write("SBRK: kmalloc failed size=");
+                    serial_write_hex_u64(batch + 0x1000u);
+                    serial_write(" want=");
+                    serial_write_hex_u64(map_size);
+                    serial_write(" free=");
+                    serial_write_hex_u64(kmalloc_get_free());
+                    serial_write(" used=");
+                    serial_write_hex_u64(kmalloc_get_used());
+                    serial_write("\n");
+                    kmalloc_debug_dump();
+                    failed = 1;
+                    break;
+                }
+                batch = (batch >> 1) & ~(size_t)0xfffu;
+                if (batch < 0x1000u) {
+                    batch = 0x1000u;
+                }
+            }
+            if (failed) {
+                break;
+            }
+            pages = align_ptr_4k(allocation);
+            memory_zero(pages, batch);
+
+            for (b = 0; b < batch / 0x1000u; ++b) {
+                uintptr_t va = old_page_end + mapped + (b * 0x1000u);
+                size_t page = (size_t)((va - owner->user_virtual_base) / 0x1000u);
+                size_t table = page / 512u;
+                size_t entry = page % 512u;
+
+                if (table >= PROCESS_USER_PAGE_TABLE_COUNT) {
+                    serial_write("SBRK: page table overflow page=");
+                    serial_write_hex_u64(page);
+                    serial_write(" table=");
+                    serial_write_hex_u64(table);
+                    serial_write("\n");
+                    kfree(allocation);
+                    failed = 1;
+                    break;
+                }
+                owner->user_page_tables[(table * 512u) + entry] =
+                    (uint64_t)(uintptr_t)(pages + (b * 0x1000u)) | 0x07u;
+            }
+            if (failed) {
+                break;
+            }
+
+            owner->heap_chunks[owner->heap_chunk_count++] = allocation;
+            mapped += batch;
+        }
+
+        if (failed) {
+            /* Roll this growth back entirely: unmap every page we touched and
+             * free every batch allocated during this call, so a failed sbrk
+             * leaves the address space exactly as it was. */
+            uint32_t c;
+            for (i = 0; i < map_size / 0x1000u; ++i) {
+                uintptr_t va = old_page_end + (i * 0x1000u);
+                size_t page = (size_t)((va - owner->user_virtual_base) / 0x1000u);
+                size_t table = page / 512u;
+                size_t entry = page % 512u;
+                if (table < PROCESS_USER_PAGE_TABLE_COUNT) {
+                    owner->user_page_tables[(table * 512u) + entry] = 0;
+                }
+            }
+            for (c = chunk_start; c < owner->heap_chunk_count; ++c) {
+                kfree(owner->heap_chunks[c]);
+                owner->heap_chunks[c] = 0;
+            }
+            owner->heap_chunk_count = chunk_start;
+            paging_load_cr3(paging_read_cr3());
             return (uint64_t)(uintptr_t)-1;
         }
-        owner->user_page_tables[(table * 512u) + entry] =
-            (uint64_t)(uintptr_t)(pages + (i * 0x1000u)) | 0x07u;
     }
 
-    owner->heap_chunks[owner->heap_chunk_count++] = allocation;
     owner->heap_break = new_break;
     if (process != owner) {
         process->heap_start = owner->heap_start;
@@ -3404,11 +3508,11 @@ void process_wake_tty_reader(struct tty *tty) {
         return;
     }
 
-    serial_write("WAKE_TTY_READER: waking PID=");
-    serial_write_hex_u64(process->pid);
-    serial_write(" read_buf=");
-    serial_write_hex_u64((uint64_t)(uintptr_t)process->pending_read_buffer);
-    serial_write("\n");
+    // serial_write("WAKE_TTY_READER: waking PID=");
+    // serial_write_hex_u64(process->pid);
+    // serial_write(" read_buf=");
+    // serial_write_hex_u64((uint64_t)(uintptr_t)process->pending_read_buffer);
+    // serial_write("\n");
 
     /* pending_read_buffer is a user virtual address in this process's own
      * address space. Switch to its CR3 before writing the line into it,

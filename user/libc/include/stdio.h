@@ -70,6 +70,7 @@ int sscanf(const char *str, const char *fmt, ...);
 int sprintf(char *buf, const char *fmt, ...);
 ssize_t getline(char **lineptr, size_t *n, FILE *stream);
 FILE *fdopen(int fd, const char *mode);
+FILE *freopen(const char *path, const char *mode, FILE *fp);
 
 #ifdef __cplusplus
 }

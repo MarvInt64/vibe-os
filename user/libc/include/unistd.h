@@ -37,6 +37,12 @@ static inline int isatty(int fd) { return (fd >= 0 && fd <= 2) ? 1 : 0; }
 /* dup2 — duplicate a file descriptor. Stub: no-op. */
 int dup2(int oldfd, int newfd);
 
+/* execvp — execute a program (stub: no fork/exec on VibeOS) */
+static inline int execvp(const char *file, char *const argv[]) {
+    (void)file; (void)argv;
+    return -1;
+}
+
 #define X_OK  1
 #define W_OK  2
 #define R_OK  4
