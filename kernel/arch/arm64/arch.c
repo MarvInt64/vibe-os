@@ -637,9 +637,42 @@ static void run_command(const char *line) {
         serial_write("halting.\r\n");
         __asm__ volatile("msr daifset, #3");
         while (1) __asm__ volatile("wfi");
+    } else if (str_eq(line, "gui") || str_eq(line, "desktop")) {
+        cmd_exec("/bin/desktop");
     } else {
-        serial_write("  unknown: '"); serial_write(line);
-        serial_write("'  (try 'help')\r\n");
+        /* Unknown builtin — try as an ELF binary.
+         * If the command contains '/', use it as-is (absolute or relative path).
+         * Otherwise look in /bin/<command>.  This mirrors /bin/sh behaviour:
+         *   desktop          → exec /bin/desktop
+         *   ./bin/desktop    → exec ./bin/desktop
+         *   /bin/desktop     → exec /bin/desktop
+         *   desktop --help   → exec /bin/desktop --help
+         */
+        char exec_line[256];
+        int has_slash = 0;
+        for (const char *s = line; *s && *s != ' '; s++)
+            if (*s == '/') { has_slash = 1; break; }
+
+        if (has_slash) {
+            /* Path already contains '/' — use entire line as-is. */
+            size_t i = 0;
+            for (; i < sizeof(exec_line) - 1 && line[i]; i++)
+                exec_line[i] = line[i];
+            exec_line[i] = '\0';
+        } else {
+            /* Prepend /bin/ to the first word, keep any arguments. */
+            exec_line[0] = '/'; exec_line[1] = 'b'; exec_line[2] = 'i';
+            exec_line[3] = 'n'; exec_line[4] = '/';
+            size_t out = 5;
+            const char *s = line;
+            while (*s && *s != ' ' && out < sizeof(exec_line) - 1)
+                exec_line[out++] = *s++;
+            /* Copy remaining arguments (if any) */
+            while (*s && out < sizeof(exec_line) - 1)
+                exec_line[out++] = *s++;
+            exec_line[out] = '\0';
+        }
+        cmd_exec(exec_line);
     }
 }
 
