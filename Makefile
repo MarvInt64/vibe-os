@@ -110,7 +110,94 @@ $(BEARSSL_LIB): $(BEARSSL_OBJS)
 
 bearssl: $(BEARSSL_LIB)
 
-.PHONY: all kernel iso run run-debug run-serial clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src seed-headers
+.PHONY: all kernel iso run run-debug run-serial run-arm64 clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src seed-headers kernel-arm64
+
+# ============================================================
+# arm64 build — targeting QEMU virt machine.
+#
+# Portable kernel sources (no x86 port I/O, no APIC, no IDE):
+ARM64_COMMON_SRCS := \
+    kernel/src/alloc.c \
+    kernel/src/string.c
+
+# arm64-specific sources (in kernel/arch/arm64/):
+ARM64_ARCH_SRCS := \
+    kernel/arch/arm64/mmu.c \
+    kernel/arch/arm64/uart.c \
+    kernel/arch/arm64/gic.c \
+    kernel/arch/arm64/timer.c \
+    kernel/arch/arm64/arch.c
+
+ARM64_ASM_SRCS := \
+    kernel/arch/arm64/boot.S \
+    kernel/arch/arm64/exceptions.S
+
+ARM64_CFLAGS := \
+    -target aarch64-none-elf \
+    -ffreestanding \
+    -fno-stack-protector \
+    -fno-pie \
+    -O2 \
+    -std=c11 \
+    -Wall -Wextra \
+    -DARCH_ARM64=1 \
+    -Ikernel/include \
+    -Ikernel/arch/arm64
+
+ARM64_ASFLAGS := \
+    -target aarch64-none-elf \
+    -ffreestanding \
+    -D__ASSEMBLER__ \
+    -Ikernel/arch/arm64
+
+# Use distinct subdirs to avoid stem collisions (e.g. both kernel/src/timer.c
+# and kernel/arch/arm64/timer.c mapping to the same build/arm64/timer.o).
+#   build/arm64/common/alloc.o   ← kernel/src/alloc.c
+#   build/arm64/arch/boot.o      ← kernel/arch/arm64/boot.S
+ARM64_OBJECTS := \
+    $(patsubst kernel/src/%.c,$(OUT_DIR)/arm64/common/%.o,$(ARM64_COMMON_SRCS)) \
+    $(patsubst kernel/arch/arm64/%.c,$(OUT_DIR)/arm64/arch/%.o,$(ARM64_ARCH_SRCS)) \
+    $(patsubst kernel/arch/arm64/%.S,$(OUT_DIR)/arm64/arch/%.o,$(ARM64_ASM_SRCS))
+
+$(OUT_DIR)/arm64/common/%.o: kernel/src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ARM64_CFLAGS) -c $< -o $@
+
+$(OUT_DIR)/arm64/arch/%.o: kernel/arch/arm64/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ARM64_CFLAGS) -c $< -o $@
+
+$(OUT_DIR)/arm64/arch/%.o: kernel/arch/arm64/%.S
+	@mkdir -p $(dir $@)
+	$(CC) $(ARM64_ASFLAGS) -c $< -o $@
+
+kernel-arm64: $(ARM64_OBJECTS)
+	$(LLVM_LLD) -nostdlib -static -T linker-arm64.ld -o $(OUT_DIR)/vibeos-arm64.elf $(ARM64_OBJECTS)
+	@echo "arm64 kernel built: $(OUT_DIR)/vibeos-arm64.elf"
+	@$(firstword $(wildcard /opt/homebrew/opt/llvm/bin/llvm-size /usr/local/opt/llvm/bin/llvm-size) llvm-size) $(OUT_DIR)/vibeos-arm64.elf 2>/dev/null || true
+
+# Run arm64 VibeOS on QEMU. On Apple Silicon this uses HVF for native speed!
+QEMU_ARM64 := qemu-system-aarch64
+ifeq ($(UNAME_M),arm64)
+QEMU_ARM64_ACCEL ?= -accel hvf
+else
+QEMU_ARM64_ACCEL ?= -accel tcg
+endif
+
+run-arm64: kernel-arm64
+	$(QEMU_ARM64) \
+	  -machine virt,gic-version=2 \
+	  -cpu $(if $(filter arm64,$(UNAME_M)),host,cortex-a72) \
+	  $(QEMU_ARM64_ACCEL) \
+	  -m 512M \
+	  -smp 1 \
+	  -kernel $(OUT_DIR)/vibeos-arm64.elf \
+	  -nographic \
+	  -serial stdio \
+	  -monitor none \
+	  -no-reboot
+
+# ============================================================
 
 bump-version:
 	@./scripts/bump_version.sh

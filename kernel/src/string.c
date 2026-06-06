@@ -30,6 +30,8 @@
  * the sequential burst it emits is exactly what a write-combining framebuffer
  * wants. (The kernel runs with the direction flag clear by ABI convention.) */
 
+#ifndef ARCH_ARM64
+/* x86_64: use string instructions for maximum throughput. */
 void *memcpy(void *dest, const void *src, size_t count) {
     void *ret = dest;
     __asm__ volatile("rep movsb"
@@ -42,23 +44,15 @@ void *memcpy(void *dest, const void *src, size_t count) {
 void *memmove(void *dest, const void *src, size_t count) {
     uint8_t *out = (uint8_t *)dest;
     const uint8_t *in = (const uint8_t *)src;
-
-    if (out == in || count == 0) {
-        return dest;
-    }
-    /* Forward copy is correct unless dest overlaps the tail of src; only then
-     * do we copy backwards (high to low) to avoid clobbering unread bytes. */
-    if (out < in || out >= in + count) {
-        return memcpy(dest, src, count);
-    }
+    if (out == in || count == 0) return dest;
+    if (out < in || out >= in + count) return memcpy(dest, src, count);
     {
         uint8_t *d = out + count - 1;
         const uint8_t *s = in + count - 1;
         size_t n = count;
         __asm__ volatile("std; rep movsb; cld"
                          : "+D"(d), "+S"(s), "+c"(n)
-                         :
-                         : "memory");
+                         : : "memory");
     }
     return dest;
 }
@@ -80,6 +74,38 @@ void *memset32(void *dest, uint32_t value, size_t count) {
                      : "memory");
     return ret;
 }
+
+#else /* ARCH_ARM64 — plain C, compiler will emit efficient NEON/LDP-STP */
+
+void *memcpy(void *dest, const void *src, size_t count) {
+    uint8_t *d = (uint8_t *)dest;
+    const uint8_t *s = (const uint8_t *)src;
+    for (size_t i = 0; i < count; i++) d[i] = s[i];
+    return dest;
+}
+
+void *memmove(void *dest, const void *src, size_t count) {
+    uint8_t *d = (uint8_t *)dest;
+    const uint8_t *s = (const uint8_t *)src;
+    if (d == s || count == 0) return dest;
+    if (d < s) { for (size_t i = 0; i < count; i++) d[i] = s[i]; }
+    else       { for (size_t i = count; i-- > 0;) d[i] = s[i]; }
+    return dest;
+}
+
+void *memset(void *dest, int value, size_t count) {
+    uint8_t *d = (uint8_t *)dest;
+    for (size_t i = 0; i < count; i++) d[i] = (uint8_t)value;
+    return dest;
+}
+
+void *memset32(void *dest, uint32_t value, size_t count) {
+    uint32_t *d = (uint32_t *)dest;
+    for (size_t i = 0; i < count; i++) d[i] = value;
+    return dest;
+}
+
+#endif /* ARCH_ARM64 */
 
 int memcmp(const void *left, const void *right, size_t count) {
     const uint8_t *a = (const uint8_t *)left;

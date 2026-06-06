@@ -1,0 +1,91 @@
+/* VibeOS arm64 architecture definitions.
+ * Target: QEMU virt machine with GICv2, PL011 UART, ARM generic timer.
+ * Memory map (QEMU virt):
+ *   0x00000000-0x07FFFFFF  MMIO low (flash, etc.)
+ *   0x08000000             GICv2 distributor (GICD)
+ *   0x08010000             GICv2 CPU interface (GICC)
+ *   0x09000000             PL011 UART
+ *   0x40000000             RAM start (512 MB → 0x5FFFFFFF)
+ * Kernel loads at 0x40200000 (2 MB above RAM, DTB sits at 0x40000000).
+ */
+#ifndef VIBEOS_ARCH_ARM64_H
+#define VIBEOS_ARCH_ARM64_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+/* ---- MMIO addresses --------------------------------------------------- */
+#define GICD_BASE    0x08000000UL  /* GICv2 Distributor */
+#define GICC_BASE    0x08010000UL  /* GICv2 CPU Interface */
+#define UART0_BASE   0x09000000UL  /* PL011 UART */
+#define RAM_BASE     0x40000000UL
+#define KERN_BASE    0x40200000UL  /* where the kernel ELF is loaded */
+
+/* ---- GICv2 Distributor registers -------------------------------------- */
+#define GICD_CTLR      (GICD_BASE + 0x000)
+#define GICD_TYPER     (GICD_BASE + 0x004)
+#define GICD_ISENABLER (GICD_BASE + 0x100)  /* +4*n for interrupts 32n..32n+31 */
+#define GICD_ICENABLER (GICD_BASE + 0x180)
+#define GICD_ISPENDR   (GICD_BASE + 0x200)
+#define GICD_IPRIORITYR(n) (GICD_BASE + 0x400 + (n))
+#define GICD_ITARGETSR(n)  (GICD_BASE + 0x800 + (n))
+#define GICD_ICFGR(n)      (GICD_BASE + 0xC00 + (n))
+
+/* ---- GICv2 CPU Interface registers ------------------------------------ */
+#define GICC_CTLR  (GICC_BASE + 0x000)
+#define GICC_PMR   (GICC_BASE + 0x004)  /* priority mask (0xFF = all) */
+#define GICC_BPR   (GICC_BASE + 0x008)
+#define GICC_IAR   (GICC_BASE + 0x00C)  /* interrupt acknowledge */
+#define GICC_EOIR  (GICC_BASE + 0x010)  /* end of interrupt */
+
+/* ---- PL011 UART registers --------------------------------------------- */
+#define UART_DR    (UART0_BASE + 0x000)  /* data register */
+#define UART_FR    (UART0_BASE + 0x018)  /* flag register */
+#define UART_IBRD  (UART0_BASE + 0x024)  /* integer baud divisor */
+#define UART_FBRD  (UART0_BASE + 0x028)  /* fractional baud divisor */
+#define UART_LCR_H (UART0_BASE + 0x02C)  /* line control */
+#define UART_CR    (UART0_BASE + 0x030)  /* control */
+#define UART_IMSC  (UART0_BASE + 0x038)  /* interrupt mask */
+#define UART_ICR   (UART0_BASE + 0x044)  /* interrupt clear */
+#define UART_FR_TXFF (1 << 5)
+#define UART_FR_RXFE (1 << 4)
+
+/* ---- ARM generic timer IRQ numbers ------------------------------------ */
+/* PPIs: INTID 16-31. Physical timer PPI = 16+14 = 30. */
+#define TIMER_IRQ_PHYS 30
+
+/* ---- MMIO accessor ---------------------------------------------------- */
+static inline void mmio_write32(uintptr_t addr, uint32_t val) {
+    volatile uint32_t *p = (volatile uint32_t *)addr;
+    *p = val;
+}
+static inline uint32_t mmio_read32(uintptr_t addr) {
+    volatile uint32_t *p = (volatile uint32_t *)addr;
+    return *p;
+}
+
+/* ---- System register helpers ----------------------------------------- */
+#define read_sysreg(r)  ({ uint64_t _v; __asm__ volatile("mrs %0," #r : "=r"(_v)); _v; })
+#define write_sysreg(r, v) __asm__ volatile("msr " #r ", %0" :: "r"((uint64_t)(v)))
+
+/* ---- arm64 arch function declarations --------------------------------- */
+void arm64_uart_init(void);
+void arm64_uart_putc(char c);
+char arm64_uart_getc(void);
+int  arm64_uart_can_read(void);
+
+void arm64_mmu_init(void);
+
+void arm64_gic_init(void);
+void arm64_gic_enable_irq(unsigned irq);
+unsigned arm64_gic_ack(void);
+void arm64_gic_eoi(unsigned irq);
+
+void arm64_timer_init(void);
+void arm64_timer_set_interval_ms(uint32_t ms);
+void arm64_timer_ack(void);
+
+/* Defined in arch.c, called from boot.S */
+void kernel_main_arm64(void);
+
+#endif /* VIBEOS_ARCH_ARM64_H */

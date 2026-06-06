@@ -24,8 +24,10 @@
 
 #include "alloc.h"
 #include "string.h"
+#ifndef ARCH_ARM64
 #include "paging.h"
 #include "tty.h"
+#endif
 #include "serial.h"
 #include "spinlock.h"
 #include <stddef.h>

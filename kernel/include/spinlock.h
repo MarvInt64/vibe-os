@@ -41,8 +41,13 @@ typedef struct spinlock {
 #define SPINLOCK_INIT { 0 }
 
 static inline void spin_lock(spinlock_t *lock) {
-    while (__atomic_test_and_set(&lock->locked, __ATOMIC_ACQUIRE))
+    while (__atomic_test_and_set(&lock->locked, __ATOMIC_ACQUIRE)) {
+#if defined(ARCH_ARM64)
+        __asm__ volatile("yield");
+#else
         __asm__ volatile("pause");
+#endif
+    }
 }
 
 static inline int spin_trylock(spinlock_t *lock) {
@@ -53,10 +58,15 @@ static inline void spin_unlock(spinlock_t *lock) {
     __atomic_clear(&lock->locked, __ATOMIC_RELEASE);
 }
 
-/* Disable interrupts, then take the lock; returns the prior RFLAGS. */
+/* Disable interrupts, then take the lock; returns the prior interrupt-flag state. */
 static inline unsigned long spin_lock_irqsave(spinlock_t *lock) {
     unsigned long flags;
+#if defined(ARCH_ARM64)
+    __asm__ volatile("mrs %0, daif" : "=r"(flags));
+    __asm__ volatile("msr daifset, #3" ::: "memory");
+#else
     __asm__ volatile("pushfq; pop %0; cli" : "=r"(flags) : : "memory");
+#endif
     spin_lock(lock);
     return flags;
 }
@@ -64,7 +74,11 @@ static inline unsigned long spin_lock_irqsave(spinlock_t *lock) {
 /* Release the lock, then restore the interrupt state saved above. */
 static inline void spin_unlock_irqrestore(spinlock_t *lock, unsigned long flags) {
     spin_unlock(lock);
+#if defined(ARCH_ARM64)
+    __asm__ volatile("msr daif, %0" :: "r"(flags) : "memory");
+#else
     __asm__ volatile("push %0; popfq" : : "r"(flags) : "memory", "cc");
+#endif
 }
 
 #endif
