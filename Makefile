@@ -48,10 +48,24 @@ QEMU_NET_DUMP ?=
 DISK_IMG := vibeos-disk.img
 DISK_SIZE_MB ?= 64
 QEMU_DISK ?= -drive file=$(DISK_IMG),format=raw,if=ide,index=0,media=disk
-# Hardware acceleration: hvf on macOS, kvm on Linux, tcg as fallback
+# Hardware acceleration.
+#   - On Apple Silicon (arm64) HVF cannot help VibeOS: HVF virtualizes the
+#     *native* CPU, so it only accelerates arm64 guests. VibeOS is x86_64 and
+#     must be emulated by TCG — there is no x86 hardware to virtualize, which is
+#     why the homebrew qemu-system-x86_64 doesn't even build HVF in. The only
+#     real speedups are an Intel Mac / x86 Linux (KVM), or porting VibeOS to
+#     arm64. Tuning knobs were tried (tb-size, MTTCG) without a measurable win,
+#     so we keep plain stable TCG. To experiment, override on the command line,
+#     e.g.  make run QEMU_ACCEL="-accel tcg,tb-size=512".
+#   - On Intel macOS, HVF works. On Linux/x86 use KVM. TCG is the fallback.
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
 ifeq ($(UNAME_S),Darwin)
+ifeq ($(UNAME_M),arm64)
 QEMU_ACCEL ?= -accel tcg
+else
+QEMU_ACCEL ?= -accel hvf -accel tcg
+endif
 else
 QEMU_ACCEL ?= -accel kvm -accel tcg
 endif
