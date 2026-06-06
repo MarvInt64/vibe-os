@@ -244,7 +244,8 @@ arm64-user: $(DISK_IMG)
 	    $(ARM64_UDIR)/umalloc.o $(ARM64_UDIR)/stubs.o
 	# --- shared apps (same .c files x86 uses) ---
 	$(call arm64app,user/hello.c,/bin/hello)
-	@echo "arm64 user programs (shared sources) installed: /bin/hello"
+	$(call arm64app,user/gfxdemo.c,/bin/gfxdemo)
+	@echo "arm64 user programs (shared sources) installed: /bin/hello /bin/gfxdemo"
 
 # ============================================================
 

@@ -125,7 +125,10 @@ enum syscall_number {
 	/* Query per-CPU information (SMP). rdi = struct cpu_info_snapshot* buf (user),
 	 * rsi = max entries (capacity). Fills buf with up to max entries and returns
 	 * the number of CPUs written (<= max), or <0 on failure. */
-	SYS_CPU_INFO = 64
+	SYS_CPU_INFO = 64,
+	/* rdi = struct vos_fb_info* → fills addr/width/height/stride for a linear
+	 * framebuffer the caller can draw into directly. 0 on success, <0 if no fb. */
+	SYS_FB_INFO = 65
 };
 
 struct system_info_snapshot {

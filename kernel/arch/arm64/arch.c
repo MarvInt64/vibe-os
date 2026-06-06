@@ -175,6 +175,25 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 g_files[a0].used = 0;
             regs[0] = 0;
             return;
+        case SYS_FB_INFO: {     /* 65: fill struct vos_fb_info* with the framebuffer */
+            /* struct layout: u64 addr; u32 width,height,stride,bpp; */
+            uint32_t *fb = ramfb_buffer();
+            if (!fb) {          /* lazily bring up an 800x600 framebuffer */
+                if (ramfb_init(800, 600) != 0) { regs[0] = (uint64_t)-1; return; }
+                fb = ramfb_buffer();
+            }
+            /* The fb lives in kernel RAM (PA 0x40000000+); EL0 reaches it via the
+             * alias at +0x40000000. Hand userspace that EL0-visible address. */
+            uint64_t *out = (uint64_t *)(uintptr_t)a0;   /* EL0 ptr, EL1-readable */
+            uint32_t *o32 = (uint32_t *)(out + 1);
+            out[0] = (uint64_t)(uintptr_t)fb + 0x40000000ULL;  /* EL0 alias VA */
+            o32[0] = ramfb_width();
+            o32[1] = ramfb_height();
+            o32[2] = ramfb_stride_px() * 4;
+            o32[3] = 32;
+            regs[0] = 0;
+            return;
+        }
         case SYS_GETARG: {      /* 15: getarg(buf, cap) → len; crt0 splits argv */
             char *ubuf = (char *)(uintptr_t)a0;
             uint64_t cap = a1;
