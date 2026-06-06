@@ -544,6 +544,21 @@ static void cmd_exec(const char *cmdline) {
     kfree(buf);
 }
 
+static void cmd_fb(void) {
+    if (ramfb_init(800, 600) != 0) {
+        serial_write("  ramfb init failed\r\n");
+        return;
+    }
+    /* Test pattern: dark background, colored bars, a white box. */
+    ramfb_clear(0xff202830);
+    ramfb_fill_rect(0,   0,   800, 40,  0xff3060a0);  /* top bar (blue) */
+    ramfb_fill_rect(40,  80,  200, 150, 0xffd04040);  /* red   */
+    ramfb_fill_rect(280, 80,  200, 150, 0xff40c040);  /* green */
+    ramfb_fill_rect(520, 80,  200, 150, 0xff4040d0);  /* blue  */
+    ramfb_fill_rect(300, 300, 200, 200, 0xffffffff);  /* white square */
+    serial_write("  framebuffer painted (800x600) — check the QEMU display\r\n");
+}
+
 static void cmd_cpuinfo(void) {
     serial_write("  MIDR_EL1  = "); serial_write_hex_u64(read_sysreg(midr_el1)); serial_write("\r\n");
     serial_write("  CNTFRQ    = "); print_dec(read_sysreg(cntfrq_el0) / 1000000);
@@ -560,6 +575,7 @@ static void run_command(const char *line) {
     else if (str_eq(line, "mem"))          cmd_mem();
     else if (str_eq(line, "uptime"))       cmd_uptime();
     else if (str_eq(line, "cpuinfo"))      cmd_cpuinfo();
+    else if (str_eq(line, "fb"))           cmd_fb();
     else if (str_eq(line, "run"))          cmd_run();
     else if (str_starts(line, "exec "))    cmd_exec(line + 5);
     else if (str_eq(line, "pwd"))          { serial_write(g_cwd); serial_write("\r\n"); }

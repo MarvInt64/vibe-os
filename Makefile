@@ -130,6 +130,7 @@ ARM64_ARCH_SRCS := \
     kernel/arch/arm64/gic.c \
     kernel/arch/arm64/timer.c \
     kernel/arch/arm64/virtio_blk.c \
+    kernel/arch/arm64/ramfb.c \
     kernel/arch/arm64/arch.c
 
 ARM64_ASM_SRCS := \
@@ -206,9 +207,8 @@ run-arm64: kernel-arm64
 	  -kernel $(OUT_DIR)/vibeos-arm64.elf \
 	  -drive file=$(DISK_IMG),if=none,id=hd0,format=raw \
 	  -device virtio-blk-device,drive=hd0 \
-	  -nographic \
+	  -device ramfb \
 	  -serial stdio \
-	  -monitor none \
 	  -no-reboot
 
 # Build an aarch64 EL0 userspace program and install it on the disk image so

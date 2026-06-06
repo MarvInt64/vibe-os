@@ -75,6 +75,15 @@ struct ramdisk_device;
 int virtio_blk_init(void);
 int virtio_blk_get_device(struct ramdisk_device *dev);
 
+/* ---- ramfb framebuffer ------------------------------------------------ */
+int       ramfb_init(uint32_t width, uint32_t height);
+void      ramfb_clear(uint32_t argb);
+void      ramfb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t argb);
+uint32_t *ramfb_buffer(void);
+uint32_t  ramfb_width(void);
+uint32_t  ramfb_height(void);
+uint32_t  ramfb_stride_px(void);
+
 /* ---- arm64 arch function declarations --------------------------------- */
 void arm64_uart_init(void);
 void arm64_uart_putc(char c);
