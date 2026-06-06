@@ -16,6 +16,7 @@ extern "C" {
 /* ---- process ---- */
 int  vos_spawn(const char *path);
 int  vos_spawn_arg(const char *path, const char *arg);
+int  vos_waitpid(int pid);
 /* Open a pseudo-terminal; returns the master fd (>=0) or <0 on failure. Read
  * the master for child output, write it to send child input. */
 int  vos_pty_open(void);

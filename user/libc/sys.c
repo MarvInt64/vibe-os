@@ -56,6 +56,19 @@ void vos_sleep_ticks(unsigned long ticks) { __sc1(SYS_TIMER_SLEEP, (uint64_t)tic
 int vos_system_info(struct vos_system_info *out) { return (int)ck(__sc1(SYS_SYSTEM_INFO, (uint64_t)(size_t)out)); }
 int  vos_spawn(const char *path) { return (int)__sc1(SYS_PROCESS_SPAWN, (uint64_t)(size_t)path); }
 int  vos_spawn_arg(const char *path, const char *arg) { return (int)__sc2(SYS_PROCESS_SPAWN, (uint64_t)(size_t)path, (uint64_t)(size_t)arg); }
+/* Wait for a spawned child to exit and return ITS exit code. The kernel
+ * delivers the child's pid in rax and the exit code in rdx (both for the
+ * already-exited fast path and the blocking wake path), so capture rdx —
+ * the generic __scN helpers only return rax. */
+int  vos_waitpid(int pid) {
+    long rax, rdx;
+    __asm__ volatile("int $0x80"
+        : "=a"(rax), "=d"(rdx)
+        : "a"((long)SYS_WAITPID), "D"((uint64_t)pid), "S"(0ull), "d"(0ull)
+        : "rcx", "r11", "memory");
+    (void)rax;                /* rax = reaped child pid */
+    return (int)rdx;          /* rdx = child exit code */
+}
 int  vos_pty_open(void) { return (int)__sc1(SYS_PTY_OPEN, 0); }
 int  vos_spawn_pty(const char *path, int master_fd) { return (int)__sc2(SYS_SPAWN_PTY, (uint64_t)(size_t)path, (uint64_t)master_fd); }
 int  vos_pty_interrupt(int master_fd) { return (int)__sc1(SYS_PTY_INTERRUPT, (uint64_t)master_fd); }

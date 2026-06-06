@@ -569,6 +569,13 @@ tcc: $(DISK_IMG) $(LIBC_A)
 	    b=$$(basename $$f); \
 	    python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/lib/tcc/include/$$b" ; \
 	done
+	# cc: friendly front-end for the on-device tcc (default output naming, -run).
+	# Part of the toolchain, so it is built and installed alongside tcc — and
+	# relinked here against the just-rebuilt libc.a (it needs vos_waitpid).
+	$(UCC) $(UCFLAGS) $(LIBC_INC) -c user/cc.c -o build/user/cc.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/cc.elf $(LIBC_CRT0) build/user/cc.o $(LIBC_A)
+	$(USTRIP) --strip-all build/user/cc.elf
+	python3 scripts/ext2_put.py $(DISK_IMG) build/user/cc.elf /bin/cc
 	@echo "tcc installed to $(DISK_IMG)."
 
 # ---- tcc-src: seed tcc's own source tree onto the disk for self-hosting -----
