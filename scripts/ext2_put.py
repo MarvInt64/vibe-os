@@ -222,6 +222,14 @@ class Ext2:
             self.write_block(self.bb_start + i // BS, bytes(self.block_bitmap[i:i+BS]))
         # write inode bitmap
         self.write_block(self.ib_start, bytes(self.inode_bitmap))
+        # Derive the free counts from the bitmaps we are actually writing rather
+        # than from the running decrement counters. If the on-disk counts were
+        # already drifted when we loaded them, trusting them would compound the
+        # error; recomputing keeps the superblock consistent with the bitmaps.
+        used_blocks = sum(bin(b).count("1") for b in self.block_bitmap[:(self.blocks_count + 7) // 8])
+        used_inodes = sum(bin(b).count("1") for b in self.inode_bitmap[:(self.inodes_count + 7) // 8])
+        self.free_blocks = self.blocks_count - used_blocks
+        self.free_inodes = self.inodes_count - used_inodes
         # update free counts in superblock
         sb = bytearray(self.read_block(1))
         struct.pack_into("<I", sb, 0x0C, self.free_blocks & 0xffffffff)

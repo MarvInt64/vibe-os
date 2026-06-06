@@ -96,7 +96,7 @@ $(BEARSSL_LIB): $(BEARSSL_OBJS)
 
 bearssl: $(BEARSSL_LIB)
 
-.PHONY: all kernel iso run run-debug run-serial clean user disk newdisk apps libc bearssl bump-version
+.PHONY: all kernel iso run run-debug run-serial clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version
 
 bump-version:
 	@./scripts/bump_version.sh
@@ -412,6 +412,17 @@ $(DISK_IMG):
 newdisk:
 	rm -f $(DISK_IMG)
 	$(MAKE) disk
+
+# Check the disk image for ext2 inconsistencies (double-allocated blocks, bitmap
+# vs free-count drift, broken directories, orphaned inodes). Read-only.
+verify-disk: $(DISK_IMG)
+	python3 scripts/ext2_fsck.py $(DISK_IMG)
+
+# Repair the disk image in place: rebuild bitmaps + free counts from the live
+# inode/directory tree (drops orphaned inodes and stale bitmap bits). Run with
+# QEMU stopped. Directory rec_len damage is reported but not auto-fixed.
+fsck-disk: $(DISK_IMG)
+	python3 scripts/ext2_fsck.py $(DISK_IMG) --repair
 
 all: bump-version kernel user apps
 
