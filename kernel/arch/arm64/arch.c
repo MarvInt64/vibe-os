@@ -22,6 +22,8 @@
 #include "../../include/ext2_fs.h"
 #include "../../include/elf.h"
 #include "../../include/syscall.h"   /* shared SYS_* numbers (x86 + arm64) */
+#include "../../include/framebuffer.h"
+#include "../../include/render.h"
 
 /* ---- Timer tick counter (incremented without GIC) --------------------- */
 static volatile uint64_t g_tick = 0;
@@ -564,14 +566,20 @@ static void cmd_fb(void) {
         serial_write("  ramfb init failed\r\n");
         return;
     }
-    /* Test pattern: dark background, colored bars, a white box. */
-    ramfb_clear(0xff202830);
-    ramfb_fill_rect(0,   0,   800, 40,  0xff3060a0);  /* top bar (blue) */
-    ramfb_fill_rect(40,  80,  200, 150, 0xffd04040);  /* red   */
-    ramfb_fill_rect(280, 80,  200, 150, 0xff40c040);  /* green */
-    ramfb_fill_rect(520, 80,  200, 150, 0xff4040d0);  /* blue  */
-    ramfb_fill_rect(300, 300, 200, 200, 0xffffffff);  /* white square */
-    serial_write("  framebuffer painted (800x600) — check the QEMU display\r\n");
+    /* Drive the SHARED kernel renderer (kernel/src/render.c — the exact same
+     * code x86 uses) over the ramfb framebuffer. This proves portable kernel
+     * graphics code runs unmodified on arm64. */
+    struct framebuffer fb;
+    fb_init(&fb, (uintptr_t)ramfb_buffer(), ramfb_width(), ramfb_height(),
+            ramfb_stride_px() * 4, 32);
+
+    draw_gradient_background(&fb, 0xff202838, 0xff0a0c14);
+    draw_rounded_panel(&fb, 220, 200, 360, 200, 16,
+                       0xff2a3550, 0xff1a2030, 0xff5080c0, 0xff80a0e0);
+    draw_text(&fb, 250, 240, "VibeOS arm64", 0xffffffff, 3);
+    draw_text(&fb, 250, 300, "shared kernel renderer", 0xff90b0e0, 2);
+    draw_text(&fb, 250, 340, "running on Apple M-series via HVF", 0xff708090, 1);
+    serial_write("  rendered via shared kernel/src/render.c — check the display\r\n");
 }
 
 static void cmd_cpuinfo(void) {

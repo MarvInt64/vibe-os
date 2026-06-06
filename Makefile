@@ -121,7 +121,9 @@ ARM64_COMMON_SRCS := \
     kernel/src/string.c \
     kernel/src/ext2_fs.c \
     kernel/src/ramdisk.c \
-    kernel/src/elf.c
+    kernel/src/elf.c \
+    kernel/src/render.c \
+    kernel/src/font_atlas.c
 
 # arm64-specific sources (in kernel/arch/arm64/):
 ARM64_ARCH_SRCS := \
