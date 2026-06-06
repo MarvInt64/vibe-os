@@ -68,6 +68,13 @@ static inline uint32_t mmio_read32(uintptr_t addr) {
 #define read_sysreg(r)  ({ uint64_t _v; __asm__ volatile("mrs %0," #r : "=r"(_v)); _v; })
 #define write_sysreg(r, v) __asm__ volatile("msr " #r ", %0" :: "r"((uint64_t)(v)))
 
+/* ---- ramdisk forward declaration (for virtio_blk_get_device) ---------- */
+struct ramdisk_device;
+
+/* ---- virtio-blk ------------------------------------------------------- */
+int virtio_blk_init(void);
+int virtio_blk_get_device(struct ramdisk_device *dev);
+
 /* ---- arm64 arch function declarations --------------------------------- */
 void arm64_uart_init(void);
 void arm64_uart_putc(char c);

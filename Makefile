@@ -118,7 +118,9 @@ bearssl: $(BEARSSL_LIB)
 # Portable kernel sources (no x86 port I/O, no APIC, no IDE):
 ARM64_COMMON_SRCS := \
     kernel/src/alloc.c \
-    kernel/src/string.c
+    kernel/src/string.c \
+    kernel/src/ext2_fs.c \
+    kernel/src/ramdisk.c
 
 # arm64-specific sources (in kernel/arch/arm64/):
 ARM64_ARCH_SRCS := \
@@ -126,6 +128,7 @@ ARM64_ARCH_SRCS := \
     kernel/arch/arm64/uart.c \
     kernel/arch/arm64/gic.c \
     kernel/arch/arm64/timer.c \
+    kernel/arch/arm64/virtio_blk.c \
     kernel/arch/arm64/arch.c
 
 ARM64_ASM_SRCS := \
@@ -137,12 +140,18 @@ ARM64_CFLAGS := \
     -ffreestanding \
     -fno-stack-protector \
     -fno-pie \
-    -O2 \
+    -O1 \
     -std=c11 \
     -Wall -Wextra \
     -DARCH_ARM64=1 \
     -Ikernel/include \
-    -Ikernel/arch/arm64
+    -Ikernel/arch/arm64 \
+    -mstrict-align \
+    -fno-builtin-memcpy \
+    -fno-builtin-memmove \
+    -fno-builtin-memset \
+     \
+    -fno-slp-vectorize
 
 ARM64_ASFLAGS := \
     -target aarch64-none-elf \

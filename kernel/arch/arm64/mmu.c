@@ -90,13 +90,16 @@ void arm64_mmu_init(void) {
     /* Flush TLB before enabling */
     __asm__ volatile("dsb sy; isb; tlbi vmalle1; dsb sy; isb" ::: "memory");
 
-    /* Enable MMU (M), D-cache (C), I-cache (I) in SCTLR_EL1 */
+    /* Enable MMU (M), D-cache (C), I-cache (I) in SCTLR_EL1.
+     * Also clear A (alignment check, bit 1) so unaligned accesses in C code
+     * (e.g. packed structs in ext2 headers) don't fault — same as Linux. */
     uint64_t sctlr = read_sysreg(sctlr_el1);
     sctlr |= (1ULL << 0)    /* M — MMU on */
           |  (1ULL << 2)    /* C — D-cache */
           |  (1ULL << 12);  /* I — I-cache */
-    /* Clear WXN (write implies execute-never) so kernel .text stays executable */
-    sctlr &= ~(1ULL << 19);
+    /* Clear: A (alignment check), WXN (W→X-never, keeps .text executable) */
+    sctlr &= ~(1ULL << 1);   /* A  — no alignment fault on unaligned accesses */
+    sctlr &= ~(1ULL << 19);  /* WXN */
     write_sysreg(sctlr_el1, sctlr);
     __asm__ volatile("dsb sy; isb" ::: "memory");
 }
