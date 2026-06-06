@@ -81,9 +81,11 @@ void arm64_gic_enable_irq(unsigned irq);
 unsigned arm64_gic_ack(void);
 void arm64_gic_eoi(unsigned irq);
 
-void arm64_timer_init(void);
+void arm64_timer_init(void);       /* IRQ mode (GIC path) */
+void arm64_timer_init_poll(void);  /* Poll mode (HVF path, no GIC MMIO) */
 void arm64_timer_set_interval_ms(uint32_t ms);
 void arm64_timer_ack(void);
+int  arm64_timer_poll(void);       /* returns 1 and advances tick when ISTATUS set */
 
 /* Defined in arch.c, called from boot.S */
 void kernel_main_arm64(void);
