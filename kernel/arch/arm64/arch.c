@@ -425,7 +425,7 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             while (e.name[name_len] && name_len + 1 < cap) name_len++;
             for (size_t i = 0; i < name_len; i++) name[i] = e.name[i];
             if (cap) name[name_len] = '\0';
-            regs[0] = 0;                    /* success */
+            regs[0] = 1;                    /* 1 = entry found (matches x86) */
             regs[1] = (uint64_t)e.kind;     /* kind: 1=file, 2=dir */
             regs[2] = e.size;               /* size in bytes */
             return;
@@ -1286,6 +1286,10 @@ static void gui_run(void) {
             mouse.left_pressed = 1;
         if (!(g_mouse_buttons & 1) && (prev_buttons & 1))
             mouse.left_released = 1;
+        if ((g_mouse_buttons & 2) && !(prev_buttons & 2))
+            mouse.right_pressed = 1;
+        if (!(g_mouse_buttons & 2) && (prev_buttons & 2))
+            mouse.right_released = 1;
         prev_buttons = g_mouse_buttons;
 
         desktop_handle_input(g_desktop, &mouse, &keyboard);
