@@ -108,36 +108,44 @@ exception_vectors:
 /* Kernel IRQ — the main one we use (timer, etc.) */
 exc_el1_irq:
     SAVE_REGS
+    bl   bkl_acquire
     bl   arm64_irq_handler
+    bl   bkl_release
     RESTORE_REGS
     eret
 
 /* User IRQ */
 exc_el0_irq:
     SAVE_REGS
+    bl   bkl_acquire
     bl   arm64_irq_handler
+    bl   bkl_release
     RESTORE_REGS
     eret
 
 /* User synchronous (syscalls / page faults from EL0) */
 exc_el0_sync:
     SAVE_REGS
+    bl   bkl_acquire
     mrs  x0, esr_el1
     mrs  x1, elr_el1
     mrs  x2, far_el1
     mov  x3, sp
     bl   arm64_sync_handler_el0
+    bl   bkl_release
     RESTORE_REGS
     eret
 
 /* Kernel synchronous (kernel page faults / bugs) */
 exc_el1_sync:
     SAVE_REGS
+    bl   bkl_acquire
     mrs  x0, esr_el1
     mrs  x1, elr_el1
     mrs  x2, far_el1
     mov  x3, sp
     bl   arm64_sync_handler_el1
+    bl   bkl_release
     RESTORE_REGS
     eret
 

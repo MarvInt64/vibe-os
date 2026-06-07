@@ -26,8 +26,16 @@ extern int g_fs_ready;
 /* ---- Timer ------------------------------------------------------------ */
 uint64_t g_timer_ticks = 0;
 
-uint64_t timer_tick_count(void) { return g_timer_ticks; }
-uint32_t timer_frequency_hz(void) { return 100; }
+uint64_t timer_tick_count(void) {
+    uint64_t cnt;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(cnt));
+    return cnt;
+}
+uint32_t timer_frequency_hz(void) {
+    uint64_t freq;
+    __asm__ volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+    return (uint32_t)freq;
+}
 
 void timer_tick(void) { g_timer_ticks++; }
 
@@ -91,12 +99,49 @@ int vfs_mkdir(const char *path) {
 }
 
 int vfs_readdir(const char *path, uint32_t index, struct vfs_dir_entry *entry) {
-    /* Simplified: just walk ext2 directory blocks */
-    if (!g_fs_ready) return 0;
+    if (!g_fs_ready || !entry) return 0;
     uint32_t dir_ino = ext2_lookup_inode(&g_fs, path);
     if (!dir_ino) return 0;
-    (void)index; (void)entry;
-    return 0;  /* TODO: proper readdir */
+
+    /* Read the directory in blocks, skip entries up to `index`. */
+    uint32_t block_size = 1024 << g_fs.superblock.log_block_size;
+    struct ext2_inode *node = &g_fs.inode_table[dir_ino - 1];
+    uint32_t remaining = node->size;
+    uint32_t seen = 0;
+
+    for (uint32_t blk_off = 0; remaining > 0; blk_off += block_size) {
+        uint8_t block[1024]; /* max block size for simplicity */
+        uint32_t read_size = remaining < block_size ? remaining : block_size;
+        ssize_t got = ext2_read(&g_fs, dir_ino, blk_off, read_size, block);
+        if (got <= 0) return 0;
+
+        uint32_t offset = 0;
+        while (offset < (uint32_t)got) {
+            struct ext2_dir_entry *e = (struct ext2_dir_entry *)(block + offset);
+            if (e->inode == 0) { offset += e->rec_len; continue; }
+            if (seen == index) {
+                /* Found the requested entry — copy name + stat */
+                static char name_buf[256];
+                size_t name_len = e->name_len;
+                if (name_len > sizeof(name_buf) - 1)
+                    name_len = sizeof(name_buf) - 1;
+                for (size_t i = 0; i < name_len; i++)
+                    name_buf[i] = e->name[i];
+                name_buf[name_len] = '\0';
+                entry->name = name_buf;
+
+                /* Stat the entry to get kind and size. */
+                struct ext2_inode *child = &g_fs.inode_table[e->inode - 1];
+                entry->kind = (child->mode & 0x4000) ? VFS_NODE_DIRECTORY : VFS_NODE_FILE;
+                entry->size = child->size;
+                return 1;
+            }
+            seen++;
+            offset += e->rec_len;
+        }
+        remaining -= (uint32_t)got;
+    }
+    return 0; /* index out of range */
 }
 
 int vfs_file_exists(const char *path) {

@@ -82,6 +82,15 @@ struct system_info_snapshot {
 
 static inline ssize_t syscall4(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3) {
     ssize_t ret;
+#ifdef ARCH_ARM64
+    register long x0 __asm__("x0") = (long)a0;
+    register long x1 __asm__("x1") = (long)a1;
+    register long x2 __asm__("x2") = (long)a2;
+    register long x3 __asm__("x3") = (long)a3;
+    register long x8 __asm__("x8") = (long)n;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x3), "r"(x8) : "memory");
+    ret = x0;
+#else
     __asm__ volatile(
         "mov %5, %%r10;"
         "int $0x80"
@@ -89,29 +98,66 @@ static inline ssize_t syscall4(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2
         : "a"(n), "D"(a0), "S"(a1), "d"(a2), "r"(a3)
         : "rcx", "r8", "r9", "r10", "r11", "memory"
     );
+#endif
     return ret;
 }
 
 static inline ssize_t syscall3(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2) {
     ssize_t ret;
+#ifdef ARCH_ARM64
+    register long x0 __asm__("x0") = (long)a0;
+    register long x1 __asm__("x1") = (long)a1;
+    register long x2 __asm__("x2") = (long)a2;
+    register long x8 __asm__("x8") = (long)n;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x2), "r"(x8) : "memory");
+    ret = x0;
+#else
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(n), "D"(a0), "S"(a1), "d"(a2) : "rcx", "r11", "memory");
+#endif
     return ret;
 }
 
 static inline ssize_t syscall2(uint64_t n, uint64_t a0, uint64_t a1) {
     ssize_t ret;
+#ifdef ARCH_ARM64
+    register long x0 __asm__("x0") = (long)a0;
+    register long x1 __asm__("x1") = (long)a1;
+    register long x8 __asm__("x8") = (long)n;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x1), "r"(x8) : "memory");
+    ret = x0;
+#else
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(n), "D"(a0), "S"(a1) : "rcx", "r11", "memory");
+#endif
     return ret;
 }
 
 static inline ssize_t syscall1(uint64_t n, uint64_t a0) {
     ssize_t ret;
+#ifdef ARCH_ARM64
+    register long x0 __asm__("x0") = (long)a0;
+    register long x8 __asm__("x8") = (long)n;
+    __asm__ volatile("svc #0" : "+r"(x0) : "r"(x8) : "memory");
+    ret = x0;
+#else
     __asm__ volatile("int $0x80" : "=a"(ret) : "a"(n), "D"(a0) : "rcx", "r11", "memory");
+#endif
     return ret;
 }
 
 static inline void yield(void) {
+#ifdef ARCH_ARM64
+    register long x8 __asm__("x8") = SYS_YIELD;
+    __asm__ volatile("svc #0" : : "r"(x8) : "memory");
+#else
     __asm__ volatile("int $0x80" : : "a"((uint64_t)SYS_YIELD) : "rcx", "r11", "memory");
+#endif
+}
+
+static void *memcpy(void *d, const void *s, size_t n) {
+    char *dst = (char *)d;
+    const char *src = (const char *)s;
+    for (size_t i = 0; i < n; i++) dst[i] = src[i];
+    return d;
 }
 
 static size_t strlen(const char *s) {
@@ -783,6 +829,18 @@ static void cmd_cd(const char *path) {
  * Returns -1 if the path does not exist. */
 static int ls_stat(const char *path, uint64_t *size, uint16_t *mode) {
     long ret, kind;
+#ifdef ARCH_ARM64
+    register long x0 __asm__("x0") = (long)(size_t)path;
+    register long x1 __asm__("x1") = 0;
+    register long x2 __asm__("x2") = 0;
+    register long x8 __asm__("x8") = SYS_STAT;
+    __asm__ volatile("svc #0" : "+r"(x0), "+r"(x1), "+r"(x2) : "r"(x8) : "memory");
+    ret = x0; kind = x0;
+    if (ret < 0) return -1;
+    if (size) *size = (uint64_t)x1;
+    if (mode) *mode = (uint16_t)(x2 & 0xFFFFu);
+    return (int)kind;
+#else
     register long r8 __asm__("r8") = 0;
     register long r9 __asm__("r9") = 0;
     __asm__ volatile(
@@ -795,6 +853,7 @@ static int ls_stat(const char *path, uint64_t *size, uint16_t *mode) {
     if (size) *size = (uint64_t)r8;
     if (mode) *mode = (uint16_t)(r9 & 0xFFFFu);
     return (int)kind;
+#endif
 }
 
 /* Format permission bits as "drwxr-xr-x" (10 chars + NUL). */

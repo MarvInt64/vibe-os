@@ -25,6 +25,9 @@ void arm64_timer_init_poll(void) {
     g_timer_interval_ticks = freq / 100;   /* 10 ms */
     g_poll_mode            = 1;
 
+    /* Allow EL0 to read CNTVCT_EL0 directly (saves a syscall per DOOM tic). */
+    write_sysreg(cntkctl_el1, read_sysreg(cntkctl_el1) | (1u << 1)); /* EL0VCTEN */
+
     write_sysreg(cntv_ctl_el0, 0);                     /* disable */
     write_sysreg(cntv_tval_el0, g_timer_interval_ticks);
     write_sysreg(cntv_ctl_el0, (1u << 1) | 1u);        /* ENABLE | IMASK */

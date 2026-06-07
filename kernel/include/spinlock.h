@@ -41,39 +41,20 @@ typedef struct spinlock {
 #define SPINLOCK_INIT { 0 }
 
 static inline void spin_lock(spinlock_t *lock) {
-#if defined(ARCH_ARM64)
-    /* Single-CPU arm64 boot kernel: the exclusive-monitor-based
-     * __atomic_test_and_set causes Alignment Faults on some QEMU/HVF
-     * configurations.  Use a plain non-atomic test since there is only one
-     * CPU during early boot (no SMP enabled on arm64 yet). */
-    while (lock->locked)
-        __asm__ volatile("yield");
-    lock->locked = 1;
-    __asm__ volatile("dmb sy" ::: "memory");
-#else
     while (__atomic_test_and_set(&lock->locked, __ATOMIC_ACQUIRE))
+#if defined(ARCH_ARM64)
+        __asm__ volatile("yield");
+#else
         __asm__ volatile("pause");
 #endif
 }
 
 static inline int spin_trylock(spinlock_t *lock) {
-#if defined(ARCH_ARM64)
-    if (lock->locked) return 0;
-    lock->locked = 1;
-    __asm__ volatile("dmb sy" ::: "memory");
-    return 1;
-#else
     return __atomic_test_and_set(&lock->locked, __ATOMIC_ACQUIRE) == 0;
-#endif
 }
 
 static inline void spin_unlock(spinlock_t *lock) {
-#if defined(ARCH_ARM64)
-    __asm__ volatile("dmb sy" ::: "memory");
-    lock->locked = 0;
-#else
     __atomic_clear(&lock->locked, __ATOMIC_RELEASE);
-#endif
 }
 
 /* Disable interrupts, then take the lock; returns the prior interrupt-flag state. */

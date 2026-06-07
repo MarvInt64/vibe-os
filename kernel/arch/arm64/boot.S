@@ -79,6 +79,44 @@ _start:
     wfi
     b    .halt
 
+.global smp_secondary_entry
+smp_secondary_entry:
+    /* We are started in EL1 by PSCI CPU_ON. x0 contains context_id (cpu_id) */
+    
+    /* Save cpu_id in x19 to survive function calls */
+    mov  x19, x0
+
+    /* ---- SP_EL1 --------------------------------------------------------- */
+    msr  spsel, #1
+    isb
+
+    /* ---- Exception vectors ---------------------------------------------- */
+    adr  x0, exception_vectors
+    msr  vbar_el1, x0
+    isb
+
+    /* ---- Boot stack ----------------------------------------------------- */
+    /* Read g_ap_stack_top set by primary core */
+    ldr  x0, =g_ap_stack_top
+    ldr  x0, [x0]
+    mov  sp, x0
+
+    /* ---- FP/SIMD enabled at EL1 ---------------------------------------- */
+    mrs  x0, cpacr_el1
+    orr  x0, x0, #(3 << 20)
+    msr  cpacr_el1, x0
+    isb
+
+    /* ---- Enable identity-mapped MMU for this core ----------------------- */
+    /* Primary core already built boot_l1, so we just enable it */
+    bl   arm64_mmu_init
+
+    /* ---- Enter C (smp_ap_main) ------------------------------------------ */
+    mov  x0, x19
+    bl   smp_ap_main
+
+    b    .halt
+
 /* ---- Boot stack (64 KB, 16-byte aligned) ------------------------------- */
 .section ".bss.boot", "aw"
 .align 4

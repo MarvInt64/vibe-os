@@ -33,6 +33,21 @@ FileBrowser *FileBrowser::instance_ = nullptr;
 
 // Custom readdir wrapper to retrieve kind and size in one syscall
 static int readdir_entry_ex(const char *path, uint32_t index, char *name, size_t name_size, uint64_t *kind, uint64_t *size) {
+#ifdef ARCH_ARM64
+    /* arm64: SYS_READDIR returns kind in x1, size in x2 */
+    register long x0 __asm__("x0") = (long)(size_t)path;
+    register long x1 __asm__("x1") = (long)index;
+    register long x2 __asm__("x2") = (long)(size_t)name;
+    register long x3 __asm__("x3") = (long)name_size;
+    register long x8 __asm__("x8") = SYS_READDIR;
+    long ret, out_kind, out_size;
+    __asm__ volatile("svc #0" : "=r"(ret), "=r"(out_kind), "=r"(out_size)
+        : "r"(x0), "r"(x1), "r"(x2), "r"(x3), "r"(x8) : "memory");
+    if (ret < 0) return (int)ret;
+    if (kind) *kind = (uint64_t)out_kind;
+    if (size) *size = (uint64_t)out_size;
+    return (int)ret;
+#else
     long ret;
     uint64_t out_kind = 0;
     register uint64_t r8_val __asm__("r8");
@@ -46,6 +61,7 @@ static int readdir_entry_ex(const char *path, uint32_t index, char *name, size_t
     if (kind) *kind = out_kind;
     if (size) *size = r8_val;
     return (int)ret;
+#endif
 }
 
 // Proportional text width syscall wrapper

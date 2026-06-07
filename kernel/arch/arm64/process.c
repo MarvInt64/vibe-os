@@ -24,6 +24,10 @@
 #include "../../include/process.h"
 #include "../../include/serial.h"
 #include "../../include/string.h"
+#include "../../include/cpu.h"
+#include "../../include/spinlock.h"
+
+extern uint64_t timer_tick_count(void);
 
 /* ---- Constants -------------------------------------------------------- */
 #define ARM64_MAX_PROCS     16
@@ -43,7 +47,18 @@ struct arm64_user_context {
 /* ---- Process table ---------------------------------------------------- */
 struct process g_procs[ARM64_MAX_PROCS];
 static uint32_t      g_next_pid = 1;
-int           g_current  = -1;   /* index of currently-running process, -1 = kernel */
+static spinlock_t    g_process_lock = SPINLOCK_INIT;
+
+static inline int get_current_slot(void) {
+    struct cpu *c = this_cpu();
+    if (!c || !c->current) return -1;
+    return (int)(c->current - g_procs);
+}
+
+static inline void set_current_slot(int slot) {
+    struct cpu *c = this_cpu();
+    if (c) c->current = (slot >= 0) ? &g_procs[slot] : (struct process *)0;
+}
 
 /* Per-slot private address-space bookkeeping (freed on exit/kill).
  * Kept arch-local rather than bloating the shared struct process. */
@@ -57,7 +72,7 @@ struct arm64_aspace {
     uint64_t saved_frame[34];    /* suspended EL0 state (272 B: x0-x30,sp,elr,spsr) */
 };
 static struct arm64_aspace g_aspaces[ARM64_MAX_PROCS];
-static int g_rr_next = 0;        /* round-robin scheduler cursor */
+static int g_rr_next = 0; /* remove this */
 
 /* Release a slot's private address space (page tables + backing RAM). */
 static void aspace_free(int slot) {
@@ -76,13 +91,28 @@ static void aspace_free(int slot) {
  * `frame` is the 272-byte saved EL0 frame (the handler's regs pointer). */
 extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
 void arm64_yield_current(void *frame) {
-    if (g_current < 0) { arm64_return_to_kernel(0); }
-    struct arm64_aspace *a = &g_aspaces[g_current];
+    int g_curr = get_current_slot();
+    if (g_curr < 0) { arm64_return_to_kernel(0); }
+    struct arm64_aspace *a = &g_aspaces[g_curr];
     const uint64_t *src = (const uint64_t *)frame;
     for (int i = 0; i < 34; i++) a->saved_frame[i] = src[i];
     a->has_saved = 1;
-    g_procs[g_current].state = PROCESS_STATE_READY;
-    g_current = -1;
+    g_procs[g_curr].state = PROCESS_STATE_READY;
+    set_current_slot(-1);
+    arm64_aspace_switch_boot();
+    arm64_return_to_kernel(0);
+}
+
+/* Like arm64_yield_current but does NOT change the process state — the caller
+ * must have already set it (e.g. PROCESS_STATE_SLEEPING for timed waits). */
+void arm64_sleep_current(void *frame) {
+    int g_curr = get_current_slot();
+    if (g_curr < 0) { arm64_return_to_kernel(0); }
+    struct arm64_aspace *a = &g_aspaces[g_curr];
+    const uint64_t *src = (const uint64_t *)frame;
+    for (int i = 0; i < 34; i++) a->saved_frame[i] = src[i];
+    a->has_saved = 1;
+    set_current_slot(-1);
     arm64_aspace_switch_boot();
     arm64_return_to_kernel(0);
 }
@@ -92,7 +122,7 @@ void arm64_yield_current(void *frame) {
 void process_init(void) {
     memset(g_procs, 0, sizeof(g_procs));
     g_next_pid = 1;
-    g_current  = -1;
+    
     serial_write("[process] init done\r\n");
 }
 
@@ -117,11 +147,17 @@ int process_spawn_path(const char *path,
     (void)stdio_ops; (void)stdio_object;
     if (!path || !*path) return -1;
 
+    spin_lock(&g_process_lock);
     int slot = find_free_slot();
     if (slot < 0) {
+        spin_unlock(&g_process_lock);
         serial_write("[process] no free slot\r\n");
         return -1;
     }
+    
+    /* Mark as loading to reserve slot */
+    g_procs[slot].loaded = 1;
+    spin_unlock(&g_process_lock);
 
     /* Look up the ELF in ext2 */
     extern struct ext2_filesystem g_fs;
@@ -133,6 +169,7 @@ int process_spawn_path(const char *path,
         serial_write("[process] not found: ");
         serial_write(path);
         serial_write("\r\n");
+        g_procs[slot].loaded = 0;
         return -1;
     }
 
@@ -140,14 +177,15 @@ int process_spawn_path(const char *path,
     uint32_t fsize = node->size;
     if (fsize == 0 || fsize > (60u << 20)) {
         serial_write("[process] bad size\r\n");
+        g_procs[slot].loaded = 0;
         return -1;
     }
 
     uint8_t *elf = (uint8_t *)kmalloc(fsize);
-    if (!elf) { serial_write("[process] OOM\r\n"); return -1; }
+    if (!elf) { serial_write("[process] OOM\r\n"); g_procs[slot].loaded = 0; return -1; }
 
     ssize_t got = ext2_read(&g_fs, ino, 0, fsize, elf);
-    if (got <= 0) { serial_write("[process] read error\r\n"); kfree(elf); return -1; }
+    if (got <= 0) { serial_write("[process] read error\r\n"); kfree(elf); g_procs[slot].loaded = 0; return -1; }
 
     if (!elf64_validate(elf, (size_t)got)) {
         serial_write("[process] not valid aarch64 ELF\r\n");
@@ -177,6 +215,7 @@ int process_spawn_path(const char *path,
     /* Copy each PT_LOAD segment.  The app's VA 0x90000000 is backed by
      * pa_base, so a segment at vaddr lands at PA = pa_base + (vaddr - VA_BASE).
      * The kernel reaches that PA through its identity map. */
+    uint64_t image_end = 0;
     for (int i = 0; i < eh->program_header_count; i++) {
         if (ph[i].type != ELF_PROGRAM_TYPE_LOAD) continue;
         uint64_t vaddr = ph[i].virtual_address;
@@ -186,6 +225,8 @@ int process_spawn_path(const char *path,
             serial_write("[process] segment out of slot range\r\n");
             kfree(pa_raw); kfree(l1_raw); kfree(l2_raw); kfree(elf); return -1;
         }
+        uint64_t seg_end = (vaddr - ARM64_USER_BASE) + memsz;
+        if (seg_end > image_end) image_end = seg_end;
         uint8_t *dst = (uint8_t *)(uintptr_t)(pa_base + (vaddr - ARM64_USER_BASE));
         size_t fsz = (size_t)ph[i].file_size;
         for (size_t b = 0; b < fsz; b++)
@@ -210,13 +251,17 @@ int process_spawn_path(const char *path,
     proc->parent_pid = 0;
     proc->loaded     = 1;
     proc->state      = PROCESS_STATE_READY;
+    proc->runtime_ticks = 0;   /* fresh process, no runtime yet */
     proc->uid        = uid;
     proc->gid        = gid;
     proc->entry      = eh->entry;  /* at 0x90000000 in the process's own aspace */
-    /* Stack at the top of the 16 MB private slot (grows down). */
+    proc->code_size  = image_end;
+    /* Stack at the top of the 32 MB private slot (grows down). */
     proc->user_stack_top = ARM64_USER_BASE + ARM64_ASPACE_SLOT_BYTES - 16;
     proc->user_virtual_base = ARM64_USER_BASE;
-    proc->code_size  = fsize;
+    /* Heap: starts just after the loaded image (rounded up to page). */
+    proc->heap_start = (proc->user_virtual_base + proc->code_size + 0xFFF) & ~0xFFF;
+    proc->heap_break = proc->heap_start;
     proc->user_image_allocation = elf;  /* freed on kill */
     proc->cr3        = ttbr0;  /* per-process TTBR0 */
 
@@ -263,10 +308,11 @@ int process_kill(uint32_t pid) {
     proc->user_image_allocation = 0;
 
     int kslot = (int)(proc - g_procs);
-    if (g_current >= 0 && &g_procs[g_current] == proc) {
+    int g_curr2 = get_current_slot();
+    if (g_curr2 >= 0 && &g_procs[g_curr2] == proc) {
         /* Killing the running process: its aspace is active — drop to boot. */
         arm64_aspace_switch_boot();
-        g_current = -1;
+        set_current_slot(-1);
     }
     aspace_free(kslot);
 
@@ -300,7 +346,7 @@ int process_get_snapshot(uint32_t idx, struct process_snapshot *snap) {
         snap->state        = p->state;
         snap->loaded       = p->loaded;
         snap->uid          = p->uid;
-        snap->runtime_ticks = 0;
+        snap->runtime_ticks = p->runtime_ticks;
         snap->switch_count  = 0;
         snap->preempt_count = 0;
         snap->wake_tick     = 0;
@@ -333,20 +379,47 @@ void     arm64_resume_user(void *frame);  /* resume from a saved EL0 frame */
  * the process yields (arm64_yield_current) or exits (process_handle_exit), so
  * several long-running apps can interleave one slice per call. */
 int process_run_ready_slice(void) {
-    /* Round-robin: scan starting just after the last process we ran. */
+    struct cpu *c = this_cpu();
+    if (!c) return 0;
+    
+    spin_lock(&g_process_lock);
+    
+    /* Wake any sleeping process whose wake_tick has arrived. */
+    {
+        uint64_t now = timer_tick_count();
+        static int wake_dbg = 0;
+        for (int i = 0; i < ARM64_MAX_PROCS; i++) {
+            if (g_procs[i].state == PROCESS_STATE_SLEEPING &&
+                now >= g_procs[i].wake_tick) {
+                g_procs[i].state = PROCESS_STATE_READY;
+                if (++wake_dbg <= 3 && g_procs[i].name[0]=='d' && g_procs[i].name[1]=='o' && g_procs[i].name[2]=='o' && g_procs[i].name[3]=='m') {
+                    serial_write("[wake] doom pid=");
+                    serial_write_hex_u64(g_procs[i].pid);
+                    serial_write(" now="); serial_write_hex_u64(now);
+                    serial_write(" wake="); serial_write_hex_u64(g_procs[i].wake_tick);
+                    serial_write("\r\n");
+                }
+            }
+        }
+    }
+
+    /* Round-robin: scan starting just after the last process we ran on this CPU. */
     int slot = -1;
     for (int k = 0; k < ARM64_MAX_PROCS; k++) {
-        int i = (g_rr_next + k) % ARM64_MAX_PROCS;
+        int i = (c->sched_cursor + k) % ARM64_MAX_PROCS;
         if (g_procs[i].loaded && g_procs[i].state == PROCESS_STATE_READY) {
             slot = i; break;
         }
     }
-    if (slot < 0) return 0;  /* nothing ready */
-    g_rr_next = (slot + 1) % ARM64_MAX_PROCS;
+    if (slot < 0) {
+        spin_unlock(&g_process_lock);
+        return 0;  /* nothing ready */
+    }
+    c->sched_cursor = (slot + 1) % ARM64_MAX_PROCS;
 
     struct process *proc = &g_procs[slot];
     proc->state = PROCESS_STATE_RUNNING;
-    g_current = slot;
+    set_current_slot(slot);
 
     /* Activate the process's private address space (its own memory behind
      * VA 0x90000000) before entering EL0. */
@@ -354,19 +427,38 @@ int process_run_ready_slice(void) {
         arm64_aspace_switch(g_aspaces[slot].ttbr0);
 
     /* Resume a suspended process from its saved frame, or enter fresh. */
-    if (g_aspaces[slot].has_saved) {
+    int has_saved = g_aspaces[slot].has_saved;
+    uint64_t saved_frame[34];
+    if (has_saved) {
+        for (int i=0; i<34; i++) saved_frame[i] = g_aspaces[slot].saved_frame[i];
         g_aspaces[slot].has_saved = 0;
-        arm64_resume_user(g_aspaces[slot].saved_frame);
-    } else {
-        arm64_enter_user(proc->entry, proc->user_stack_top, 0, 0);
     }
-    return 0;  /* not reached (both paths longjmp back via return_to_kernel) */
+    uint64_t entry = proc->entry;
+    uint64_t user_stack_top = proc->user_stack_top;
+    
+    spin_unlock(&g_process_lock);
+
+    uint64_t t0;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(t0));
+
+    if (has_saved) {
+        arm64_resume_user(saved_frame);
+    } else {
+        arm64_enter_user(entry, user_stack_top, 0, 0);
+    }
+
+    uint64_t t1;
+    __asm__ volatile("mrs %0, cntvct_el0" : "=r"(t1));
+    uint64_t dt = t1 - t0;
+    proc->runtime_ticks += dt;
+    return 1;  /* ran a process slice */
 }
 
 /* ---- Called from the exception handler when a process exits ----------- */
 void process_handle_exit(uint64_t code) {
-    if (g_current >= 0) {
-        struct process *proc = &g_procs[g_current];
+    int g_curr3 = get_current_slot();
+    if (g_curr3 >= 0) {
+        struct process *proc = &g_procs[g_curr3];
         proc->exit_code = (int32_t)code;
         proc->state = PROCESS_STATE_EXITED;
         if (proc->user_image_allocation)
@@ -375,7 +467,7 @@ void process_handle_exit(uint64_t code) {
         /* The active TTBR0 still points at this process's page tables; switch
          * back to the shared boot aspace BEFORE freeing them. */
         arm64_aspace_switch_boot();
-        aspace_free(g_current);
+        aspace_free(g_curr3);
         proc->loaded = 0;
         serial_write("[process] exit pid=");
         { char b[16]; int i=0; uint32_t t=proc->pid; if(!t)b[i++]='0';
@@ -384,7 +476,7 @@ void process_handle_exit(uint64_t code) {
         serial_write(" code=");
         serial_write_hex_u64(code);
         serial_write("\r\n");
-        g_current = -1;
+        set_current_slot(-1);
     }
     /* Return to kernel main loop */
     extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
@@ -392,17 +484,17 @@ void process_handle_exit(uint64_t code) {
 }
 
 /* ---- Stubs for functions not yet implemented on arm64 ----------------- */
-int process_has_current(void) { return g_current >= 0; }
+int process_has_current(void) { return get_current_slot() >= 0; }
 uint32_t process_current_pid(void) {
-    if (g_current >= 0) return g_procs[g_current].pid;
+    int c = get_current_slot(); if (c >= 0) return g_procs[c].pid;
     return 0;
 }
 uint32_t process_current_uid(void) {
-    if (g_current >= 0) return g_procs[g_current].uid;
+    int c = get_current_slot(); if (c >= 0) return g_procs[c].uid;
     return 0;
 }
 uint32_t process_current_gid(void) {
-    if (g_current >= 0) return g_procs[g_current].gid;
+    int c = get_current_slot(); if (c >= 0) return g_procs[c].gid;
     return 0;
 }
 uint32_t process_loaded_count(void) { return process_snapshot_count(); }

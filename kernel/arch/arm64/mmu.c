@@ -101,7 +101,7 @@ static uint64_t block_user(uint64_t pa) {
  * process gets distinct physical memory behind the same virtual addresses.
  * ------------------------------------------------------------------------- */
 #define ARM64_USER_VA      0x90000000ULL
-#define ARM64_ASPACE_SLOT  (16UL * 1024 * 1024)   /* 16 MB image+stack window */
+#define ARM64_ASPACE_SLOT  (32UL * 1024 * 1024)   /* 32 MB image+stack window */
 
 /* 2 MB Level-2 block descriptor, EL0 RW+X (same attrs as block_user). */
 static uint64_t block_user_l2(uint64_t pa) {
@@ -176,8 +176,8 @@ void arm64_aspace_switch_boot(void) {
 }
 
 void arm64_mmu_init(void) {
-    /* MAIR_EL1: index 0 = Device nGnRE, index 1 = Normal WB */
-    write_sysreg(mair_el1, 0x00FFULL);
+    /* MAIR_EL1: index 0 = Device nGnRE (0x00), index 1 = Normal WB (0xFF) */
+    write_sysreg(mair_el1, 0xFF00ULL);
 
     /* Fill L1 table (4 entries for 4 GB with T0SZ=32).
      *

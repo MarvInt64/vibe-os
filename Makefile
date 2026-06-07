@@ -124,7 +124,8 @@ ARM64_COMMON_SRCS := \
     kernel/src/elf.c \
     kernel/src/render.c \
     kernel/src/font_atlas.c \
-    kernel/src/window.c
+    kernel/src/window.c \
+    kernel/src/bkl.c
 
 # arm64-specific sources (in kernel/arch/arm64/):
 ARM64_ARCH_SRCS := \
@@ -134,10 +135,13 @@ ARM64_ARCH_SRCS := \
     kernel/arch/arm64/timer.c \
     kernel/arch/arm64/virtio_blk.c \
     kernel/arch/arm64/virtio_input.c \
+    kernel/arch/arm64/virtio_snd.c \
     kernel/arch/arm64/ramfb.c \
     kernel/arch/arm64/process.c \
     kernel/arch/arm64/stubs.c \
-    kernel/arch/arm64/arch.c
+    kernel/arch/arm64/arch.c \
+    kernel/arch/arm64/cpu.c \
+    kernel/arch/arm64/smp.c
 
 ARM64_ASM_SRCS := \
     kernel/arch/arm64/boot.S \
@@ -209,12 +213,14 @@ run-arm64: kernel-arm64
 	  -cpu $(if $(filter arm64,$(UNAME_M)),host,cortex-a72) \
 	  $(QEMU_ARM64_ACCEL) \
 	  -m 512M \
-	  -smp 1 \
+	  -smp 4 \
 	  -kernel $(OUT_DIR)/vibeos-arm64.elf \
 	  -drive file=$(DISK_IMG),if=none,id=hd0,format=raw \
 	  -device virtio-blk-device,drive=hd0 \
 	  -device ramfb \
 	  -device virtio-tablet-device \
+	  -audiodev coreaudio,id=snd0 \
+	  -device virtio-sound-device,audiodev=snd0 \
 	  -serial stdio \
 	  -no-reboot
 
@@ -302,7 +308,87 @@ arm64-user: $(DISK_IMG)
 	    $(ARM64_UDIR)/taskmgr_task_manager.o $(ARM64_UDIR)/vexui.o \
 	    $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/taskmgr.elf /bin/taskmgr
-	@echo "arm64 user programs: /bin/hello /bin/gfxdemo /bin/inputtest /bin/desktop /bin/wallpaper /bin/dock /bin/topbar /bin/taskmgr"
+	# --- Shell (standalone, own _start, needs libc for memcpy) ---
+	$(CC) $(ARM64_UCFLAGS) -c user/sh.c -o $(ARM64_UDIR)/sh.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/sh.elf \
+	    $(ARM64_UDIR)/sh.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/sh.elf /bin/sh
+	# --- Basic UNIX utils (same .c files as x86, use libc wrappers) ---
+	$(call arm64app,user/echo.c,/bin/echo)
+	$(call arm64app,user/cat.c,/bin/cat)
+	$(call arm64app,user/cp.c,/bin/cp)
+	$(call arm64app,user/rm.c,/bin/rm)
+	$(call arm64app,user/mv.c,/bin/mv)
+	$(call arm64app,user/mkdir.c,/bin/mkdir)
+	$(call arm64app,user/touch.c,/bin/touch)
+	$(call arm64app,user/ln.c,/bin/ln)
+	$(call arm64app,user/stat.c,/bin/stat)
+	$(call arm64app,user/whoami.c,/bin/whoami)
+	$(call arm64app,user/id.c,/bin/id)
+	$(call arm64app,user/chmod.c,/bin/chmod)
+	$(call arm64app,user/chown.c,/bin/chown)
+	$(call arm64app,user/head.c,/bin/head)
+	$(call arm64app,user/pwd.c,/bin/pwd)
+	$(call arm64app,user/find.c,/bin/find)
+	$(call arm64app,user/grep.c,/bin/grep)
+	# --- Sysinfo (C++ GUI) ---
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
+	    -c user/sysinfo/sysinfo.cpp -o $(ARM64_UDIR)/sysinfo.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/sysinfo.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/sysinfo.o $(ARM64_UDIR)/vexui.o \
+	    $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/sysinfo.elf /bin/sysinfo
+	# --- Terminal (C++ GUI) ---
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
+	    -c user/terminal/terminal.cpp -o $(ARM64_UDIR)/terminal.o
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
+	    -c user/terminal/text_grid.cpp -o $(ARM64_UDIR)/terminal_text_grid.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/terminal.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/terminal.o $(ARM64_UDIR)/terminal_text_grid.o \
+	    $(ARM64_UDIR)/vexui.o $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/terminal.elf /bin/terminal
+	# --- File Browser (C++ GUI) ---
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
+	    -c user/filebrowser/filebrowser.cpp -o $(ARM64_UDIR)/filebrowser.o
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
+	    -c user/filebrowser/main.cpp -o $(ARM64_UDIR)/filebrowser_main.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/filebrowser.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/filebrowser.o $(ARM64_UDIR)/filebrowser_main.o \
+	    $(ARM64_UDIR)/vexui.o $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/filebrowser.elf /bin/filebrowser
+	# --- Audio Player (C++ GUI, audio stubbed on arm64) ---
+	$(CC) $(ARM64_UCFLAGS) -Ilib/mp3 -c lib/mp3/mp3dec.c -o $(ARM64_UDIR)/mp3dec.o
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser -Ilib/mp3 \
+	    -c user/audioplayer/audioplayer.cpp -o $(ARM64_UDIR)/audioplayer.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/audioplayer.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/audioplayer.o $(ARM64_UDIR)/vexui.o \
+	    $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/mp3dec.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/audioplayer.elf /bin/audioplayer
+	@echo "arm64 user programs: /bin/hello /bin/gfxdemo /bin/inputtest /bin/desktop /bin/wallpaper /bin/dock /bin/topbar /bin/taskmgr /bin/sh /bin/terminal /bin/filebrowser /bin/sysinfo /bin/audioplayer + utils"
+	# --- Stubs for apps not yet ported (standalone, own _start, replaces x86 ELFs) ---
+	$(CC) $(ARM64_UCFLAGS) -c user/arm64/stub_doom.c -o $(ARM64_UDIR)/stub.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/stub.elf \
+	    $(ARM64_UDIR)/stub.o
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/stub.elf /bin/doom
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/stub.elf /bin/browser
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/stub.elf /bin/cpptest
+	# --- DOOM (doomgeneric + VibeOS platform layer) ---
+	@mkdir -p $(ARM64_UDIR)/doom
+	@for src in $$(ls third_party/doomgeneric/doomgeneric/*.c 2>/dev/null | grep -v 'doomgeneric_\|i_sdl\|i_allegro\|i_sound\|i_music\|midifile\|mus2mid\|gusconf\|i_cd'); do \
+	    $(CC) $(ARM64_DOOM_CFLAGS) -c $$src -o $(ARM64_UDIR)/doom/$$(basename $$src .c).o || exit 1; \
+	done
+	$(CC) $(ARM64_DOOM_CFLAGS) -c user/doom/doomgeneric_vibeos.c -o $(ARM64_UDIR)/doom/doomgeneric_vibeos.o
+	$(CC) $(ARM64_DOOM_CFLAGS) -c user/doom/i_sound.c            -o $(ARM64_UDIR)/doom/i_sound.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/doom/doom.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/doom/*.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/doom/doom.elf /bin/doom
+
+# ARM64 DOOM flags: same sources as x86, but with arm64 target + doom-specific warnings
+ARM64_DOOM_CFLAGS := $(ARM64_UCFLAGS) -Ithird_party/doomgeneric/doomgeneric -Iuser/doom \
+  -Wno-unused-function -Wno-unused-variable -Wno-unused-parameter \
+  -Wno-missing-field-initializers -Wno-missing-braces \
+  -Wno-gnu-zero-variadic-macro-arguments -Wno-shift-negative-value \
+  -Wno-implicit-int-conversion -Wno-sign-conversion -Wno-conversion
 
 # ============================================================
 

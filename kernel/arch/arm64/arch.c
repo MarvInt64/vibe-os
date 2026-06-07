@@ -33,9 +33,12 @@
 #include "../../include/window.h"
 #include "../../include/input.h"
 #include "../../include/winsys.h"
+#include "../../include/audio.h"
+#include "../../include/vfs.h"
 
 /* ---- Timer tick counter (incremented without GIC) --------------------- */
 static volatile uint64_t g_tick = 0;
+
 
 /* ---- IRQ handler (exceptions.S → TCG/GIC path only) ----------------- */
 void arm64_irq_handler(void) {
@@ -98,6 +101,7 @@ static char g_spawn_arg[512];
  * regs[0..30] = x0..x30, regs[31]=sp_el0, regs[32]=elr_el1, regs[33]=spsr. */
 extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
 extern void arm64_yield_current(void *frame) __attribute__((noreturn));
+extern void arm64_sleep_current(void *frame) __attribute__((noreturn));
 extern struct process g_procs[];
 void process_handle_exit(uint64_t code);
 struct desktop_state *desktop_active(void);
@@ -193,11 +197,33 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 g_files[a0].used = 0;
             regs[0] = 0;
             return;
+        case SYS_MKDIR: {       /* 26: mkdir(path) → 0 or -1 */
+            char path[256];
+            copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
+            int r = vfs_mkdir(path);
+            regs[0] = (uint64_t)(int64_t)r;
+            return;
+        }
+        case SYS_SEEK: {        /* 48: lseek(fd, offset, whence) → new_offset */
+            if (a0 < 3 || a0 >= ARM64_MAX_FD || !g_files[a0].used) {
+                regs[0] = (uint64_t)-1; return;
+            }
+            struct arm64_file *f = &g_files[a0];
+            int64_t off = (int64_t)a1;
+            switch (a2) {
+                case 0: f->offset = (uint32_t)off; break;           /* SEEK_SET */
+                case 1: f->offset = (uint32_t)((int64_t)f->offset + off); break; /* SEEK_CUR */
+                case 2: f->offset = (uint32_t)((int64_t)f->size + off); break;  /* SEEK_END */
+                default: regs[0] = (uint64_t)-1; return;
+            }
+            regs[0] = (uint64_t)f->offset;
+            return;
+        }
         case SYS_FB_INFO: {     /* 65: fill struct vos_fb_info* with the framebuffer */
             /* struct layout: u64 addr; u32 width,height,stride,bpp; */
             uint32_t *fb = ramfb_buffer();
             if (!fb) {          /* lazily bring up an 800x600 framebuffer */
-                if (ramfb_init(800, 600) != 0) { regs[0] = (uint64_t)-1; return; }
+                if (ramfb_init(1280, 720) != 0) { regs[0] = (uint64_t)-1; return; }
                 fb = ramfb_buffer();
             }
             /* The fb lives in kernel RAM (PA 0x40000000+); EL0 reaches it via the
@@ -281,9 +307,15 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             return;
         }
         case SYS_DISPLAY_MODE: {    /* 27: get/set display resolution */
-            uint32_t rw = (uint32_t)a0, rh = (uint32_t)a1;
+            uint32_t rw = (uint32_t)a0;
             if (rw == 0) {
-                regs[0] = (uint64_t)((800u << 16) | 600u);
+                /* Report the ACTUAL framebuffer size so apps lay out and
+                 * hit-test against the same dimensions the compositor uses.
+                 * (Hardcoding 800x600 while ramfb is 1280x720 mis-placed the
+                 * dock and offset all mouse input.) */
+                uint32_t w = ramfb_width(), h = ramfb_height();
+                if (w == 0 || h == 0) { w = 1280; h = 720; }
+                regs[0] = (uint64_t)(((uint64_t)(w & 0xffffu) << 16) | (h & 0xffffu));
             } else {
                 regs[0] = 0; /* resolution change not supported on arm64 */
             }
@@ -298,9 +330,9 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             out->process_count = process_loaded_count();
             out->process_max = 16;
             out->app_window_max = 8;
-            out->cpu_count = 1;
-            out->heap_used_bytes = 0;
-            out->heap_total_bytes = 0;
+            out->cpu_count = (uint32_t)smp_cpu_count();
+            out->heap_used_bytes = kmalloc_get_physical_used();
+            out->heap_total_bytes = kmalloc_get_physical_total();
             { const char *v = "0.1.0-arm64";
               for (int vi = 0; vi < 63 && v[vi]; vi++) out->version[vi] = v[vi];
               out->version[63] = '\0'; }
@@ -347,14 +379,85 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = (uint64_t)(int64_t)result;
             return;
         }
-        case SYS_TIMER_SLEEP:   /* 20: suspend one slice (frame-rate paced) */
+        case SYS_TIMER_SLEEP: { /* 20: sleep for N ticks */
+            uint64_t ticks = a0;
+            if (ticks == 0) { regs[0] = 0; return; }
+            struct process *cur = (this_cpu() && this_cpu()->current)
+                                  ? this_cpu()->current : (struct process *)0;
+            if (!cur) { regs[0] = (uint64_t)-1; return; }
+            uint64_t now = timer_tick_count();
+            cur->wake_tick = (ticks >= ~0ull - now) ? ~0ull : now + ticks;
+            cur->state = PROCESS_STATE_SLEEPING;
+            static int sleep_dbg = 0;
+            if (++sleep_dbg <= 3 && cur->name[0]=='d' && cur->name[1]=='o' && cur->name[2]=='o' && cur->name[3]=='m') {
+                serial_write("[sleep] doom pid="); serial_write_hex_u64(cur->pid);
+                serial_write(" ticks="); serial_write_hex_u64(ticks);
+                serial_write(" now="); serial_write_hex_u64(now);
+                serial_write(" wake="); serial_write_hex_u64(cur->wake_tick);
+                serial_write("\r\n");
+            }
             regs[0] = 0;
-            arm64_yield_current(regs);
+            arm64_sleep_current(regs);
             /* not reached */
+        }
         case SYS_YIELD:         /* 3: suspend and reschedule (resumes after svc) */
             regs[0] = 0;
             arm64_yield_current(regs);
             /* not reached */
+        case SYS_STAT: {         /* 9: stat path — returns kind, size, mode */
+            const char *path = (const char *)(uintptr_t)a0;
+            struct vfs_stat st;
+            if (!vfs_stat_path(path, &st)) { regs[0] = (uint64_t)-1; return; }
+            regs[0] = (uint64_t)(st.kind == VFS_NODE_DIRECTORY ? 2 : 1);
+            regs[1] = st.size;
+            regs[2] = st.mode;
+            return;
+        }
+        case SYS_READDIR: {      /* 10: readdir(path, idx, name, cap) → kind, size */
+            const char *path = (const char *)(uintptr_t)a0;
+            uint32_t idx = (uint32_t)a1;
+            char *name = (char *)(uintptr_t)a2;
+            uint64_t cap = a3;
+            struct vfs_dir_entry e;
+            if (!vfs_readdir(path, idx, &e)) { regs[0] = (uint64_t)-1; return; }
+            /* Copy name to user buffer */
+            size_t name_len = 0;
+            while (e.name[name_len] && name_len + 1 < cap) name_len++;
+            for (size_t i = 0; i < name_len; i++) name[i] = e.name[i];
+            if (cap) name[name_len] = '\0';
+            regs[0] = 0;                    /* success */
+            regs[1] = (uint64_t)e.kind;     /* kind: 1=file, 2=dir */
+            regs[2] = e.size;               /* size in bytes */
+            return;
+        }
+        case SYS_AUDIO_WRITE:    /* 49: a0=buf, a1=byte count */
+            /* Feed PCM to the virtio-sound device.  Returns bytes accepted (0
+             * when its tx ring is full → caller yields and retries, which paces
+             * playback to real time).  If no audio device is present, accept and
+             * discard so blocking writers (DOOM's I_UpdateSound) don't hang. */
+            if (virtio_snd_ready()) {
+                uint32_t pid = (this_cpu() && this_cpu()->current)
+                               ? this_cpu()->current->pid : 0;
+                regs[0] = (uint64_t)(int64_t)virtio_snd_write(
+                    pid, (const void *)(uintptr_t)a0, a1);
+            } else {
+                regs[0] = a1;   /* /dev/null sink */
+            }
+            return;
+        case SYS_AUDIO_INFO: {   /* 50: fill struct audio_info */
+            struct audio_info *out = (struct audio_info *)(uintptr_t)a0;
+            if (!out) { regs[0] = (uint64_t)-1; return; }
+            memset(out, 0, sizeof(*out));
+            out->present     = virtio_snd_ready() ? 1u : 0u;
+            out->channels    = 2;
+            out->bits        = 16;
+            out->sample_rate = 48000;
+            regs[0] = 0;
+            return;
+        }
+        case SYS_AUDIO_IOCTL:    /* 60: no rate/volume control on virtio-snd yet */
+            regs[0] = 0;
+            return;
         case SYS_CPU_INFO: {     /* 64: a0=struct cpu_info_snapshot* buf, a1=max */
             struct cpu_info_snapshot *buf = (struct cpu_info_snapshot *)(uintptr_t)a0;
             unsigned max = (unsigned)a1;
@@ -367,7 +470,6 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                     buf[i].index = c->index;
                     buf[i].apic_id = c->apic_id;
                     buf[i].ticks = c->ticks;
-                    /* simplistic busy ticks: */
                     buf[i].busy = c->busy_ticks;
                 }
             }
@@ -406,7 +508,8 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             return;
         }
         case SYS_LOG: {          /* 33: journal log — write to serial */
-            const char *msg = (const char *)(uintptr_t)a0;
+            /* a0 = level (unused), a1 = message string */
+            const char *msg = (const char *)(uintptr_t)a1;
             if (msg) { serial_write("[app] "); serial_write(msg); serial_write("\r\n"); }
             regs[0] = 0;
             return;
@@ -417,13 +520,48 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         case SYS_GETUID:        /* 55: get current user ID */
             regs[0] = (uint64_t)((this_cpu() && this_cpu()->current) ? this_cpu()->current->uid : 0);
             return;
+        case SYS_SBRK: {        /* 42: grow/shrink process heap */
+            intptr_t inc = (intptr_t)a0;
+            struct process *cur = (this_cpu() && this_cpu()->current)
+                                  ? this_cpu()->current : (struct process *)0;
+            if (!cur) { regs[0] = (uint64_t)-1; return; }
+            uintptr_t old_break = cur->heap_break;
+            static int sbrk_dbg;
+            if (!sbrk_dbg) {
+                sbrk_dbg = 1;
+                serial_write("[sbrk] inc=0x"); serial_write_hex_u64((uint64_t)inc);
+                serial_write(" old=0x"); serial_write_hex_u64(old_break);
+                serial_write(" start=0x"); serial_write_hex_u64(cur->heap_start);
+                serial_write(" top=0x"); serial_write_hex_u64(cur->user_stack_top);
+                serial_write("\r\n");
+            }
+            if (inc == 0) { regs[0] = (uint64_t)old_break; return; }
+            uintptr_t new_break = old_break + (uintptr_t)inc;
+            if (new_break > cur->user_stack_top - 0x40000 ||
+                new_break < cur->heap_start) {
+                serial_write("[sbrk] FAILED new=0x"); serial_write_hex_u64(new_break);
+                serial_write("\r\n");
+                regs[0] = (uint64_t)-1; return;
+            }
+            cur->heap_break = new_break;
+            regs[0] = (uint64_t)old_break;
+            return;
+        }
         case SYS_PROCESS_KILL: { /* 29: kill a process by PID. a0=pid */
             uint32_t target = (uint32_t)a0;
             int result = process_kill(target);
             regs[0] = (uint64_t)(int64_t)result;
             return;
         }
-        case SYS_DESKTOP_STATUS: /* 43: top-bar status — not yet wired on arm64 */
+        case SYS_DESKTOP_STATUS: { /* 43: top-bar status snapshot */
+            struct winsys_desktop_status *out =
+                (struct winsys_desktop_status *)(uintptr_t)a0;
+            struct desktop_state *d = desktop_active();
+            if (!d || !out) { regs[0] = (uint64_t)-1; return; }
+            desktop_fill_status(d, out);
+            regs[0] = 0;
+            return;
+        }
         case SYS_MENU_DISPATCH:  /* 44: menu action delivery — not yet on arm64 */
         case SYS_WINDOW_SET_MENUBAR: /* 37: menu bar — not yet on arm64 */
             /* Silent stub: the topbar polls these every frame; returning -1
@@ -500,7 +638,7 @@ static int str_starts(const char *s, const char *pfx) {
 /* ---- Memory detection ------------------------------------------------- */
 static void detect_memory(uintptr_t *hs, size_t *hz) {
     *hs = 0x40800000UL;         /* 6 MB past kernel load */
-    *hz = 160UL * 1024 * 1024;  /* main kmalloc heap → up to 0x4A800000 */
+    *hz = 320UL * 1024 * 1024;  /* main kmalloc heap → up to 0x54800000 */
 }
 
 /* The compositor allocates window surface/content buffers from a separate GFX
@@ -508,9 +646,9 @@ static void detect_memory(uintptr_t *hs, size_t *hz) {
  * inside the identity-mapped RAM block (0x40000000-0x7FFFFFFF, QEMU -m 512M
  * backs up to 0x5FFFFFFF). Without this, gfx_alloc returns NULL and window
  * creation (desktop_app_create_ex) fails — dock/topbar can't open windows. */
-#define ARM64_GFX_BASE  0x4A800000UL   /* right after the 160 MB main heap */
+#define ARM64_GFX_BASE  0x54800000UL   /* right after the 320 MB main heap */
 #define ARM64_GFX_SIZE  (64UL * 1024 * 1024)
-#define ARM64_IMG_BASE  0x4E800000UL   /* after gfx */
+#define ARM64_IMG_BASE  0x58800000UL   /* after gfx */
 #define ARM64_IMG_SIZE  (16UL * 1024 * 1024)
 
 /* ---- Filesystem state ------------------------------------------------- */
@@ -533,6 +671,8 @@ static void fs_init(void) {
 }
 
 /* ---- Shell commands --------------------------------------------------- */
+static void gui_run(void);   /* starts the desktop compositor (defined below) */
+
 static void cmd_help(void) {
     serial_write("  help          — this message\r\n");
     serial_write("  uname         — kernel info\r\n");
@@ -545,6 +685,7 @@ static void cmd_help(void) {
     serial_write("  cat <path>    — print file\r\n");
     serial_write("  cd <path>     — change directory\r\n");
     serial_write("  pwd           — print working directory\r\n");
+    serial_write("  gui / desktop — start the desktop compositor\r\n");
     serial_write("  halt          — stop the machine\r\n");
 }
 
@@ -812,7 +953,7 @@ static void cmd_exec(const char *cmdline) {
 }
 
 static void cmd_fb(void) {
-    if (ramfb_init(800, 600) != 0) {
+    if (ramfb_init(1280, 720) != 0) {
         serial_write("  ramfb init failed\r\n");
         return;
     }
@@ -894,7 +1035,7 @@ static void run_command(const char *line) {
         __asm__ volatile("msr daifset, #3");
         while (1) __asm__ volatile("wfi");
     } else if (str_eq(line, "gui") || str_eq(line, "desktop")) {
-        cmd_exec("/bin/desktop");
+        gui_run();   /* launch the window-server compositor (does not return) */
     } else {
         /* Unknown builtin — try as an ELF binary.
          * If the command contains '/', use it as-is (absolute or relative path).
@@ -1019,6 +1160,10 @@ void kernel_main_arm64(void) {
     /* Input — try virtio-tablet / virtio-mouse */
     virtio_input_init();
 
+    /* Audio — virtio-sound (optional; absent unless QEMU has -device
+     * virtio-sound-device).  Apps fall back to silence if not ready. */
+    virtio_snd_init();
+
     serial_write("[arm64] detecting platform...\r\n");
     /* Detect platform FIRST so we choose the right timer path.
      * Apple implementer = 0x61.  On HVF, GICC MMIO (0x08010000) triggers
@@ -1040,10 +1185,23 @@ void kernel_main_arm64(void) {
         serial_write("[arm64] GICv2 + timer IRQ enabled (TCG path)\r\n");
     }
 
-    /* ---- Desktop Compositor Test ---- */
-    if (ramfb_init(800, 600) != 0) {
+    /* Register the boot CPU so this_cpu()/per-CPU state work in the shell
+     * (needed to launch EL0 programs) and later in the compositor. */
+    cpu_register(0);
+
+    /* Drop to the interactive shell.  The desktop GUI is NOT started
+     * automatically — type `gui` (or `desktop`) to launch the compositor,
+     * matching the x86 behaviour. */
+    shell_loop();
+}
+
+/* Start the desktop compositor: framebuffer + window server + GUI apps, then
+ * the render loop.  Invoked from the shell's `gui`/`desktop` command; does not
+ * return (the GUI takes over, same as x86). */
+static void gui_run(void) {
+    /* ---- Desktop Compositor ---- */
+    if (ramfb_init(1280, 720) != 0) {
         serial_write("  ramfb init failed\r\n");
-        shell_loop();
         return;
     }
 
@@ -1055,7 +1213,7 @@ void kernel_main_arm64(void) {
      * storage, app slots, icon state, etc.) */
     g_desktop = (struct desktop_state *)
         kmalloc(sizeof(struct desktop_state));
-    if (!g_desktop) { serial_write("  OOM for desktop\r\n"); shell_loop(); return; }
+    if (!g_desktop) { serial_write("  OOM for desktop\r\n"); return; }
     memset(g_desktop, 0, sizeof(struct desktop_state));
 
     serial_write("[gui] initialising desktop compositor...\r\n");
@@ -1077,13 +1235,12 @@ void kernel_main_arm64(void) {
         bb = fb;
         serial_write("[gui] WARNING: no backbuffer (OOM) — may flicker\r\n");
     }
-    desktop_init(g_desktop, ramfb_width(), ramfb_height());
-
     /* Spawn and run GUI apps sequentially.  Since all arm64 processes
      * share PA 0x50000000 (non-PIE, same VA), each spawn overwrites the
      * previous one.  We spawn-run-exit each app before starting the next.
      * After all apps have created their windows and exited, the compositor
      * renders their static content continuously. */
+
     /* Run wallpaper first (synchronously) so the background is set before
      * the first render frame — avoids a black flash.  Dock and topbar are
      * spawned into the round-robin queue and run during the render loop. */
@@ -1095,45 +1252,83 @@ void kernel_main_arm64(void) {
     process_spawn_path("/bin/dock", 0, 0, 0, 0);
     process_spawn_path("/bin/topbar", 0, 0, 0, 0);
 
-    /* ---- SMP Init ------------------------------------------------------- */
-    serial_write("[arm64] SMP init...\n");
-    cpu_register(0);
+    /* Boot secondary CPUs AFTER all initial disk I/O is done so the ext2
+     * driver (which is not yet SMP-safe) isn't accessed concurrently. */
     smp_boot_aps();
 
     serial_write("[gui] entering render loop\n");
     for (;;) {
+        uint64_t frame_start = timer_tick_count();   /* CNTVCT, 24 MHz */
         bkl_acquire();
         /* Feed mouse input to the compositor before rendering */
         struct mouse_state mouse;
         struct keyboard_state keyboard;
         memset(&mouse, 0, sizeof(mouse));
         memset(&keyboard, 0, sizeof(keyboard));
+
+        /* Drain UART into keyboard_state so serial keypresses reach the
+         * compositor and are forwarded to the focused app (DOOM needs Enter
+         * to start, arrow keys to play, etc.).  Non-blocking — only read
+         * characters that are already in the RX FIFO. */
+        while (serial_can_read() && keyboard.count < 32) {
+            char c = serial_read_byte();
+            if (c == '\r' || c == '\n') keyboard.enter_pressed = 1;
+            else if (c == 0x7f || c == '\b') keyboard.backspace_pressed = 1;
+            else keyboard.chars[keyboard.count++] = c;
+        }
+
         mouse.x = g_mouse_x * (int)ramfb_width() / 32767;
         mouse.y = g_mouse_y * (int)ramfb_height() / 32767;
         mouse.buttons = (uint8_t)g_mouse_buttons;
         mouse.moved = (uint8_t)g_mouse_moved;
         static int prev_buttons = 0;
-        if ((0) && !(prev_buttons & 1))
+        if ((g_mouse_buttons & 1) && !(prev_buttons & 1))
             mouse.left_pressed = 1;
-        if (!(0) && (prev_buttons & 1))
+        if (!(g_mouse_buttons & 1) && (prev_buttons & 1))
             mouse.left_released = 1;
         prev_buttons = g_mouse_buttons;
 
-         // desktop_handle_input(g_desktop, &mouse, &keyboard);
+        desktop_handle_input(g_desktop, &mouse, &keyboard);
+
+        /* Reap windows whose owning process has exited (e.g. killed from the
+         * task manager) and mix queued audio from all apps to the device. */
+        desktop_poll_apps(g_desktop);
+        virtio_snd_mix_tick();
 
         /* Render scene offscreen first (backbuffer), then blit to the
          * visible framebuffer in one shot — no tearing/flickering. */
-         // desktop_render(g_desktop, &bb);
-         // fb_blit(&fb, &bb);
+        desktop_render(g_desktop, &bb);
+        fb_blit(&fb, &bb);
 
         /* Draw cursor directly on the visible framebuffer so it
          * doesn't get smeared by the backbuffer copy. */
-         // desktop_draw_cursor_overlay(g_desktop, &fb);
+        desktop_draw_cursor_overlay(g_desktop, &fb);
 
-        /* Run one user process slice, then poll input */
-        process_run_ready_slice();
         bkl_release();
-        
+
+        /* Per-CPU tick accounting. */
+        struct cpu *c_bsp = this_cpu();
+        if (c_bsp) { c_bsp->ticks++; c_bsp->busy_ticks++; }
+        if (arm64_timer_poll() && c_bsp) c_bsp->ticks++;
+
         virtio_input_poll();
+
+        /* Decouple process scheduling from the compositor: the desktop is
+         * composited once per ~60 Hz frame above, then we spend the REST of the
+         * 16.6 ms budget pumping user process slices (BKL released between each
+         * so the AP cores run them too).  Previously the loop ran exactly one
+         * slice per full-screen blit, so two CPU-bound apps (e.g. two DOOMs)
+         * starved each other and stuttered.  When nothing is runnable we issue a
+         * YIELD hint and keep checking so sleeping apps wake on time. */
+        {
+            const uint64_t FRAME_TICKS = 400000ull;  /* 1/60 s at 24 MHz */
+            for (;;) {
+                if (timer_tick_count() - frame_start >= FRAME_TICKS) break;
+                bkl_acquire();
+                int ran = process_run_ready_slice();
+                bkl_release();
+                if (!ran) __asm__ volatile("yield");
+            }
+        }
     }
 }

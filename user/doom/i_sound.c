@@ -212,7 +212,12 @@ void I_UpdateSound(void) {
                 remaining -= (unsigned long)written;
             } else {
                 /* SYS_YIELD = 3 — yield CPU so the kernel can drain the ring */
+#ifdef ARCH_ARM64
+                register long x8 __asm__("x8") = 3;
+                __asm__ volatile("svc #0" : : "r"(x8) : "memory");
+#else
                 __asm__ volatile("int $0x80" : : "a"(3) : "memory");
+#endif
             }
         }
         g_mix_pos = 0;

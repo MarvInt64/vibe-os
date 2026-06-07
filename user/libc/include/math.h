@@ -54,11 +54,10 @@ static __inline__ double fmax(double a, double b) { return __builtin_fmax(a,b); 
  * SSE4.1 roundsd/roundss give the fastest path when available (clang).
  * TCC doesn't support SSE constraints ("x"), so we use x87 or pure C.
  */
-#ifdef __TINYC__
+#if defined(__TINYC__) || defined(ARCH_ARM64)
 
 /*
- * TCC does not support SSE ("x") or x87 ("t"/"u") constraints in inline asm.
- * All functions below are pure C — correct but slower than the SSE4.1 path.
+ * TCC / ARM64: pure-C fallback for all math functions (no SSE/x87 asm).
  */
 
 static __inline__ double floor(double x) {
@@ -235,7 +234,7 @@ float  logf(float x);
 static __inline__ double copysign(double x, double y) {
     return __builtin_copysign(x, y);
 }
-#ifndef __TINYC__
+#if !defined(__TINYC__) && !defined(ARCH_ARM64)
 static __inline__ double scalbn(double x, int n) {
     /* x * 2^n via ldexp */
     double r = x;

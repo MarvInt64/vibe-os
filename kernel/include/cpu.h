@@ -84,7 +84,11 @@ struct cpu *cpu_get(unsigned index);
 /* The struct cpu of the CPU executing this call (valid after cpu_register). */
 static inline struct cpu *this_cpu(void) {
     struct cpu *c;
+#ifdef __aarch64__
+    __asm__ volatile("mrs %0, tpidr_el1" : "=r"(c));
+#else
     __asm__ volatile("mov %%gs:0, %0" : "=r"(c));
+#endif
     return c;
 }
 

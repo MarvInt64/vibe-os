@@ -81,6 +81,13 @@ void virtio_input_poll(void);
 int  virtio_input_is_ready(void);
 extern int g_mouse_x, g_mouse_y, g_mouse_buttons, g_mouse_moved;
 
+/* ---- virtio-sound ----------------------------------------------------- */
+int  virtio_snd_init(void);
+int  virtio_snd_ready(void);
+int  virtio_snd_write(uint32_t pid, const void *buf, unsigned long bytes);
+void virtio_snd_mix_tick(void);
+int  virtio_snd_busy_slots(void);
+
 /* ---- ramfb framebuffer ------------------------------------------------ */
 int       ramfb_init(uint32_t width, uint32_t height);
 void      ramfb_clear(uint32_t argb);
@@ -102,7 +109,7 @@ void arm64_mmu_init(void);
 uint64_t arm64_aspace_create(uint64_t user_pa, void **l1_raw, void **l2_raw);
 void     arm64_aspace_switch(uint64_t ttbr0);
 void     arm64_aspace_switch_boot(void);
-#define  ARM64_ASPACE_SLOT_BYTES (16UL * 1024 * 1024)
+#define  ARM64_ASPACE_SLOT_BYTES (32UL * 1024 * 1024)
 
 void arm64_gic_init(void);
 void arm64_gic_enable_irq(unsigned irq);

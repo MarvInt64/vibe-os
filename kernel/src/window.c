@@ -2964,6 +2964,17 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
 void desktop_poll_apps(struct desktop_state *desktop) {
 	size_t i;
 
+	/* Userspace app windows (created via SYS_WINDOW_CREATE_EX) whose owning
+	 * process has exited — e.g. killed from the task manager — are closed here.
+	 * desktop_app_close_for_pid is idempotent (no-op once the slot is freed), so
+	 * this is safe even on arches that also close from the process-exit path. */
+	for (i = 0; i < MAX_USER_APPS; ++i) {
+		uint32_t pid = desktop->user_apps[i].pid;
+		if (desktop->user_apps[i].created && pid != 0 && !process_pid_alive(pid)) {
+			desktop_app_close_for_pid(desktop, pid);
+		}
+	}
+
 	/* A kernel app whose owning process (e.g. the terminal's /bin/sh) has died
 	 * gets its window cleanly closed here. The app drops its session state and
 	 * only restarts on an explicit user gesture. */

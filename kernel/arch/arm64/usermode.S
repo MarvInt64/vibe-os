@@ -18,7 +18,7 @@
 .align 4
 .global g_kernel_ctx
 g_kernel_ctx:
-    .space 112
+    .space 3584
 
 .section ".text", "ax"
 
@@ -26,8 +26,13 @@ g_kernel_ctx:
 .global arm64_enter_user
 arm64_enter_user:
     /* Save kernel callee-saved state so the SVC exit path can longjmp back */
-    adrp x9, g_kernel_ctx
-    add  x9, x9, :lo12:g_kernel_ctx
+    mrs  x9, tpidr_el1
+    ldr  w9, [x9, #8]
+    mov  x10, #112
+    mul  x9, x9, x10
+    adrp x10, g_kernel_ctx
+    add  x10, x10, :lo12:g_kernel_ctx
+    add  x9, x9, x10
     stp  x19, x20, [x9, #0]
     stp  x21, x22, [x9, #16]
     stp  x23, x24, [x9, #32]
@@ -71,11 +76,17 @@ arm64_enter_user:
  * register state and erets.  Mirrors arm64_enter_user but for resume. */
 .global arm64_resume_user
 arm64_resume_user:
-    mov  x9, x0                  /* x9 = frame ptr (not visible to EL0) */
+    mov  x15, x19                /* preserve caller's x19 (may hold t0 etc.) */
+    mov  x19, x0                 /* frame ptr in x19 */
     /* Save kernel callee-saved state. */
-    adrp x0, g_kernel_ctx
-    add  x0, x0, :lo12:g_kernel_ctx
-    stp  x19, x20, [x0, #0]
+    mrs  x0, tpidr_el1
+    ldr  w0, [x0, #8]
+    mov  x10, #112
+    mul  x0, x0, x10
+    adrp x10, g_kernel_ctx
+    add  x10, x10, :lo12:g_kernel_ctx
+    add  x0, x0, x10
+    stp  x15, x20, [x0, #0]     /* x15 = caller's x19 */
     stp  x21, x22, [x0, #16]
     stp  x23, x24, [x0, #32]
     stp  x25, x26, [x0, #48]
@@ -83,6 +94,10 @@ arm64_resume_user:
     stp  x29, x30, [x0, #80]
     mov  x10, sp
     str  x10, [x0, #96]
+    
+    bl   bkl_release
+    mov  x9, x19                 /* restore frame ptr to x9 */
+
     /* Restore EL0 system registers from the frame. */
     ldr  x0, [x9, #264]
     msr  spsr_el1, x0
@@ -114,8 +129,14 @@ arm64_resume_user:
 /* void arm64_return_to_kernel(uint64_t code [x0]) — never returns to caller */
 .global arm64_return_to_kernel
 arm64_return_to_kernel:
-    adrp x9, g_kernel_ctx
-    add  x9, x9, :lo12:g_kernel_ctx
+    /* Find the correct per-CPU slot, same indexing as arm64_enter_user. */
+    mrs  x9, tpidr_el1
+    ldr  w9, [x9, #8]           /* cpu->index */
+    mov  x10, #112
+    mul  x9, x9, x10            /* offset = index * 112 */
+    adrp x10, g_kernel_ctx
+    add  x10, x10, :lo12:g_kernel_ctx
+    add  x9, x9, x10            /* x9 = &g_kernel_ctx[index] */
     ldp  x19, x20, [x9, #0]
     ldp  x21, x22, [x9, #16]
     ldp  x23, x24, [x9, #32]
