@@ -951,15 +951,10 @@ void kernel_main_arm64(void) {
         bb = fb;
         serial_write("[gui] WARNING: no backbuffer (OOM) — may flicker\r\n");
     }
+    desktop_init(g_desktop, ramfb_width(), ramfb_height());
 
-    /* Make the built-in demo windows visible so the GUI shows something
-     * even before userspace apps launch. */
-    g_desktop->windows[WINDOW_INFO].visible = 1;
-    g_desktop->windows[WINDOW_FILES].visible = 1;
-    g_desktop->windows[WINDOW_TERMINAL].visible = 1;
-    g_desktop->windows[WINDOW_TASK_MANAGER].visible = 1;
-
-    /* Spawn wallpaper to set a nice background */
+    /* Spawn GUI apps — they create their own windows via VexUI/Winsys.
+     * The demo windows (SYSTEM, FILES, etc.) stay hidden. */
     process_spawn_path("/bin/wallpaper", 0, 0, 0, 0);
     /* Spawn dock and topbar for the full desktop experience */
     process_spawn_path("/bin/dock", 0, 0, 0, 0);
