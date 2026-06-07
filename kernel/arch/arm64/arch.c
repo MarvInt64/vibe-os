@@ -308,9 +308,31 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = 0;
             return;
         }
-        case SYS_TEXT_DRAW: {       /* 40: draw text into a pixel buffer */
-            /* Simplified: no-op for now */
-            regs[0] = 0;
+        case SYS_TEXT_DRAW: {       /* 40: rasterize text into an ARGB buffer */
+            /* a0=buf, a1=text, a2=(buf_w<<16)|buf_h,
+             * a3=((x&0xffff)<<16)|(y&0xffff), a4=color, a5=scale.
+             * The calling app's address space is active, so buf/text are
+             * directly accessible — uses the SAME font atlas as the chrome. */
+            uint32_t *buf = (uint32_t *)(uintptr_t)a0;
+            int buf_w = (int)((a2 >> 16) & 0xffffu);
+            int buf_h = (int)(a2 & 0xffffu);
+            int x = (int)(int16_t)((a3 >> 16) & 0xffffu);
+            int y = (int)(int16_t)(a3 & 0xffffu);
+            if (buf == 0) { regs[0] = (uint64_t)-1; return; }
+            char text[256];
+            copy_user_str(text, (const char *)(uintptr_t)a1, sizeof(text));
+            regs[0] = (uint64_t)(int64_t)draw_text_to_argb(buf, buf_w, buf_h,
+                x, y, text, (uint32_t)a4, (int)a5);
+            return;
+        }
+        case SYS_TEXT_METRICS: {    /* 41: query atlas metrics / string width */
+            if (a0 == 0) {
+                regs[0] = (uint64_t)font_metrics_packed((int)a1);
+            } else {
+                char text[256];
+                copy_user_str(text, (const char *)(uintptr_t)a0, sizeof(text));
+                regs[0] = (uint64_t)(int64_t)text_width(text, (int)a1);
+            }
             return;
         }
         case SYS_SET_WALLPAPER: {   /* 36: set wallpaper from pixel buffer */

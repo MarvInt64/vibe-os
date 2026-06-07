@@ -2146,14 +2146,11 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
     repaint(w);
     w->dirty = 0;
 
-#ifdef ARCH_ARM64
-    /* On arm64 cooperative scheduler, exit after the initial paint.
-     * The compositor will keep rendering the static window content.
-     * Full interactive event loop needs preemptive scheduling (TODO). */
-    sc1(SYS_EXIT, 0);
-    for(;;){}
-#endif
-
+    /* Both arches run the full interactive event loop.  On arm64 the kernel's
+     * cooperative scheduler suspends the app whenever SYS_EVENT_POLL finds no
+     * pending event (it returns 0 on resume), so this loop interleaves with the
+     * compositor one frame at a time without preemption — hover, clicks and
+     * redraws all work. */
     while (w->open) {
         struct winsys_event ev;
         int i;
