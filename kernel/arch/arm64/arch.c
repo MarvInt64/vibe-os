@@ -1061,17 +1061,10 @@ void kernel_main_arm64(void) {
      * previous one.  We spawn-run-exit each app before starting the next.
      * After all apps have created their windows and exited, the compositor
      * renders their static content continuously. */
-    serial_write("[gui] spawning wallpaper...\r\n");
+    serial_write("[gui] spawning GUI apps...\r\n");
     process_spawn_path("/bin/wallpaper", 0, 0, 0, 0);
-    process_run_ready_slice();  /* run wallpaper, it exits */
-
-    serial_write("[gui] spawning dock...\r\n");
     process_spawn_path("/bin/dock", 0, 0, 0, 0);
-    process_run_ready_slice();  /* run dock, it creates window + exits */
-
-    serial_write("[gui] spawning topbar...\r\n");
     process_spawn_path("/bin/topbar", 0, 0, 0, 0);
-    process_run_ready_slice();  /* run topbar, it creates window + exits */
 
     serial_write("[gui] entering render loop\r\n");
     for (;;) {
