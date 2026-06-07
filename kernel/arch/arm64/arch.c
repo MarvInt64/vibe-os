@@ -95,6 +95,7 @@ static char g_spawn_arg[512];
  * regs[0..30] = x0..x30, regs[31]=sp_el0, regs[32]=elr_el1, regs[33]=spsr. */
 extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
 extern struct process g_procs[];
+void process_handle_exit(uint64_t code);
 extern int g_current;
 struct desktop_state *desktop_active(void);
 
@@ -228,8 +229,8 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = i;
             return;
         }
-        case SYS_EXIT:          /* 4: longjmp back into the kernel */
-            arm64_return_to_kernel(a0);
+        case SYS_EXIT:          /* 4: cleanup + longjmp back into the kernel */
+            process_handle_exit(a0);
             /* not reached */
         case SYS_WINDOWMGR_START: { /* 21: mark window manager active */
             g_desktop_uid = (g_current >= 0) ? g_procs[g_current].uid : 0;
@@ -951,8 +952,9 @@ void kernel_main_arm64(void) {
         struct keyboard_state keyboard;
         memset(&mouse, 0, sizeof(mouse));
         memset(&keyboard, 0, sizeof(keyboard));
-        mouse.x = g_mouse_x;
-        mouse.y = g_mouse_y;
+        /* Scale tablet coordinates from 0–32767 (QEMU default) to screen */
+        mouse.x = g_mouse_x * (int)ramfb_width() / 32767;
+        mouse.y = g_mouse_y * (int)ramfb_height() / 32767;
         mouse.buttons = (uint8_t)g_mouse_buttons;
         mouse.moved = (uint8_t)g_mouse_moved;
         /* Edge-trigger: detect press/release transitions */

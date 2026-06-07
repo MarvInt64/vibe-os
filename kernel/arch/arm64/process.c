@@ -129,14 +129,19 @@ int process_spawn_path(const char *path,
     struct elf64_program_header *ph =
         (struct elf64_program_header *)(elf + eh->program_header_offset);
 
-    uint64_t base_va = slot_va((uint32_t)slot);
+    /* All arm64 apps are linked at fixed VA 0x90000000 (non-PIE).
+     * Since only one EL0 process runs at a time (cooperative model),
+     * we reuse the same VA for all processes — each spawn overwrites
+     * the previous one's memory at PA 0x50000000. */
+    uint64_t base_va = ARM64_USER_BASE;
 
     /* Copy each PT_LOAD segment to PA = vaddr - ALIAS_OFF.
      * The ELF is linked for VA 0x90000000 (see user/arm64/link.ld).
      * We need to relocate: the segments claim VA 0x90000000, but the
      * actual slot VA is base_va.  Compute the delta. */
-    uint64_t elf_base = 0x90000000ULL;  /* expected by linker */
-    uint64_t delta = base_va - elf_base;
+    /* No relocation needed: base_va == elf_base == 0x90000000.
+     * Apps are linked at this exact address. */
+    uint64_t delta = 0;
 
     for (int i = 0; i < eh->program_header_count; i++) {
         if (ph[i].type != ELF_PROGRAM_TYPE_LOAD) continue;
@@ -165,12 +170,12 @@ int process_spawn_path(const char *path,
     proc->state      = PROCESS_STATE_READY;
     proc->uid        = uid;
     proc->gid        = gid;
-    proc->entry      = eh->entry + delta;
-    proc->user_stack_top = slot_stack_top((uint32_t)slot);
-    proc->user_virtual_base = base_va;
+    proc->entry      = eh->entry;  /* already at 0x90000000 */
+    proc->user_stack_top = ARM64_USER_BASE + ARM64_SLOT_SIZE - 16;  /* top of slot 0 VA space */
+    proc->user_virtual_base = ARM64_USER_BASE;
     proc->code_size  = fsize;
     proc->user_image_allocation = elf;  /* freed on kill */
-    proc->cr3        = base_va;  /* repurpose for slot VA */
+    proc->cr3        = ARM64_USER_BASE;  /* all share slot 0 VA */
 
     /* Extract name from path (last component) */
     {
