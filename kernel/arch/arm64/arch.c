@@ -359,12 +359,47 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = (uint64_t)(int64_t)process_get_snapshot((uint32_t)a0, out);
             return;
         }
-        case SYS_PROCESS_SPAWN:  /* 5: process spawn from app — stub */
-            regs[0] = (uint64_t)-1;
+        case SYS_PROCESS_SPAWN: { /* 5: spawn a new process. a0=name, a1=arg (optional) */
+            const char *user_name = (const char *)(uintptr_t)a0;
+            if (!user_name) { regs[0] = (uint64_t)-1; return; }
+            /* Resolve name: if it contains '/', use as-is; else prepend /bin/ */
+            char path[256];
+            int has_slash = 0;
+            for (const char *s = user_name; *s && (size_t)(s - user_name) < 64; s++)
+                if (*s == '/') { has_slash = 1; break; }
+            if (has_slash) {
+                for (int i = 0; i < 254 && user_name[i]; i++)
+                    path[i] = user_name[i];
+            } else {
+                path[0]='/'; path[1]='b'; path[2]='i'; path[3]='n'; path[4]='/';
+                int i = 5;
+                for (; i < 254 && user_name[i-5]; i++)
+                    path[i] = user_name[i-5];
+                path[i] = '\0';
+            }
+            uint32_t uid = (g_current >= 0) ? g_procs[g_current].uid : 0;
+            int pid = process_spawn_path(path, 0, 0, uid, uid);
+            regs[0] = (uint64_t)(int64_t)pid;
             return;
-        case SYS_LOG:            /* 33: journal log — silent no-op */
+        }
+        case SYS_LOG: {          /* 33: journal log — write to serial */
+            const char *msg = (const char *)(uintptr_t)a0;
+            if (msg) { serial_write("[app] "); serial_write(msg); serial_write("\r\n"); }
             regs[0] = 0;
             return;
+        }
+        case SYS_GETPID:        /* 53: get current process ID */
+            regs[0] = (uint64_t)((g_current >= 0) ? g_procs[g_current].pid : 0);
+            return;
+        case SYS_GETUID:        /* 55: get current user ID */
+            regs[0] = (uint64_t)((g_current >= 0) ? g_procs[g_current].uid : 0);
+            return;
+        case SYS_PROCESS_KILL: { /* 29: kill a process by PID. a0=pid */
+            uint32_t target = (uint32_t)a0;
+            int result = process_kill(target);
+            regs[0] = (uint64_t)(int64_t)result;
+            return;
+        }
         case SYS_DESKTOP_STATUS: /* 43: top-bar status — not yet wired on arm64 */
         case SYS_MENU_DISPATCH:  /* 44: menu action delivery — not yet on arm64 */
         case SYS_WINDOW_SET_MENUBAR: /* 37: menu bar — not yet on arm64 */
