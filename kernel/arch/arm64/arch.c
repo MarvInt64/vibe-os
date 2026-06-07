@@ -359,6 +359,12 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = (uint64_t)(int64_t)process_get_snapshot((uint32_t)a0, out);
             return;
         }
+        case SYS_PROCESS_SPAWN:  /* 5: process spawn from app — stub */
+            regs[0] = (uint64_t)-1;
+            return;
+        case SYS_LOG:            /* 33: journal log — silent no-op */
+            regs[0] = 0;
+            return;
         case SYS_DESKTOP_STATUS: /* 43: top-bar status — not yet wired on arm64 */
         case SYS_MENU_DISPATCH:  /* 44: menu action delivery — not yet on arm64 */
         case SYS_WINDOW_SET_MENUBAR: /* 37: menu bar — not yet on arm64 */
