@@ -21,6 +21,9 @@
 #include "../../include/ramdisk.h"
 #include "../../include/ext2_fs.h"
 #include "../../include/elf.h"
+#include "../../include/cpu.h"
+#include "../../include/smp.h"
+#include "../../include/bkl.h"
 #include "../../include/syscall.h"   /* shared SYS_* numbers (x86 + arm64) */
 #include "../../include/framebuffer.h"
 #include "../../include/process.h"
@@ -97,7 +100,6 @@ extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
 extern void arm64_yield_current(void *frame) __attribute__((noreturn));
 extern struct process g_procs[];
 void process_handle_exit(uint64_t code);
-extern int g_current;
 struct desktop_state *desktop_active(void);
 
 /* Copy an EL0 user string (NUL-terminated) into a kernel buffer. EL0 pointers
@@ -234,7 +236,7 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             process_handle_exit(a0);
             /* not reached */
         case SYS_WINDOWMGR_START: { /* 21: mark window manager active */
-            g_desktop_uid = (g_current >= 0) ? g_procs[g_current].uid : 0;
+            g_desktop_uid = (this_cpu() && this_cpu()->current) ? this_cpu()->current->uid : 0;
             regs[0] = 0;
             return;
         }
@@ -242,7 +244,7 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             struct desktop_state *d = desktop_active();
             if (!d) { regs[0] = (uint64_t)-1; return; }
             const char *title = (const char *)(uintptr_t)a0;
-            uint32_t pid = (g_current >= 0) ? g_procs[g_current].pid : 0;
+            uint32_t pid = (this_cpu() && this_cpu()->current) ? this_cpu()->current->pid : 0;
             int result = desktop_app_create(d, pid, title, (int)a1, (int)a2);
             regs[0] = (uint64_t)(int64_t)result;
             return;
@@ -253,7 +255,7 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             const struct winsys_window_options *opts =
                 (const struct winsys_window_options *)(uintptr_t)a0;
             if (!opts) { serial_write("[winex] null opts\r\n"); regs[0] = (uint64_t)-1; return; }
-            uint32_t pid = (g_current >= 0) ? g_procs[g_current].pid : 0;
+            uint32_t pid = (this_cpu() && this_cpu()->current) ? this_cpu()->current->pid : 0;
             int result = desktop_app_create_ex(d, pid, opts);
             regs[0] = (uint64_t)(int64_t)result;
             return;
@@ -272,7 +274,7 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 dw = (int)((a5 >> 16) & 0xffffu);
                 dh = (int)(a5 & 0xffffu);
             }
-            uint32_t pid = (g_current >= 0) ? g_procs[g_current].pid : 0;
+            uint32_t pid = (this_cpu() && this_cpu()->current) ? this_cpu()->current->pid : 0;
             int result = desktop_app_present_rect(d, pid, win_id, pixels, w, h,
                                                    dx, dy, dw, dh);
             regs[0] = (uint64_t)(int64_t)result;
@@ -357,13 +359,19 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             struct cpu_info_snapshot *buf = (struct cpu_info_snapshot *)(uintptr_t)a0;
             unsigned max = (unsigned)a1;
             if (!buf || max == 0) { regs[0] = (uint64_t)-1; return; }
-            /* arm64 is single-core (no SMP yet): report CPU 0 with the global
-             * tick counter; no per-CPU busy accounting, so busy = 0. */
-            buf[0].index = 0;
-            buf[0].apic_id = 0;
-            buf[0].ticks = timer_tick_count();
-            buf[0].busy = 0;
-            regs[0] = 1;
+            unsigned n = smp_cpu_count();
+            if (n > max) n = max;
+            for (unsigned i = 0; i < n; i++) {
+                struct cpu *c = cpu_get(i);
+                if (c) {
+                    buf[i].index = c->index;
+                    buf[i].apic_id = c->apic_id;
+                    buf[i].ticks = c->ticks;
+                    /* simplistic busy ticks: */
+                    buf[i].busy = c->busy_ticks;
+                }
+            }
+            regs[0] = (uint64_t)n;
             return;
         }
         case SYS_PROCESS_SNAPSHOT: { /* 28: a0=index, a1=struct process_snapshot* */
@@ -392,7 +400,7 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                     path[i] = user_name[i-5];
                 path[i] = '\0';
             }
-            uint32_t uid = (g_current >= 0) ? g_procs[g_current].uid : 0;
+            uint32_t uid = (this_cpu() && this_cpu()->current) ? this_cpu()->current->uid : 0;
             int pid = process_spawn_path(path, 0, 0, uid, uid);
             regs[0] = (uint64_t)(int64_t)pid;
             return;
@@ -404,10 +412,10 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             return;
         }
         case SYS_GETPID:        /* 53: get current process ID */
-            regs[0] = (uint64_t)((g_current >= 0) ? g_procs[g_current].pid : 0);
+            regs[0] = (uint64_t)((this_cpu() && this_cpu()->current) ? this_cpu()->current->pid : 0);
             return;
         case SYS_GETUID:        /* 55: get current user ID */
-            regs[0] = (uint64_t)((g_current >= 0) ? g_procs[g_current].uid : 0);
+            regs[0] = (uint64_t)((this_cpu() && this_cpu()->current) ? this_cpu()->current->uid : 0);
             return;
         case SYS_PROCESS_KILL: { /* 29: kill a process by PID. a0=pid */
             uint32_t target = (uint32_t)a0;
@@ -427,7 +435,7 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             /* rdi = win_id, rsi = struct winsys_event* (out) */
             struct desktop_state *d = desktop_active();
             if (!d) { regs[0] = 0; return; }
-            uint32_t pid = (g_current >= 0) ? g_procs[g_current].pid : 0;
+            uint32_t pid = (this_cpu() && this_cpu()->current) ? this_cpu()->current->pid : 0;
             struct winsys_event *out = (struct winsys_event *)(uintptr_t)a1;
             int result = desktop_app_poll_event(d, pid, (int)a0, out);
             regs[0] = (uint64_t)result;
@@ -1076,13 +1084,25 @@ void kernel_main_arm64(void) {
      * previous one.  We spawn-run-exit each app before starting the next.
      * After all apps have created their windows and exited, the compositor
      * renders their static content continuously. */
-    serial_write("[gui] spawning GUI apps...\r\n");
+    /* Run wallpaper first (synchronously) so the background is set before
+     * the first render frame — avoids a black flash.  Dock and topbar are
+     * spawned into the round-robin queue and run during the render loop. */
+    serial_write("[gui] spawning wallpaper...\r\n");
     process_spawn_path("/bin/wallpaper", 0, 0, 0, 0);
+    process_run_ready_slice();  /* wallpaper sets background + exits */
+
+    serial_write("[gui] spawning dock + topbar...\r\n");
     process_spawn_path("/bin/dock", 0, 0, 0, 0);
     process_spawn_path("/bin/topbar", 0, 0, 0, 0);
 
-    serial_write("[gui] entering render loop\r\n");
+    /* ---- SMP Init ------------------------------------------------------- */
+    serial_write("[arm64] SMP init...\n");
+    cpu_register(0);
+    smp_boot_aps();
+
+    serial_write("[gui] entering render loop\n");
     for (;;) {
+        bkl_acquire();
         /* Feed mouse input to the compositor before rendering */
         struct mouse_state mouse;
         struct keyboard_state keyboard;
@@ -1093,25 +1113,27 @@ void kernel_main_arm64(void) {
         mouse.buttons = (uint8_t)g_mouse_buttons;
         mouse.moved = (uint8_t)g_mouse_moved;
         static int prev_buttons = 0;
-        if ((g_mouse_buttons & 1) && !(prev_buttons & 1))
+        if ((0) && !(prev_buttons & 1))
             mouse.left_pressed = 1;
-        if (!(g_mouse_buttons & 1) && (prev_buttons & 1))
+        if (!(0) && (prev_buttons & 1))
             mouse.left_released = 1;
         prev_buttons = g_mouse_buttons;
 
-        desktop_handle_input(g_desktop, &mouse, &keyboard);
+         // desktop_handle_input(g_desktop, &mouse, &keyboard);
 
         /* Render scene offscreen first (backbuffer), then blit to the
          * visible framebuffer in one shot — no tearing/flickering. */
-        desktop_render(g_desktop, &bb);
-        fb_blit(&fb, &bb);
+         // desktop_render(g_desktop, &bb);
+         // fb_blit(&fb, &bb);
 
         /* Draw cursor directly on the visible framebuffer so it
          * doesn't get smeared by the backbuffer copy. */
-        desktop_draw_cursor_overlay(g_desktop, &fb);
+         // desktop_draw_cursor_overlay(g_desktop, &fb);
 
         /* Run one user process slice, then poll input */
         process_run_ready_slice();
+        bkl_release();
+        
         virtio_input_poll();
     }
 }
