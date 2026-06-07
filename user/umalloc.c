@@ -34,6 +34,20 @@
 extern void vos_yield(void);
 static volatile unsigned char g_alloc_lock;
 
+#ifdef ARCH_ARM64
+/* arm64 is single-core and cooperatively scheduled, and Apple HVF faults on the
+ * LDAXR/STXR exclusive ops that __atomic_test_and_set emits (the kernel's
+ * spinlock.h avoids them for the same reason).  A plain flag is sufficient:
+ * threads sharing this heap only ever interleave at explicit yield points, so
+ * there is no true concurrency to guard against — just re-entrancy. */
+static void alloc_lock(void) {
+    while (g_alloc_lock) vos_yield();
+    g_alloc_lock = 1;
+}
+static void alloc_unlock(void) {
+    g_alloc_lock = 0;
+}
+#else
 static void alloc_lock(void) {
     while (__atomic_test_and_set(&g_alloc_lock, __ATOMIC_ACQUIRE))
         vos_yield();
@@ -41,6 +55,7 @@ static void alloc_lock(void) {
 static void alloc_unlock(void) {
     __atomic_clear(&g_alloc_lock, __ATOMIC_RELEASE);
 }
+#endif
 
 #define UMALLOC_ALIGN 16u
 #define UMALLOC_GROW_MIN (64u * 1024u)

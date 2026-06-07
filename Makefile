@@ -290,7 +290,19 @@ arm64-user: $(DISK_IMG)
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/topbar.elf \
 	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/topbar.o $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/topbar.elf /bin/topbar
-	@echo "arm64 user programs: /bin/hello /bin/gfxdemo /bin/inputtest /bin/desktop /bin/wallpaper /bin/dock /bin/topbar"
+	# --- Task Manager (C++ GUI app using VexUI; shows live processes) ---
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
+	    -c user/taskmgr/taskmgr.cpp -o $(ARM64_UDIR)/taskmgr.o
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
+	    -c user/taskmgr/process_row.cpp -o $(ARM64_UDIR)/taskmgr_process_row.o
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
+	    -c user/taskmgr/task_manager.cpp -o $(ARM64_UDIR)/taskmgr_task_manager.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/taskmgr.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/taskmgr.o $(ARM64_UDIR)/taskmgr_process_row.o \
+	    $(ARM64_UDIR)/taskmgr_task_manager.o $(ARM64_UDIR)/vexui.o \
+	    $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/taskmgr.elf /bin/taskmgr
+	@echo "arm64 user programs: /bin/hello /bin/gfxdemo /bin/inputtest /bin/desktop /bin/wallpaper /bin/dock /bin/topbar /bin/taskmgr"
 
 # ============================================================
 

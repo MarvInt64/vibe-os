@@ -353,6 +353,19 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = 0;
             arm64_yield_current(regs);
             /* not reached */
+        case SYS_CPU_INFO: {     /* 64: a0=struct cpu_info_snapshot* buf, a1=max */
+            struct cpu_info_snapshot *buf = (struct cpu_info_snapshot *)(uintptr_t)a0;
+            unsigned max = (unsigned)a1;
+            if (!buf || max == 0) { regs[0] = (uint64_t)-1; return; }
+            /* arm64 is single-core (no SMP yet): report CPU 0 with the global
+             * tick counter; no per-CPU busy accounting, so busy = 0. */
+            buf[0].index = 0;
+            buf[0].apic_id = 0;
+            buf[0].ticks = timer_tick_count();
+            buf[0].busy = 0;
+            regs[0] = 1;
+            return;
+        }
         case SYS_PROCESS_SNAPSHOT: { /* 28: a0=index, a1=struct process_snapshot* */
             struct process_snapshot *out = (struct process_snapshot *)(uintptr_t)a1;
             if (!out) { regs[0] = (uint64_t)-1; return; }
