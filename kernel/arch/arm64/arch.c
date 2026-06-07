@@ -932,6 +932,23 @@ void kernel_main_arm64(void) {
     serial_write("[gui] initialising desktop compositor...\r\n");
     desktop_init(g_desktop, ramfb_width(), ramfb_height());
 
+    /* Allocate a backbuffer for flicker-free rendering.
+     * We render the scene offscreen, then blit to the visible framebuffer
+     * in one operation — this eliminates the tearing/flickering that
+     * direct-to-fb rendering causes. */
+    size_t bb_pixels = (size_t)ramfb_width() * (size_t)ramfb_height();
+    uint32_t *backbuf = (uint32_t *)kmalloc(bb_pixels * 4);
+    struct framebuffer bb;
+    if (backbuf) {
+        fb_init(&bb, (uintptr_t)backbuf, ramfb_width(), ramfb_height(),
+                ramfb_width() * 4, 32);
+        serial_write("[gui] backbuffer allocated\r\n");
+    } else {
+        /* Fall back to direct rendering if OOM */
+        bb = fb;
+        serial_write("[gui] WARNING: no backbuffer (OOM) — may flicker\r\n");
+    }
+
     /* Make the built-in demo windows visible so the GUI shows something
      * even before userspace apps launch. */
     g_desktop->windows[WINDOW_INFO].visible = 1;
@@ -952,12 +969,10 @@ void kernel_main_arm64(void) {
         struct keyboard_state keyboard;
         memset(&mouse, 0, sizeof(mouse));
         memset(&keyboard, 0, sizeof(keyboard));
-        /* Scale tablet coordinates from 0–32767 (QEMU default) to screen */
         mouse.x = g_mouse_x * (int)ramfb_width() / 32767;
         mouse.y = g_mouse_y * (int)ramfb_height() / 32767;
         mouse.buttons = (uint8_t)g_mouse_buttons;
         mouse.moved = (uint8_t)g_mouse_moved;
-        /* Edge-trigger: detect press/release transitions */
         static int prev_buttons = 0;
         if ((g_mouse_buttons & 1) && !(prev_buttons & 1))
             mouse.left_pressed = 1;
@@ -966,14 +981,18 @@ void kernel_main_arm64(void) {
         prev_buttons = g_mouse_buttons;
 
         desktop_handle_input(g_desktop, &mouse, &keyboard);
-        desktop_render(g_desktop, &fb);
 
-        /* Run one user process slice (cooperative round-robin).
-         * Each GUI app runs briefly, makes window syscalls, then yields.
-         * The compositor regains control when the process exits or yields. */
+        /* Render scene offscreen first (backbuffer), then blit to the
+         * visible framebuffer in one shot — no tearing/flickering. */
+        desktop_render(g_desktop, &bb);
+        fb_blit(&fb, &bb);
+
+        /* Draw cursor directly on the visible framebuffer so it
+         * doesn't get smeared by the backbuffer copy. */
+        desktop_draw_cursor_overlay(g_desktop, &fb);
+
+        /* Run one user process slice, then poll input */
         process_run_ready_slice();
-
-        /* Poll input device for next frame */
         virtio_input_poll();
     }
 }
