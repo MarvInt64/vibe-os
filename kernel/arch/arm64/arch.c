@@ -103,6 +103,7 @@ extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
 extern void arm64_yield_current(void *frame) __attribute__((noreturn));
 extern void arm64_sleep_current(void *frame) __attribute__((noreturn));
 extern struct process g_procs[];
+extern int process_create_thread(struct process *parent, uintptr_t entry, uintptr_t stack_top, uint64_t arg);
 void process_handle_exit(uint64_t code);
 struct desktop_state *desktop_active(void);
 
@@ -589,9 +590,15 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 d, pid, (int)a0, items, (int)a2);
             return;
         }
-        case SYS_THREAD_CREATE:  /* 34: thread create — stub, returns 1 */
-            regs[0] = 1;
+        case SYS_THREAD_CREATE: { /* 34: create a thread sharing parent's address space */
+            /* a0 = entry fn (user ptr), a1 = stack top (user ptr), a2 = arg */
+            struct process *cur = (this_cpu() && this_cpu()->current)
+                                  ? this_cpu()->current : (struct process *)0;
+            if (!cur) { regs[0] = (uint64_t)-1; return; }
+            int tid = process_create_thread(cur, (uintptr_t)a0, (uintptr_t)a1, a2);
+            regs[0] = (uint64_t)(int64_t)tid;
             return;
+        }
         case SYS_MENU_DISPATCH:  /* 44: menu action delivery — not yet on arm64 */
         case SYS_WINDOW_SET_MENUBAR: /* 37: menu bar — not yet on arm64 */
             /* Silent stub: the topbar polls these every frame; returning -1

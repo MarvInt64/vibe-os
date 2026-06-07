@@ -133,6 +133,73 @@ static int find_free_slot(void) {
     return -1;
 }
 
+/* ---- Create a thread sharing the parent's address space ---------------- */
+int process_create_thread(struct process *parent, uintptr_t entry,
+                          uintptr_t stack_top, uint64_t arg) {
+    if (!parent || !entry || !stack_top) return -1;
+
+    spin_lock(&g_process_lock);
+    int slot = find_free_slot();
+    if (slot < 0) {
+        spin_unlock(&g_process_lock);
+        return -1;
+    }
+
+    /* Share the parent's address space: borrow its TTBR0, PA backing, and
+     * page tables.  The thread's g_aspaces[slot] mirrors the parent's so the
+     * scheduler switches to the same mapping. */
+    int parent_slot = (int)(parent - g_procs);
+    g_aspaces[slot] = g_aspaces[parent_slot];
+    /* But the thread needs its OWN saved_frame — clear has_saved, we'll pre-fill it. */
+    g_aspaces[slot].has_saved = 0;
+
+    /* Thread borrows the parent's image allocation (don't double-free). */
+    struct process *proc = &g_procs[slot];
+    memset(proc, 0, sizeof(*proc));
+    proc->pid        = g_next_pid++;
+    proc->parent_pid = parent->pid;
+    proc->loaded     = 1;
+    proc->state      = PROCESS_STATE_READY;
+    proc->entry      = entry;
+    proc->user_stack_top = stack_top;
+    proc->user_virtual_base = parent->user_virtual_base;
+    proc->code_size  = 0;
+    proc->user_image_allocation = 0;  /* parent owns this */
+    proc->user_image_pages       = 0;
+    proc->cr3        = parent->cr3;
+    proc->heap_start = parent->heap_start;
+    proc->heap_break = parent->heap_break;
+    proc->heap_chunk_count = 0;
+    proc->is_thread  = 1;
+    /* copy name from parent */
+    for (int j = 0; j < 32; j++) { proc->name[j] = parent->name[j]; if (!parent->name[j]) break; }
+    proc->uid = parent->uid;
+    proc->gid = parent->gid;
+
+    /* Pre-fill the saved EL0 register state so the scheduler enters the
+     * thread function directly with the argument in x0. */
+    uint64_t *f = g_aspaces[slot].saved_frame;
+    for (int i = 0; i < 34; i++) f[i] = 0;
+    f[0]  = arg;           /* x0 = argument */
+    f[31] = stack_top;     /* sp_el0 */
+    f[32] = entry;         /* elr_el1 = entry point */
+    g_aspaces[slot].has_saved = 1;
+
+    spin_unlock(&g_process_lock);
+
+    serial_write("[process] thread pid=");
+    { char b[16]; int i=0; uint32_t t=proc->pid; if(!t)b[i++]='0';
+      else while(t){b[i++]=(char)('0'+t%10);t/=10;}
+      while(i--) serial_write_char(b[i]); }
+    serial_write(" parent=");
+    { char b[16]; int i=0; uint32_t t=parent->pid; if(!t)b[i++]='0';
+      else while(t){b[i++]=(char)('0'+t%10);t/=10;}
+      while(i--) serial_write_char(b[i]); }
+    serial_write("\r\n");
+
+    return (int)proc->pid;
+}
+
 static struct process *process_by_pid(uint32_t pid) {
     for (int i = 0; i < ARM64_MAX_PROCS; i++)
         if (g_procs[i].loaded && g_procs[i].pid == pid)
@@ -310,11 +377,10 @@ int process_kill(uint32_t pid) {
     int kslot = (int)(proc - g_procs);
     int g_curr2 = get_current_slot();
     if (g_curr2 >= 0 && &g_procs[g_curr2] == proc) {
-        /* Killing the running process: its aspace is active — drop to boot. */
         arm64_aspace_switch_boot();
         set_current_slot(-1);
     }
-    aspace_free(kslot);
+    if (!proc->is_thread) aspace_free(kslot);
 
     proc->loaded = 0;
     proc->state  = PROCESS_STATE_EXITED;
@@ -467,7 +533,7 @@ void process_handle_exit(uint64_t code) {
         /* The active TTBR0 still points at this process's page tables; switch
          * back to the shared boot aspace BEFORE freeing them. */
         arm64_aspace_switch_boot();
-        aspace_free(g_curr3);
+        if (!proc->is_thread) aspace_free(g_curr3);
         proc->loaded = 0;
         serial_write("[process] exit pid=");
         { char b[16]; int i=0; uint32_t t=proc->pid; if(!t)b[i++]='0';
