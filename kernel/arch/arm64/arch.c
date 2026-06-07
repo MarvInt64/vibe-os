@@ -419,12 +419,29 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             char *name = (char *)(uintptr_t)a2;
             uint64_t cap = a3;
             struct vfs_dir_entry e;
-            if (!vfs_readdir(path, idx, &e)) { regs[0] = (uint64_t)-1; return; }
+            if (!vfs_readdir(path, idx, &e)) {
+                static int rd_dbg = 0;
+                if (++rd_dbg <= 3) {
+                    serial_write("[readdir] MISS path="); serial_write(path);
+                    serial_write(" idx="); serial_write_hex_u64(idx);
+                    serial_write("\r\n");
+                }
+                regs[0] = (uint64_t)-1; return;
+            }
             /* Copy name to user buffer */
             size_t name_len = 0;
             while (e.name[name_len] && name_len + 1 < cap) name_len++;
             for (size_t i = 0; i < name_len; i++) name[i] = e.name[i];
             if (cap) name[name_len] = '\0';
+            {
+                static int rd_ok = 0;
+                if (++rd_ok <= 3) {
+                    serial_write("[readdir] OK path="); serial_write(path);
+                    serial_write(" idx="); serial_write_hex_u64(idx);
+                    serial_write(" name="); serial_write(name);
+                    serial_write("\r\n");
+                }
+            }
             regs[0] = 1;                    /* 1 = entry found (matches x86) */
             regs[1] = (uint64_t)e.kind;     /* kind: 1=file, 2=dir */
             regs[2] = e.size;               /* size in bytes */
@@ -562,6 +579,19 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = 0;
             return;
         }
+        case SYS_WINDOW_SET_MENU: { /* 30: set context menu items for a window */
+            uint32_t pid = (this_cpu() && this_cpu()->current)
+                           ? this_cpu()->current->pid : 0;
+            struct desktop_state *d = desktop_active();
+            const struct winsys_menu_item *items = (const struct winsys_menu_item *)(uintptr_t)a1;
+            if (!d) { regs[0] = (uint64_t)-1; return; }
+            regs[0] = (uint64_t)(int64_t)desktop_app_set_menu(
+                d, pid, (int)a0, items, (int)a2);
+            return;
+        }
+        case SYS_THREAD_CREATE:  /* 34: thread create — stub, returns 1 */
+            regs[0] = 1;
+            return;
         case SYS_MENU_DISPATCH:  /* 44: menu action delivery — not yet on arm64 */
         case SYS_WINDOW_SET_MENUBAR: /* 37: menu bar — not yet on arm64 */
             /* Silent stub: the topbar polls these every frame; returning -1

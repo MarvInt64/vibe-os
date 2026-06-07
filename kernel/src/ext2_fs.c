@@ -959,7 +959,6 @@ ssize_t ext2_read(struct ext2_filesystem *fs, uint32_t inode_num, uint32_t offse
     if (inode_num >= fs->superblock.inodes_count) return -1;
     
     inode = &fs->inode_table[inode_num - 1];
-    if ((inode->mode & EXT2_S_IFMT) == EXT2_S_IFDIR) return -1;
     if (offset >= inode->size) return 0;
     
     if (offset + size > inode->size) size = inode->size - offset;
