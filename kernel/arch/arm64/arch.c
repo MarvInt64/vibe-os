@@ -353,6 +353,12 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = 0;
             arm64_yield_current(regs);
             /* not reached */
+        case SYS_PROCESS_SNAPSHOT: { /* 28: a0=index, a1=struct process_snapshot* */
+            struct process_snapshot *out = (struct process_snapshot *)(uintptr_t)a1;
+            if (!out) { regs[0] = (uint64_t)-1; return; }
+            regs[0] = (uint64_t)(int64_t)process_get_snapshot((uint32_t)a0, out);
+            return;
+        }
         case SYS_DESKTOP_STATUS: /* 43: top-bar status — not yet wired on arm64 */
         case SYS_MENU_DISPATCH:  /* 44: menu action delivery — not yet on arm64 */
         case SYS_WINDOW_SET_MENUBAR: /* 37: menu bar — not yet on arm64 */
