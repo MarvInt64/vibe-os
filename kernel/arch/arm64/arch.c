@@ -368,8 +368,10 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             for (const char *s = user_name; *s && (size_t)(s - user_name) < 64; s++)
                 if (*s == '/') { has_slash = 1; break; }
             if (has_slash) {
-                for (int i = 0; i < 254 && user_name[i]; i++)
+                int i = 0;
+                for (; i < 254 && user_name[i]; i++)
                     path[i] = user_name[i];
+                path[i] = '\0';   /* was missing → path ran into stack garbage */
             } else {
                 path[0]='/'; path[1]='b'; path[2]='i'; path[3]='n'; path[4]='/';
                 int i = 5;
