@@ -16,6 +16,7 @@
  * MMU on and device memory mapped nGnRE, QEMU traps correctly (ISV=1).
  */
 #include "arch.h"
+#include "../../include/alloc.h"
 
 /* L1 page table: 4 entries × 8 bytes, must be 4 KB aligned.
  * Lives in BSS — boot.S clears BSS before calling us. */
@@ -73,6 +74,105 @@ static uint64_t block_user(uint64_t pa) {
          | (1ULL << 10)  /* AF */
          | (1ULL << 2)   /* AttrIndx = 1 */
          | 0x1ULL;       /* block */
+}
+
+/* ---------------------------------------------------------------------------
+ * Per-process address spaces.
+ *
+ * The boot map uses a single L1 with three 1 GB blocks; block 2 (the EL0
+ * alias of RAM) is shared by every process, so all apps see the same memory
+ * at VA 0x90000000 — only one can be resident at a time.  To run several
+ * processes concurrently each needs its OWN view of the user VA window while
+ * still sharing the device MMIO, the EL1 kernel RAM, and the framebuffer
+ * alias.
+ *
+ * We give each process a private L1 + L2 pair:
+ *   L1[0] = device   (shared)
+ *   L1[1] = kernel RAM, EL1-only (shared — the kernel runs under TTBR0 too,
+ *           since TTBR1 is disabled, so this must be present in every L1)
+ *   L1[2] = table descriptor → private L2 (covers VA 0x80000000-0xBFFFFFFF)
+ *   L1[3] = 0
+ *
+ * The L2 maps its 1 GB in 512 × 2 MB blocks.  By default every entry is the
+ * identity EL0 alias (VA 0x80000000+i*2MB → PA 0x40000000+i*2MB) so the
+ * framebuffer and any kmalloc'd buffer handed to userspace stay reachable.
+ * The entries covering the app's slot (VA 0x90000000 .. +ARM64_ASPACE_SLOT)
+ * are overridden to point at the process's private PA region instead, so each
+ * process gets distinct physical memory behind the same virtual addresses.
+ * ------------------------------------------------------------------------- */
+#define ARM64_USER_VA      0x90000000ULL
+#define ARM64_ASPACE_SLOT  (16UL * 1024 * 1024)   /* 16 MB image+stack window */
+
+/* 2 MB Level-2 block descriptor, EL0 RW+X (same attrs as block_user). */
+static uint64_t block_user_l2(uint64_t pa) {
+    return (pa & 0x0000FFFFFFE00000ULL)  /* OA[47:21], 2 MB aligned */
+         | (1ULL << 53)  /* PXN — not executable at EL1 */
+         | (1ULL << 6)   /* AP[1]=1 → EL0 RW */
+         | (3ULL << 8)   /* SH = inner shareable */
+         | (1ULL << 10)  /* AF */
+         | (1ULL << 2)   /* AttrIndx = 1 (normal WB) */
+         | 0x1ULL;       /* block */
+}
+
+/* Allocate a 4 KB page-table page (zeroed, 4 KB aligned) from the kernel heap.
+ * kmalloc has no alignment guarantee, so over-allocate and align up; the raw
+ * pointer is recorded by the caller for kfree. */
+static uint64_t *alloc_table_page(void **raw_out) {
+    void *raw = kmalloc(4096 + 4096);
+    if (!raw) { *raw_out = 0; return 0; }
+    *raw_out = raw;
+    uintptr_t aligned = ((uintptr_t)raw + 4095) & ~(uintptr_t)4095;
+    uint64_t *t = (uint64_t *)aligned;
+    for (int i = 0; i < 512; i++) t[i] = 0;
+    return t;
+}
+
+/* Build a private address space whose user slot is backed by `user_pa`
+ * (a 2 MB-aligned PA region of at least ARM64_ASPACE_SLOT bytes, inside the
+ * kernel RAM identity range 0x40000000-0x7FFFFFFF).
+ *
+ * Returns the TTBR0 value (PA of the new L1) or 0 on failure.  The two raw
+ * kmalloc pointers backing the L1 and L2 pages are returned via *l1_raw /
+ * *l2_raw so the caller can free them when the process exits. */
+uint64_t arm64_aspace_create(uint64_t user_pa, void **l1_raw, void **l2_raw) {
+    uint64_t *l1 = alloc_table_page(l1_raw);
+    uint64_t *l2 = alloc_table_page(l2_raw);
+    if (!l1 || !l2) {
+        if (*l1_raw) kfree(*l1_raw);
+        if (*l2_raw) kfree(*l2_raw);
+        *l1_raw = *l2_raw = 0;
+        return 0;
+    }
+
+    l1[0] = block_device(0x00000000ULL);   /* MMIO            (shared) */
+    l1[1] = block_normal(0x40000000ULL);   /* kernel RAM, EL1 (shared) */
+    /* Table descriptor → L2 (bits[1:0]=11, next-level table PA in [47:12]). */
+    l1[2] = ((uint64_t)(uintptr_t)l2 & 0x0000FFFFFFFFF000ULL) | 0x3ULL;
+    l1[3] = 0;
+
+    /* Default: identity EL0 alias of RAM across the whole 1 GB. */
+    for (int i = 0; i < 512; i++)
+        l2[i] = block_user_l2(0x40000000ULL + (uint64_t)i * 0x200000ULL);
+
+    /* Override the app slot to point at the process's private PA. */
+    int base = (int)((ARM64_USER_VA - 0x80000000ULL) / 0x200000ULL);  /* 128 */
+    int n    = (int)(ARM64_ASPACE_SLOT / 0x200000ULL);                /* 8   */
+    for (int i = 0; i < n; i++)
+        l2[base + i] = block_user_l2(user_pa + (uint64_t)i * 0x200000ULL);
+
+    __asm__ volatile("dsb ish" ::: "memory");
+    return (uint64_t)(uintptr_t)l1;
+}
+
+/* Switch the active address space and flush the TLB. */
+void arm64_aspace_switch(uint64_t ttbr0) {
+    write_sysreg(ttbr0_el1, ttbr0);
+    __asm__ volatile("dsb ish; tlbi vmalle1is; dsb ish; isb" ::: "memory");
+}
+
+/* Return to the shared boot address space (used when no process is running). */
+void arm64_aspace_switch_boot(void) {
+    arm64_aspace_switch((uint64_t)(uintptr_t)boot_l1);
 }
 
 void arm64_mmu_init(void) {

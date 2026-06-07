@@ -45,19 +45,26 @@ struct process g_procs[ARM64_MAX_PROCS];
 static uint32_t      g_next_pid = 1;
 int           g_current  = -1;   /* index of currently-running process, -1 = kernel */
 
-/* ---- Helpers ---------------------------------------------------------- */
-static uint64_t slot_va(uint32_t slot) {
-    return ARM64_USER_BASE + (uint64_t)slot * ARM64_SLOT_SIZE;
+/* Per-slot private address-space bookkeeping (freed on exit/kill).
+ * Kept arch-local rather than bloating the shared struct process. */
+struct arm64_aspace {
+    uint64_t ttbr0;    /* PA of the private L1 (0 = none / shared model) */
+    void    *pa_raw;   /* raw kmalloc ptr of the private user PA region   */
+    uint64_t pa_base;  /* 2 MB-aligned PA the user slot is backed by      */
+    void    *l1_raw;   /* raw kmalloc ptr of the L1 page                  */
+    void    *l2_raw;   /* raw kmalloc ptr of the L2 page                  */
+};
+static struct arm64_aspace g_aspaces[ARM64_MAX_PROCS];
+
+/* Release a slot's private address space (page tables + backing RAM). */
+static void aspace_free(int slot) {
+    struct arm64_aspace *a = &g_aspaces[slot];
+    if (a->l1_raw) kfree(a->l1_raw);
+    if (a->l2_raw) kfree(a->l2_raw);
+    if (a->pa_raw) kfree(a->pa_raw);
+    a->ttbr0 = 0; a->pa_raw = 0; a->pa_base = 0; a->l1_raw = 0; a->l2_raw = 0;
 }
 
-static uint64_t slot_stack_top(uint32_t slot) {
-    return slot_va(slot) + ARM64_SLOT_SIZE - 16;  /* 16-byte aligned */
-}
-
-/* Convert a user VA to physical address (kernel view) */
-static uint8_t *user_to_pa(uint64_t va) {
-    return (uint8_t *)(uintptr_t)(va - ARM64_ALIAS_OFF);
-}
 
 /* ---- Init ------------------------------------------------------------- */
 void process_init(void) {
@@ -129,29 +136,35 @@ int process_spawn_path(const char *path,
     struct elf64_program_header *ph =
         (struct elf64_program_header *)(elf + eh->program_header_offset);
 
-    /* All arm64 apps are linked at fixed VA 0x90000000 (non-PIE).
-     * Since only one EL0 process runs at a time (cooperative model),
-     * we reuse the same VA for all processes — each spawn overwrites
-     * the previous one's memory at PA 0x50000000. */
-    uint64_t base_va = ARM64_USER_BASE;
+    /* All arm64 apps are linked at fixed VA 0x90000000 (non-PIE).  Each
+     * process gets its OWN private physical region behind that VA via a
+     * per-process address space (private L1+L2, see arm64_aspace_create), so
+     * several apps can be resident at once instead of overwriting each other
+     * at a single shared PA. */
+    void    *pa_raw = kmalloc(ARM64_ASPACE_SLOT_BYTES + 0x200000UL);  /* +2 MB align slack */
+    if (!pa_raw) { serial_write("[process] OOM (user region)\r\n"); kfree(elf); return -1; }
+    uint64_t pa_base = ((uint64_t)(uintptr_t)pa_raw + 0x1FFFFFUL) & ~0x1FFFFFULL;
 
-    /* Copy each PT_LOAD segment to PA = vaddr - ALIAS_OFF.
-     * The ELF is linked for VA 0x90000000 (see user/arm64/link.ld).
-     * We need to relocate: the segments claim VA 0x90000000, but the
-     * actual slot VA is base_va.  Compute the delta. */
-    /* No relocation needed: base_va == elf_base == 0x90000000.
-     * Apps are linked at this exact address. */
-    uint64_t delta = 0;
+    void    *l1_raw = 0, *l2_raw = 0;
+    uint64_t ttbr0  = arm64_aspace_create(pa_base, &l1_raw, &l2_raw);
+    if (!ttbr0) {
+        serial_write("[process] aspace create failed\r\n");
+        kfree(pa_raw); kfree(elf); return -1;
+    }
 
+    /* Copy each PT_LOAD segment.  The app's VA 0x90000000 is backed by
+     * pa_base, so a segment at vaddr lands at PA = pa_base + (vaddr - VA_BASE).
+     * The kernel reaches that PA through its identity map. */
     for (int i = 0; i < eh->program_header_count; i++) {
         if (ph[i].type != ELF_PROGRAM_TYPE_LOAD) continue;
-        uint64_t vaddr = ph[i].virtual_address + delta;
+        uint64_t vaddr = ph[i].virtual_address;
         uint64_t memsz = ph[i].memory_size;
-        if (vaddr < base_va || vaddr + memsz > base_va + ARM64_SLOT_SIZE) {
+        if (vaddr < ARM64_USER_BASE ||
+            vaddr + memsz > ARM64_USER_BASE + ARM64_ASPACE_SLOT_BYTES) {
             serial_write("[process] segment out of slot range\r\n");
-            kfree(elf); return -1;
+            kfree(pa_raw); kfree(l1_raw); kfree(l2_raw); kfree(elf); return -1;
         }
-        uint8_t *dst = user_to_pa(vaddr);
+        uint8_t *dst = (uint8_t *)(uintptr_t)(pa_base + (vaddr - ARM64_USER_BASE));
         size_t fsz = (size_t)ph[i].file_size;
         for (size_t b = 0; b < fsz; b++)
             dst[b] = elf[ph[i].offset + b];
@@ -162,6 +175,13 @@ int process_spawn_path(const char *path,
     /* I-cache flush for the newly written code */
     __asm__ volatile("dsb ish; ic ialluis; dsb ish; isb" ::: "memory");
 
+    /* Record the private address space for cleanup on exit/kill. */
+    g_aspaces[slot].ttbr0   = ttbr0;
+    g_aspaces[slot].pa_raw  = pa_raw;
+    g_aspaces[slot].pa_base = pa_base;
+    g_aspaces[slot].l1_raw  = l1_raw;
+    g_aspaces[slot].l2_raw  = l2_raw;
+
     /* Set up process struct */
     struct process *proc = &g_procs[slot];
     proc->pid        = g_next_pid++;
@@ -170,12 +190,13 @@ int process_spawn_path(const char *path,
     proc->state      = PROCESS_STATE_READY;
     proc->uid        = uid;
     proc->gid        = gid;
-    proc->entry      = eh->entry;  /* already at 0x90000000 */
-    proc->user_stack_top = ARM64_USER_BASE + ARM64_SLOT_SIZE - 16;  /* top of slot 0 VA space */
+    proc->entry      = eh->entry;  /* at 0x90000000 in the process's own aspace */
+    /* Stack at the top of the 16 MB private slot (grows down). */
+    proc->user_stack_top = ARM64_USER_BASE + ARM64_ASPACE_SLOT_BYTES - 16;
     proc->user_virtual_base = ARM64_USER_BASE;
     proc->code_size  = fsize;
     proc->user_image_allocation = elf;  /* freed on kill */
-    proc->cr3        = ARM64_USER_BASE;  /* all share slot 0 VA */
+    proc->cr3        = ttbr0;  /* per-process TTBR0 */
 
     /* Extract name from path (last component) */
     {
@@ -217,12 +238,18 @@ int process_kill(uint32_t pid) {
 
     if (proc->user_image_allocation)
         kfree(proc->user_image_allocation);
+    proc->user_image_allocation = 0;
+
+    int kslot = (int)(proc - g_procs);
+    if (g_current >= 0 && &g_procs[g_current] == proc) {
+        /* Killing the running process: its aspace is active — drop to boot. */
+        arm64_aspace_switch_boot();
+        g_current = -1;
+    }
+    aspace_free(kslot);
+
     proc->loaded = 0;
     proc->state  = PROCESS_STATE_EXITED;
-
-    if (g_current >= 0 && &g_procs[g_current] == proc)
-        g_current = -1;
-
     return 0;
 }
 
@@ -291,6 +318,11 @@ int process_run_ready_slice(void) {
     proc->state = PROCESS_STATE_RUNNING;
     g_current = slot;
 
+    /* Activate the process's private address space (its own memory behind
+     * VA 0x90000000) before entering EL0. */
+    if (g_aspaces[slot].ttbr0)
+        arm64_aspace_switch(g_aspaces[slot].ttbr0);
+
     serial_write("[sched] run slot=");
     { char b[16]; int i=0; uint32_t t=(uint32_t)slot; if(!t)b[i++]='0';
       else while(t){b[i++]=(char)('0'+t%10);t/=10;}
@@ -317,6 +349,11 @@ void process_handle_exit(uint64_t code) {
         proc->state = PROCESS_STATE_EXITED;
         if (proc->user_image_allocation)
             kfree(proc->user_image_allocation);
+        proc->user_image_allocation = 0;
+        /* The active TTBR0 still points at this process's page tables; switch
+         * back to the shared boot aspace BEFORE freeing them. */
+        arm64_aspace_switch_boot();
+        aspace_free(g_current);
         proc->loaded = 0;
         serial_write("[process] exit pid=");
         { char b[16]; int i=0; uint32_t t=proc->pid; if(!t)b[i++]='0';

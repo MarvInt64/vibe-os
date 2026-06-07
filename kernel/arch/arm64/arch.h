@@ -98,6 +98,12 @@ int  arm64_uart_can_read(void);
 
 void arm64_mmu_init(void);
 
+/* Per-process address spaces (see mmu.c). */
+uint64_t arm64_aspace_create(uint64_t user_pa, void **l1_raw, void **l2_raw);
+void     arm64_aspace_switch(uint64_t ttbr0);
+void     arm64_aspace_switch_boot(void);
+#define  ARM64_ASPACE_SLOT_BYTES (16UL * 1024 * 1024)
+
 void arm64_gic_init(void);
 void arm64_gic_enable_irq(unsigned irq);
 unsigned arm64_gic_ack(void);
