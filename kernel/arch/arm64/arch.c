@@ -94,6 +94,7 @@ static char g_spawn_arg[512];
 /* EL0 exception frame, as laid out by SAVE_REGS in exceptions.S:
  * regs[0..30] = x0..x30, regs[31]=sp_el0, regs[32]=elr_el1, regs[33]=spsr. */
 extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
+extern void arm64_yield_current(void *frame) __attribute__((noreturn));
 extern struct process g_procs[];
 void process_handle_exit(uint64_t code);
 extern int g_current;
@@ -322,12 +323,22 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = (uint64_t)(int64_t)result;
             return;
         }
-        case SYS_TIMER_SLEEP:   /* 20: exit on cooperative arm64 (stub loop) */
-            process_handle_exit(0);
+        case SYS_TIMER_SLEEP:   /* 20: suspend one slice (frame-rate paced) */
+            regs[0] = 0;
+            arm64_yield_current(regs);
             /* not reached */
-        case SYS_YIELD:         /* 3: yield — return to kernel, will be rescheduled */
-            arm64_return_to_kernel(0);
+        case SYS_YIELD:         /* 3: suspend and reschedule (resumes after svc) */
+            regs[0] = 0;
+            arm64_yield_current(regs);
             /* not reached */
+        case SYS_DESKTOP_STATUS: /* 43: top-bar status — not yet wired on arm64 */
+        case SYS_MENU_DISPATCH:  /* 44: menu action delivery — not yet on arm64 */
+        case SYS_WINDOW_SET_MENUBAR: /* 37: menu bar — not yet on arm64 */
+            /* Silent stub: the topbar polls these every frame; returning -1
+             * (it renders fine without the data) without logging avoids
+             * flooding the serial journal once it runs as a persistent app. */
+            regs[0] = (uint64_t)-1;
+            return;
         case SYS_EVENT_POLL: {  /* 19: poll for window events */
             /* rdi = win_id, rsi = struct winsys_event* (out) */
             struct desktop_state *d = desktop_active();
@@ -336,6 +347,13 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             struct winsys_event *out = (struct winsys_event *)(uintptr_t)a1;
             int result = desktop_app_poll_event(d, pid, (int)a0, out);
             regs[0] = (uint64_t)result;
+            /* No event pending → cooperatively yield: suspend the app and let
+             * the compositor (and other apps) run.  The app resumes here on a
+             * later slice and the svc returns 0, so its existing event loop
+             * interleaves with no app-side changes.  When an event IS ready we
+             * return immediately so the queue drains promptly. */
+            if (result == 0)
+                arm64_yield_current(regs);  /* does not return */
             return;
         }
         default:

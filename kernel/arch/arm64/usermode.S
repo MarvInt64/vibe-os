@@ -62,6 +62,55 @@ arm64_enter_user:
     isb
     eret                         /* → EL0 at entry */
 
+/* void arm64_resume_user(void *frame [x0])
+ *
+ * Resume a previously-suspended EL0 process from a saved 272-byte exception
+ * frame (same layout SAVE_REGS in exceptions.S produces: x0-x30, sp_el0, elr,
+ * spsr).  Saves the kernel's callee-saved state into g_kernel_ctx first (so a
+ * later arm64_return_to_kernel longjmps back here), then restores the full EL0
+ * register state and erets.  Mirrors arm64_enter_user but for resume. */
+.global arm64_resume_user
+arm64_resume_user:
+    mov  x9, x0                  /* x9 = frame ptr (not visible to EL0) */
+    /* Save kernel callee-saved state. */
+    adrp x0, g_kernel_ctx
+    add  x0, x0, :lo12:g_kernel_ctx
+    stp  x19, x20, [x0, #0]
+    stp  x21, x22, [x0, #16]
+    stp  x23, x24, [x0, #32]
+    stp  x25, x26, [x0, #48]
+    stp  x27, x28, [x0, #64]
+    stp  x29, x30, [x0, #80]
+    mov  x10, sp
+    str  x10, [x0, #96]
+    /* Restore EL0 system registers from the frame. */
+    ldr  x0, [x9, #264]
+    msr  spsr_el1, x0
+    ldr  x0, [x9, #256]
+    msr  elr_el1, x0
+    ldr  x0, [x9, #248]
+    msr  sp_el0, x0
+    /* Restore GP registers (x9 is the base; restore x0,x1,x8,x9 last). */
+    ldp  x2,  x3,  [x9, #16]
+    ldp  x4,  x5,  [x9, #32]
+    ldp  x6,  x7,  [x9, #48]
+    ldp  x10, x11, [x9, #80]
+    ldp  x12, x13, [x9, #96]
+    ldp  x14, x15, [x9, #112]
+    ldp  x16, x17, [x9, #128]
+    ldp  x18, x19, [x9, #144]
+    ldp  x20, x21, [x9, #160]
+    ldp  x22, x23, [x9, #176]
+    ldp  x24, x25, [x9, #192]
+    ldp  x26, x27, [x9, #208]
+    ldp  x28, x29, [x9, #224]
+    ldr  x30,      [x9, #240]
+    ldr  x8,       [x9, #64]
+    ldp  x0,  x1,  [x9, #0]
+    ldr  x9,       [x9, #72]
+    isb
+    eret                         /* → EL0, resuming after the svc */
+
 /* void arm64_return_to_kernel(uint64_t code [x0]) — never returns to caller */
 .global arm64_return_to_kernel
 arm64_return_to_kernel:

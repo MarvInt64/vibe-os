@@ -53,8 +53,11 @@ struct arm64_aspace {
     uint64_t pa_base;  /* 2 MB-aligned PA the user slot is backed by      */
     void    *l1_raw;   /* raw kmalloc ptr of the L1 page                  */
     void    *l2_raw;   /* raw kmalloc ptr of the L2 page                  */
+    int      has_saved;          /* 1 = resume from saved_frame, 0 = fresh entry */
+    uint64_t saved_frame[34];    /* suspended EL0 state (272 B: x0-x30,sp,elr,spsr) */
 };
 static struct arm64_aspace g_aspaces[ARM64_MAX_PROCS];
+static int g_rr_next = 0;        /* round-robin scheduler cursor */
 
 /* Release a slot's private address space (page tables + backing RAM). */
 static void aspace_free(int slot) {
@@ -63,6 +66,25 @@ static void aspace_free(int slot) {
     if (a->l2_raw) kfree(a->l2_raw);
     if (a->pa_raw) kfree(a->pa_raw);
     a->ttbr0 = 0; a->pa_raw = 0; a->pa_base = 0; a->l1_raw = 0; a->l2_raw = 0;
+    a->has_saved = 0;
+}
+
+/* Suspend the running process from its EL0 exception frame and return to the
+ * kernel scheduler loop; the process stays READY and resumes where it left off
+ * (right after the svc) on a later slice.  Called from the syscall handler for
+ * cooperative yield points (SYS_YIELD, an empty SYS_EVENT_POLL, SYS_TIMER_SLEEP).
+ * `frame` is the 272-byte saved EL0 frame (the handler's regs pointer). */
+extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
+void arm64_yield_current(void *frame) {
+    if (g_current < 0) { arm64_return_to_kernel(0); }
+    struct arm64_aspace *a = &g_aspaces[g_current];
+    const uint64_t *src = (const uint64_t *)frame;
+    for (int i = 0; i < 34; i++) a->saved_frame[i] = src[i];
+    a->has_saved = 1;
+    g_procs[g_current].state = PROCESS_STATE_READY;
+    g_current = -1;
+    arm64_aspace_switch_boot();
+    arm64_return_to_kernel(0);
 }
 
 
@@ -302,17 +324,25 @@ void arm64_syscall_dispatch(struct interrupt_frame *frame, struct process *proc)
 /* ---- Enter user mode for a process ------------------------------------ */
 /* Defined in usermode.S */
 uint64_t arm64_enter_user(uint64_t entry, uint64_t sp, uint64_t arg0, uint64_t arg1);
+void     arm64_resume_user(void *frame);  /* resume from a saved EL0 frame */
 
-/* ---- Run one process slice (cooperative) ------------------------------ */
+/* ---- Run one process slice (cooperative, round-robin) ----------------- *
+ * Picks the next READY process after the round-robin cursor, switches to its
+ * private address space, and either resumes it from a saved frame (it yielded
+ * earlier) or enters it fresh at its entry point.  Control returns here when
+ * the process yields (arm64_yield_current) or exits (process_handle_exit), so
+ * several long-running apps can interleave one slice per call. */
 int process_run_ready_slice(void) {
-    /* Find the first READY process */
+    /* Round-robin: scan starting just after the last process we ran. */
     int slot = -1;
-    for (int i = 0; i < ARM64_MAX_PROCS; i++) {
+    for (int k = 0; k < ARM64_MAX_PROCS; k++) {
+        int i = (g_rr_next + k) % ARM64_MAX_PROCS;
         if (g_procs[i].loaded && g_procs[i].state == PROCESS_STATE_READY) {
             slot = i; break;
         }
     }
     if (slot < 0) return 0;  /* nothing ready */
+    g_rr_next = (slot + 1) % ARM64_MAX_PROCS;
 
     struct process *proc = &g_procs[slot];
     proc->state = PROCESS_STATE_RUNNING;
@@ -323,22 +353,14 @@ int process_run_ready_slice(void) {
     if (g_aspaces[slot].ttbr0)
         arm64_aspace_switch(g_aspaces[slot].ttbr0);
 
-    serial_write("[sched] run slot=");
-    { char b[16]; int i=0; uint32_t t=(uint32_t)slot; if(!t)b[i++]='0';
-      else while(t){b[i++]=(char)('0'+t%10);t/=10;}
-      while(i--) serial_write_char(b[i]); }
-    serial_write(" '"); serial_write(proc->name);
-    serial_write("' entry=");
-    serial_write_hex_u64(proc->entry);
-    serial_write("\r\n");
-
-    /* Enter EL0.  This function does not return — the process runs until
-     * it makes a syscall that triggers a context switch or exits.
-     * In the cooperative model, arm64_enter_user switches to EL0 and the
-     * process runs; when it returns via SVC, the exception handler in
-     * exceptions.S calls arm64_sync_handler_el0 which processes the syscall
-     * and either returns to the process or switches to another. */
-    arm64_enter_user(proc->entry, proc->user_stack_top, 0, 0);
+    /* Resume a suspended process from its saved frame, or enter fresh. */
+    if (g_aspaces[slot].has_saved) {
+        g_aspaces[slot].has_saved = 0;
+        arm64_resume_user(g_aspaces[slot].saved_frame);
+    } else {
+        arm64_enter_user(proc->entry, proc->user_stack_top, 0, 0);
+    }
+    return 0;  /* not reached (both paths longjmp back via return_to_kernel) */
 }
 
 /* ---- Called from the exception handler when a process exits ----------- */
