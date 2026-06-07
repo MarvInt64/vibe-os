@@ -248,10 +248,10 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         }
         case SYS_WINDOW_CREATE_EX: { /* 35: create window with options */
             struct desktop_state *d = desktop_active();
-            if (!d) { regs[0] = (uint64_t)-1; return; }
+            if (!d) { serial_write("[winex] no desktop\r\n"); regs[0] = (uint64_t)-1; return; }
             const struct winsys_window_options *opts =
                 (const struct winsys_window_options *)(uintptr_t)a0;
-            if (!opts) { regs[0] = (uint64_t)-1; return; }
+            if (!opts) { serial_write("[winex] null opts\r\n"); regs[0] = (uint64_t)-1; return; }
             uint32_t pid = (g_current >= 0) ? g_procs[g_current].pid : 0;
             int result = desktop_app_create_ex(d, pid, opts);
             regs[0] = (uint64_t)(int64_t)result;
@@ -390,8 +390,18 @@ static int str_starts(const char *s, const char *pfx) {
 /* ---- Memory detection ------------------------------------------------- */
 static void detect_memory(uintptr_t *hs, size_t *hz) {
     *hs = 0x40800000UL;         /* 6 MB past kernel load */
-    *hz = 232UL * 1024 * 1024;
+    *hz = 160UL * 1024 * 1024;  /* main kmalloc heap → up to 0x4A800000 */
 }
+
+/* The compositor allocates window surface/content buffers from a separate GFX
+ * heap (gfx_alloc, like x86). Carve it out of RAM after the main heap, still
+ * inside the identity-mapped RAM block (0x40000000-0x7FFFFFFF, QEMU -m 512M
+ * backs up to 0x5FFFFFFF). Without this, gfx_alloc returns NULL and window
+ * creation (desktop_app_create_ex) fails — dock/topbar can't open windows. */
+#define ARM64_GFX_BASE  0x4A800000UL   /* right after the 160 MB main heap */
+#define ARM64_GFX_SIZE  (64UL * 1024 * 1024)
+#define ARM64_IMG_BASE  0x4E800000UL   /* after gfx */
+#define ARM64_IMG_SIZE  (16UL * 1024 * 1024)
 
 /* ---- Filesystem state ------------------------------------------------- */
 /* Block device and filesystem — keep large structs 64-byte aligned so that
@@ -887,6 +897,12 @@ void kernel_main_arm64(void) {
     serial_write("[arm64] heap "); print_dec(hz >> 20);
     serial_write(" MB at "); serial_write_hex_u64(hs); serial_write("\r\n");
 
+    /* Separate GFX + image heaps for the compositor (window surface buffers). */
+    gfx_heap_init(ARM64_GFX_BASE, ARM64_GFX_SIZE);
+    image_heap_init(ARM64_IMG_BASE, ARM64_IMG_SIZE);
+    serial_write("[arm64] gfx heap 64 MB at "); serial_write_hex_u64(ARM64_GFX_BASE);
+    serial_write("\r\n");
+
     /* Filesystem — try virtio-blk + ext2 (before timer init) */
     fs_init();
 
@@ -953,12 +969,22 @@ void kernel_main_arm64(void) {
     }
     desktop_init(g_desktop, ramfb_width(), ramfb_height());
 
-    /* Spawn GUI apps — they create their own windows via VexUI/Winsys.
-     * The demo windows (SYSTEM, FILES, etc.) stay hidden. */
+    /* Spawn and run GUI apps sequentially.  Since all arm64 processes
+     * share PA 0x50000000 (non-PIE, same VA), each spawn overwrites the
+     * previous one.  We spawn-run-exit each app before starting the next.
+     * After all apps have created their windows and exited, the compositor
+     * renders their static content continuously. */
+    serial_write("[gui] spawning wallpaper...\r\n");
     process_spawn_path("/bin/wallpaper", 0, 0, 0, 0);
-    /* Spawn dock and topbar for the full desktop experience */
+    process_run_ready_slice();  /* run wallpaper, it exits */
+
+    serial_write("[gui] spawning dock...\r\n");
     process_spawn_path("/bin/dock", 0, 0, 0, 0);
+    process_run_ready_slice();  /* run dock, it creates window + exits */
+
+    serial_write("[gui] spawning topbar...\r\n");
     process_spawn_path("/bin/topbar", 0, 0, 0, 0);
+    process_run_ready_slice();  /* run topbar, it creates window + exits */
 
     serial_write("[gui] entering render loop\r\n");
     for (;;) {
