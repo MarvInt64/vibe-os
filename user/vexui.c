@@ -2146,6 +2146,14 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
     repaint(w);
     w->dirty = 0;
 
+#ifdef ARCH_ARM64
+    /* On arm64 cooperative scheduler, exit after the initial paint.
+     * The compositor will keep rendering the static window content.
+     * Full interactive event loop needs preemptive scheduling (TODO). */
+    sc1(SYS_EXIT, 0);
+    for(;;){}
+#endif
+
     while (w->open) {
         struct winsys_event ev;
         int i;

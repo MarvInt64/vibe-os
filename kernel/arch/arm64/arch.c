@@ -322,6 +322,9 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = (uint64_t)(int64_t)result;
             return;
         }
+        case SYS_TIMER_SLEEP:   /* 20: exit on cooperative arm64 (stub loop) */
+            process_handle_exit(0);
+            /* not reached */
         case SYS_YIELD:         /* 3: yield — return to kernel, will be rescheduled */
             arm64_return_to_kernel(0);
             /* not reached */
