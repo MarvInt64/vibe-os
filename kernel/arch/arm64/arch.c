@@ -1657,6 +1657,29 @@ static void gui_run(void) {
                 }
                 /* Force full redraw on next frame */
                 g_desktop->background_dirty = 1;
+
+                /* Reinitialize background framebuffer at new resolution.
+                 * background_storage is DESKTOP_MAX_WIDTH * DESKTOP_MAX_HEIGHT
+                 * (static, big enough), so just re-init the fb struct. */
+                fb_init(&g_desktop->background_fb,
+                        (uintptr_t)g_desktop->background_storage,
+                        ramfb_width(), ramfb_height(),
+                        ramfb_width() * 4, 32);
+
+                /* Expand full-width windows (topbar) to match new width. */
+                for (int wi = 0; wi < WINDOW_COUNT; wi++) {
+                    struct window_state *w = &g_desktop->windows[wi];
+                    if (!w->title || !w->title[0]) continue;
+                    if (w->width == (int)(g_desktop->screen_width) ||
+                        w->width > (int)(g_desktop->screen_width) * 3 / 4) {
+                        w->width = (int)ramfb_width();
+                        w->x = 0;
+                        fb_init(&g_desktop->window_fbs[wi],
+                                (uintptr_t)g_desktop->window_fbs[wi].base,
+                                w->width, w->height,
+                                w->width * 4, 32);
+                    }
+                }
             }
         }
 

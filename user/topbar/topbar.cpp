@@ -929,6 +929,15 @@ int main(void) {
          * Fetching once per second is plenty for stat bars and sparklines. */
         if (++stat_frames >= STAT_INTERVAL) {
             stat_frames = 0;
+
+            /* Re-check screen width — resolution may have changed.
+             * If it did, we need to re-layout (power button, clock, etc.). */
+            int new_w = (int)((vos_display_mode_get() >> 16) & 0xffffu);
+            if (new_w > 0 && new_w <= MAX_WINDOW_WIDTH && new_w != g_screen_width) {
+                g_screen_width = new_w;
+                redraw = 1;
+            }
+
             vos_desktop_status(&g_status);
             sample_status_history(&g_status);
 
