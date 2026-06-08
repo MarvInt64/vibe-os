@@ -36,6 +36,8 @@ typedef int int32_t;
 typedef unsigned short uint16_t;
 typedef unsigned char uint8_t;
 
+extern int vos_waitpid(int pid);
+
 /* Text is rasterized by the kernel font atlas via SYS_TEXT_DRAW (see below);
  * the old 8x16 bitmap font (vexui_font.h) is no longer used. */
 
@@ -835,6 +837,11 @@ vui_widget *vui_canvas_ex(vui_window *w, int x, int y, int width, int height, vu
     wd->user = (void*)pixels;
     wd->value = stride;
     init_margins(wd); w->dirty=1; return wd;
+}
+void vui_set_canvas_stride(vui_widget *canvas, int stride) {
+    if (!canvas || canvas->type != W_CANVAS || stride <= 0) return;
+    canvas->value = stride;
+    g_win.dirty = 1;
 }
 vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels, int active) {
     vui_widget *wd = new_widget(w, W_TABS);
@@ -2115,11 +2122,10 @@ int vui_file_dialog(const char *title, const char *initial_path, char *out_path,
       while(i>0){ char c=b[--i]; sc3(SYS_WRITE, 1, (uint64_t)(size_t)&c, 1); } }
     emit("\n");
 
-    /* Wait for it to finish */
-    int status = 0;
-    while (sc2(SYS_WAITPID, (uint64_t)child, (uint64_t)(size_t)&status) == 0) {
-        do_yield();
-    }
+    /* Wait for it to finish. SYS_WAITPID blocks/yields inside the kernel until
+     * the child exits; polling the raw return value is wrong on arm64 because
+     * a successful dialog exits with code 0. */
+    int status = vos_waitpid(child);
 
     emit("vui_file_dialog: child finished, status=");
     { char b[16]; int i=0, v=status; if(v==0) b[i++]='0'; else { if(v<0){ emit("-"); v=-v; } while(v>0){ b[i++]='0'+(v%10); v/=10; } }

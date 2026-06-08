@@ -694,6 +694,7 @@ enum resize_edge {
 static void app_enqueue_event_slot(struct desktop_state *desktop, int slot, uint32_t type, int x, int y, uint32_t buttons, uint32_t key);
 static int ensure_surface_buffer(struct desktop_state *desktop, int slot, int w, int h);
 static int ensure_content_buffer(struct desktop_state *desktop, int slot, int w, int h);
+static void reflow_content_buffer(struct desktop_state *desktop, int slot, int old_w, int old_h, int new_w, int new_h, uint32_t fill);
 
 /* ---- Multi-app slot helpers ---- */
 static int is_user_app_slot(int idx) {
@@ -825,14 +826,22 @@ static void update_app_content_size_slot(struct desktop_state *desktop, int slot
     int cw;
     int ch;
     int win_idx = WINDOW_APP_FIRST + slot;
+    int old_w;
+    int old_h;
     app_content_size_for_window(desktop, &desktop->windows[win_idx], &cw, &ch);
     if (cw > (int)WINDOW_APP_CONTENT_MAX_WIDTH) cw = (int)WINDOW_APP_CONTENT_MAX_WIDTH;
     if (ch > (int)WINDOW_APP_CONTENT_MAX_HEIGHT) ch = (int)WINDOW_APP_CONTENT_MAX_HEIGHT;
     if (desktop->user_apps[slot].content_width != cw || desktop->user_apps[slot].content_height != ch) {
+        uint32_t fill = (desktop->windows[win_idx].flags & WINSYS_WINDOW_TRANSLUCENT)
+                      ? WINDOW_TRANSPARENT_KEY : g_chrome_theme.bg;
+        old_w = desktop->user_apps[slot].content_width;
+        old_h = desktop->user_apps[slot].content_height;
         /* Grow the backing store first; only adopt the new size if it fit. */
         if (!ensure_content_buffer(desktop, slot, cw, ch)) return;
+        reflow_content_buffer(desktop, slot, old_w, old_h, cw, ch, fill);
         desktop->user_apps[slot].content_width = cw;
         desktop->user_apps[slot].content_height = ch;
+        desktop->user_apps[slot].data_width = cw;
         app_enqueue_event_slot(desktop, slot, WINSYS_EVENT_RESIZE, cw, ch, 0, 0);
     }
 }
@@ -1143,16 +1152,77 @@ static int ensure_surface_buffer(struct desktop_state *desktop, int slot, int w,
 static int ensure_content_buffer(struct desktop_state *desktop, int slot, int w, int h) {
     struct user_app_slot *a = &desktop->user_apps[slot];
     int need = w * h, i;
+    uint32_t *old;
+    int old_cap;
     uint32_t *p;
     if (need <= 0) return 1;
     if (a->content_storage && need <= a->content_cap_px) return 1;
+    old = a->content_storage;
+    old_cap = a->content_cap_px;
     p = (uint32_t *)gfx_alloc((size_t)need * sizeof(uint32_t));
     if (p == 0) return 0;
-    if (a->content_storage) kfree(a->content_storage);
     a->content_storage = p;
     a->content_cap_px = need;
     for (i = 0; i < need; ++i) a->content_storage[i] = WINDOW_TRANSPARENT_KEY;
+    if (old) {
+        int copy = old_cap < need ? old_cap : need;
+        for (i = 0; i < copy; ++i) a->content_storage[i] = old[i];
+        kfree(old);
+    }
     return 1;
+}
+
+static void reflow_content_buffer(struct desktop_state *desktop, int slot, int old_w, int old_h, int new_w, int new_h, uint32_t fill) {
+    struct user_app_slot *a;
+    int copy_w;
+    int copy_h;
+    int y;
+
+    if (desktop == 0 || slot < 0 || slot >= MAX_USER_APPS) {
+        return;
+    }
+    a = &desktop->user_apps[slot];
+    if (a->content_storage == 0 || new_w <= 0 || new_h <= 0) {
+        return;
+    }
+    if (old_w <= 0 || old_h <= 0) {
+        for (y = 0; y < new_h; ++y) {
+            int x;
+            uint32_t *row = a->content_storage + (size_t)y * (size_t)new_w;
+            for (x = 0; x < new_w; ++x) {
+                row[x] = fill;
+            }
+        }
+        return;
+    }
+    copy_w = old_w < new_w ? old_w : new_w;
+    copy_h = old_h < new_h ? old_h : new_h;
+    if (new_w >= old_w) {
+        for (y = copy_h - 1; y >= 0; --y) {
+            uint32_t *dst = a->content_storage + (size_t)y * (size_t)new_w;
+            uint32_t *src = a->content_storage + (size_t)y * (size_t)old_w;
+            memmove(dst, src, (size_t)copy_w * sizeof(uint32_t));
+        }
+    } else {
+        for (y = 0; y < copy_h; ++y) {
+            uint32_t *dst = a->content_storage + (size_t)y * (size_t)new_w;
+            uint32_t *src = a->content_storage + (size_t)y * (size_t)old_w;
+            memmove(dst, src, (size_t)copy_w * sizeof(uint32_t));
+        }
+    }
+    for (y = 0; y < new_h; ++y) {
+        int x;
+        uint32_t *row = a->content_storage + (size_t)y * (size_t)new_w;
+        if (y >= copy_h) {
+            for (x = 0; x < new_w; ++x) {
+                row[x] = fill;
+            }
+        } else {
+            for (x = copy_w; x < new_w; ++x) {
+                row[x] = fill;
+            }
+        }
+    }
 }
 
 static uint32_t *surface_storage_for_window(struct desktop_state *desktop, int index) {
@@ -1241,26 +1311,23 @@ static void window_toggle_maximize(struct desktop_state *desktop, int index) {
 static void draw_shadow_block(struct framebuffer *fb, int x, int y, int width, int height);
 
 int desktop_set_wallpaper(struct desktop_state *desktop, const uint32_t *src, int src_w, int src_h) {
-    int sw, sh, x, y;
+    int x, y;
 
     if (desktop == 0 || src == 0 || src_w <= 0 || src_h <= 0) {
         return -1;
     }
-    sw = (int)desktop->screen_width;
-    sh = (int)desktop->screen_height;
-    if (sw <= 0 || sh <= 0 || (uint32_t)sw > DESKTOP_MAX_WIDTH || (uint32_t)sh > DESKTOP_MAX_HEIGHT) {
+    if ((uint32_t)src_w > DESKTOP_MAX_WIDTH || (uint32_t)src_h > DESKTOP_MAX_HEIGHT) {
         return -1;
     }
-    /* Nearest-neighbour scale the source image to fill the screen. */
-    for (y = 0; y < sh; ++y) {
-        int syi = (int)((long)y * src_h / sh);
-        const uint32_t *srow = src + (long)syi * src_w;
-        uint32_t *drow = desktop->wallpaper_storage + (long)y * sw;
-        for (x = 0; x < sw; ++x) {
-            int sxi = (int)((long)x * src_w / sw);
-            drow[x] = srow[sxi] & 0x00ffffffu;
+    for (y = 0; y < src_h; ++y) {
+        const uint32_t *srow = src + (long)y * src_w;
+        uint32_t *drow = desktop->wallpaper_storage + (long)y * src_w;
+        for (x = 0; x < src_w; ++x) {
+            drow[x] = srow[x] & 0x00ffffffu;
         }
     }
+    desktop->wallpaper_width = (uint32_t)src_w;
+    desktop->wallpaper_height = (uint32_t)src_h;
     desktop->wallpaper_active = 1;
     desktop->background_dirty = 1;
     /* Repaint the whole screen: background_dirty alone only re-renders the
@@ -1406,10 +1473,18 @@ static void render_background_surface(struct desktop_state *desktop) {
     fb_reset_clip(fb);
 
     if (desktop->wallpaper_active) {
-        /* Wallpaper backdrop: copy the screen-sized image straight into the
-         * background framebuffer (both are screen_width x screen_height). */
-        memcpy(fb->base, desktop->wallpaper_storage,
-               (size_t)w * (size_t)desktop->screen_height * sizeof(uint32_t));
+        int h = (int)desktop->screen_height;
+        int src_w = (int)desktop->wallpaper_width;
+        int src_h = (int)desktop->wallpaper_height;
+        for (y = 0; y < h; ++y) {
+            int syi = (int)((long)y * src_h / h);
+            const uint32_t *srow = desktop->wallpaper_storage + (long)syi * src_w;
+            uint32_t *drow = fb->base + (long)y * w;
+            for (x = 0; x < w; ++x) {
+                int sxi = (int)((long)x * src_w / w);
+                drow[x] = srow[sxi];
+            }
+        }
     } else {
         int h = (int)desktop->screen_height;
         int cx = w / 2;
@@ -2381,6 +2456,83 @@ static void app_content_origin_for_window(struct desktop_state *desktop, int win
     }
 }
 
+void desktop_layout_shell_panels(struct desktop_state *desktop) {
+    int i;
+
+    if (desktop == 0) {
+        return;
+    }
+
+    for (i = 0; i < WINDOW_COUNT; ++i) {
+        struct window_state *w = &desktop->windows[i];
+        struct rect old_rect;
+        int slot;
+        int new_w;
+        int new_h;
+        int old_cw;
+        int old_ch;
+        int changed = 0;
+
+        if (!is_user_app_slot(i) || !w->title || !w->title[0] || !window_frameless(w)) {
+            continue;
+        }
+
+        old_rect = window_rect(w);
+        slot = slot_index(i);
+        old_cw = desktop->user_apps[slot].content_width;
+        old_ch = desktop->user_apps[slot].content_height;
+        new_w = w->width;
+        new_h = w->height;
+
+        if (strcmp(w->title, "Top Bar") == 0) {
+            new_w = (int)desktop->screen_width;
+            w->x = 0;
+            w->y = 0;
+            changed = 1;
+        } else if (strcmp(w->title, "Dock") == 0) {
+            int dock_margin = 24;
+            int max_w = (int)desktop->screen_width - dock_margin;
+            if (max_w < 96) max_w = (int)desktop->screen_width;
+            new_w = 560;
+            if (new_w > max_w) new_w = max_w;
+            if (new_w < 1) new_w = 1;
+            w->x = ((int)desktop->screen_width - new_w) / 2;
+            w->y = (int)desktop->screen_height - new_h - dock_margin;
+            if (w->x < 0) w->x = 0;
+            if (w->y < 0) w->y = 0;
+            changed = 1;
+        }
+
+        if (!changed) {
+            continue;
+        }
+
+        w->width = new_w;
+        w->height = new_h;
+        if (!ensure_surface_buffer(desktop, slot, w->width, w->height)) {
+            continue;
+        }
+        fb_init(&desktop->window_fbs[i],
+                (uintptr_t)desktop->user_apps[slot].surface_storage,
+                w->width, w->height, w->width * 4u, 32u);
+        update_app_content_size_slot(desktop, slot);
+        if (desktop->user_apps[slot].content_storage != 0 &&
+            (desktop->user_apps[slot].content_width != old_cw ||
+             desktop->user_apps[slot].content_height != old_ch)) {
+            int n = desktop->user_apps[slot].content_width *
+                    desktop->user_apps[slot].content_height;
+            int p;
+            for (p = 0; p < n; ++p) {
+                desktop->user_apps[slot].content_storage[p] = WINDOW_TRANSPARENT_KEY;
+            }
+            desktop->user_apps[slot].data_width = desktop->user_apps[slot].content_width;
+        }
+        mark_window_dirty(desktop, i);
+        mark_dirty_rect(desktop, old_rect);
+        mark_dirty_rect(desktop, window_rect(w));
+    }
+}
+
 static void apply_window_resize(struct desktop_state *desktop, int index, int mouse_x, int mouse_y) {
     struct window_state *window = &desktop->windows[index];
     int x = desktop->resize_start_x;
@@ -2622,6 +2774,7 @@ static int find_window_for_dock_icon(struct desktop_state *desktop, int icon_idx
 void desktop_handle_input(struct desktop_state *desktop, const struct mouse_state *mouse, const struct keyboard_state *keyboard) {
     size_t i;
     int index;
+    int scroll_delivered = 0;
 
     desktop->mouse_x = mouse->x;
     desktop->mouse_y = mouse->y;
@@ -2914,6 +3067,15 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
         }
     }
 
+    if (mouse->wheel != 0 && desktop->dragging_window < 0 && desktop->resizing_window < 0) {
+        int sw = topmost_window_at(desktop, mouse->x, mouse->y);
+        if (is_user_app_slot(sw) && desktop->windows[sw].visible) {
+            int ss = slot_index(sw);
+            app_enqueue_event_slot(desktop, ss, WINSYS_EVENT_SCROLL, 0, mouse->wheel, 0, 0);
+            scroll_delivered = 1;
+        }
+    }
+
     /* Deliver input to a focused userspace app window via its event queue. */
     if (is_user_app_slot(desktop->focused_window) &&
         desktop->windows[desktop->focused_window].visible &&
@@ -2927,7 +3089,7 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
         if (mouse->moved) {
             app_enqueue_event_slot(desktop, s, WINSYS_EVENT_MOUSE_MOVE, mouse->x - ox, mouse->y - oy, mouse->buttons, 0);
         }
-        if (mouse->wheel != 0) {
+        if (mouse->wheel != 0 && !scroll_delivered) {
             app_enqueue_event_slot(desktop, s, WINSYS_EVENT_SCROLL, 0, mouse->wheel, 0, 0);
         }
         if (mouse->left_pressed) {

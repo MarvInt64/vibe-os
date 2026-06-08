@@ -12,9 +12,14 @@ struct FileEntry {
     char name[128];
     uint64_t size;
     uint64_t kind;  // 1 = Regular File, 2 = Directory
+    uint32_t mode;
+    uint16_t uid;
+    uint16_t gid;
     char formatted_type[32];
     char formatted_size[16];
     char formatted_date[32];
+    char formatted_permissions[24];
+    char formatted_owner[24];
 };
 
 struct SidebarItem {
@@ -118,6 +123,14 @@ private:
     int scroll_drag_start_y_ = 0;
     int scroll_drag_start_scroll_ = 0;
     bool scroll_hovered_ = false;
+
+    // List-view column resizing.
+    int name_col_width_ = 140;
+    int date_col_width_ = 100;
+    int type_col_width_ = 100;
+    int column_dragging_ = 0;       /* 0 none, 1 name/date, 2 date/type, 3 type/size */
+    int column_drag_start_x_ = 0;
+    int column_drag_start_width_ = 0;
 
     // Breadcrumb hit-testing state
     int  breadcrumb_count_ = 0;           /* number of path segments shown  */

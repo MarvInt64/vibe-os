@@ -497,7 +497,10 @@ void AudioPlayer::worker(WorkerArgs *args) {
             }
             if (g_restart.exchange(false)) { aborted = true; break; }
 
-            mp3dec_feed(dec, in, (int)n);
+            int consumed = mp3dec_feed(dec, in, (int)n);
+            if (consumed < n) {
+                lseek(fd, (off_t)(consumed - n), SEEK_CUR);
+            }
             int s;
             while ((s = mp3dec_decode(dec, pcm, &sr, &ch, &br)) > 0) {
                 if (first) {

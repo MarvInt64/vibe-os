@@ -510,7 +510,10 @@ bool TextEditor::write_to_path(const char *path) {
         if (i < num_lines_ - 1 && fputc('\n', f) == EOF) { ok = false; break; }
     }
     if (fclose(f) != 0) ok = false;
-    if (ok) modified_ = false;
+    if (ok) {
+        modified_ = false;
+        request_repaint();
+    }
     return ok;
 }
 

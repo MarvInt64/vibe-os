@@ -38,6 +38,7 @@
 #define EV_MOUSE_DOWN 2
 #define EV_KEY        4
 #define EV_CLOSE      5
+#define EV_RESIZE     9
 
 /* Menu-bar item flag aliases. */
 #define MB_TITLE    VOS_MB_TITLE
@@ -914,6 +915,12 @@ int main(void) {
                 redraw = 1;
             } else if (event.type == EV_CLOSE) {
                 return 0;
+            } else if (event.type == EV_RESIZE) {
+                if (event.x > 0 && event.x <= MAX_WINDOW_WIDTH) {
+                    g_screen_width = event.x;
+                    close_menus();
+                    redraw = 1;
+                }
             }
         }
 

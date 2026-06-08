@@ -137,6 +137,7 @@ vui_widget *vui_badge(vui_window *w, int x, int y, const char *text);
  * The pixels buffer must be at least stride * height * 4 bytes. */
 vui_widget *vui_canvas(vui_window *w, int x, int y, int width, int height, vui_u32 *pixels);
 vui_widget *vui_canvas_ex(vui_window *w, int x, int y, int width, int height, vui_u32 *pixels, int stride);
+void vui_set_canvas_stride(vui_widget *canvas, int stride);
 vui_widget *vui_tabs(vui_window *w, int x, int y, int width, const char *labels, int active);
 vui_widget *vui_bar(vui_window *w, int x, int y, int width, int height, int max);
 /* Interactive horizontal slider (track + draggable handle). value 0..max;

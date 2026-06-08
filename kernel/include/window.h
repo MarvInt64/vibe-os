@@ -148,6 +148,8 @@ struct desktop_state {
      * so it is mapped in every page-table context the compositor may run under
      * — a kmalloc heap buffer is not guaranteed to be. */
     int       wallpaper_active;
+    uint32_t  wallpaper_width;
+    uint32_t  wallpaper_height;
     uint32_t background_storage[DESKTOP_MAX_WIDTH * DESKTOP_MAX_HEIGHT];
     uint32_t wallpaper_storage[DESKTOP_MAX_WIDTH * DESKTOP_MAX_HEIGHT];
     uint32_t info_surface_storage[WINDOW_INFO_MAX_WIDTH * WINDOW_INFO_MAX_HEIGHT];
@@ -187,6 +189,7 @@ struct desktop_state {
 };
 
 void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t screen_height);
+void desktop_layout_shell_panels(struct desktop_state *desktop);
 void desktop_handle_input(struct desktop_state *desktop, const struct mouse_state *mouse, const struct keyboard_state *keyboard);
 void desktop_poll_apps(struct desktop_state *desktop);
 void desktop_render(struct desktop_state *desktop, struct framebuffer *fb);

@@ -105,6 +105,31 @@ static void truncate_text_to_width(const char *src, char *dst, int max_w, int sc
     dst[j] = '\0';
 }
 
+static void format_permissions(uint32_t mode, char *out, size_t cap) {
+    const uint32_t perm = mode & 0777u;
+    if (!out || cap < 12) return;
+    out[0] = S_ISDIR(mode) ? 'd' : '-';
+    out[1] = (perm & S_IRUSR) ? 'r' : '-';
+    out[2] = (perm & S_IWUSR) ? 'w' : '-';
+    out[3] = (perm & S_IXUSR) ? 'x' : '-';
+    out[4] = (perm & S_IRGRP) ? 'r' : '-';
+    out[5] = (perm & S_IWGRP) ? 'w' : '-';
+    out[6] = (perm & S_IXGRP) ? 'x' : '-';
+    out[7] = (perm & S_IROTH) ? 'r' : '-';
+    out[8] = (perm & S_IWOTH) ? 'w' : '-';
+    out[9] = (perm & S_IXOTH) ? 'x' : '-';
+    out[10] = '\0';
+    if (cap >= 18) {
+        out[10] = ' ';
+        out[11] = '(';
+        out[12] = (char)('0' + ((perm >> 6) & 7u));
+        out[13] = (char)('0' + ((perm >> 3) & 7u));
+        out[14] = (char)('0' + (perm & 7u));
+        out[15] = ')';
+        out[16] = '\0';
+    }
+}
+
 // Custom sorting comparator: directories first, then files alphabetically
 static bool compare_entries(const FileEntry &a, const FileEntry &b) {
     if (a.kind != b.kind) {
@@ -218,7 +243,7 @@ void FileBrowser::dialog_accept() {
 
     if (dialog_save_) {
         const char *name = filename_input_ ? vui_input_text(filename_input_) : "";
-        if (!name || !name[0]) return;   // a filename is required
+        if (!name || !name[0]) name = "Untitled.txt";
         if (strcmp(current_path_, "/") == 0)
             snprintf(final_path, sizeof(final_path), "/%s", name);
         else
@@ -322,6 +347,23 @@ void FileBrowser::refresh_files() {
         strncpy(fe.name, name, sizeof(fe.name));
         fe.kind = kind;
         fe.size = size;
+        fe.mode = (kind == 2) ? (0x4000u | 0755u) : (0x8000u | 0644u);
+        fe.uid = 0;
+        fe.gid = 0;
+
+        char full_path[512];
+        if (strcmp(current_path_, "/") == 0)
+            snprintf(full_path, sizeof(full_path), "/%s", name);
+        else
+            snprintf(full_path, sizeof(full_path), "%s/%s", current_path_, name);
+        struct stat st;
+        if (stat(full_path, &st) == 0) {
+            fe.mode = st.st_mode;
+            fe.size = st.st_size;
+            fe.uid = st.st_uid;
+            fe.gid = st.st_gid;
+        }
+        size = fe.size;
 
         // Extract dates and extensions for styling
         if (kind == 2) {
@@ -353,13 +395,10 @@ void FileBrowser::refresh_files() {
             }
         }
 
-        // Mock a realistic date modified based on name hashing so it matches look and feel
-        int hash = 7;
-        for (int i = 0; name[i]; ++i) hash = hash * 31 + name[i];
-        int day = 10 + (abs(hash) % 18);
-        int hour = 9 + (abs(hash) % 11);
-        int minute = 10 + (abs(hash) % 48);
-        snprintf(fe.formatted_date, sizeof(fe.formatted_date), "May %d, 2026 %02d:%02d", day, hour, minute);
+        strcpy(fe.formatted_date, "Not tracked");
+        format_permissions(fe.mode, fe.formatted_permissions, sizeof(fe.formatted_permissions));
+        snprintf(fe.formatted_owner, sizeof(fe.formatted_owner), "%u:%u",
+                 (unsigned)fe.uid, (unsigned)fe.gid);
 
         entry_count_++;
     }
@@ -877,13 +916,23 @@ void FileBrowser::render() {
 
     if (!grid_view_) {
         // Table Header
+        int name_x = list_x + 38;
+        int date_x = name_x + name_col_width_ + 12;
+        int type_x = date_x + date_col_width_;
+        int size_x = type_x + type_col_width_;
+        int name_w = date_x - name_x - 14;
+        int date_w = type_x - date_x - 8;
+        int type_w = size_x - type_x - 8;
         fill_rect(list_x, list_y, list_w, 36, 0x0020384fu);
         draw_line(list_x, list_y + 36, list_x + list_w, list_y + 36, 0x00294058u);
         
         draw_text(list_x + 20, list_y + 11, "Name", 0x009aa7bau);
-        draw_text(list_x + 190, list_y + 11, "Modified", 0x009aa7bau);
-        draw_text(list_x + 290, list_y + 11, "Type", 0x009aa7bau);
-        draw_text(list_x + 390, list_y + 11, "Size", 0x009aa7bau);
+        draw_text(date_x, list_y + 11, "Modified", 0x009aa7bau);
+        draw_text(type_x, list_y + 11, "Type", 0x009aa7bau);
+        draw_text(size_x, list_y + 11, "Size", 0x009aa7bau);
+        draw_line(date_x - 10, list_y + 8, date_x - 10, list_y + 28, column_dragging_ == 1 ? 0x003b82f6u : 0x00344259u);
+        draw_line(type_x - 10, list_y + 8, type_x - 10, list_y + 28, column_dragging_ == 2 ? 0x003b82f6u : 0x00344259u);
+        draw_line(size_x - 10, list_y + 8, size_x - 10, list_y + 28, column_dragging_ == 3 ? 0x003b82f6u : 0x00344259u);
 
         // List Rows
         int row_start_y = list_y + 36;
@@ -917,13 +966,13 @@ void FileBrowser::render() {
             // Draw columns (Name, Modified, Type, Size). Each value is truncated
             // to its column width so neighbouring columns never overlap.
             char col_buf[64];
-            truncate_text_to_width(fe.name, col_buf, 142);
-            draw_text(list_x + 38, ry + 10, col_buf, 0x00e6edf7u);
-            truncate_text_to_width(fe.formatted_date, col_buf, 92);
-            draw_text(list_x + 190, ry + 10, col_buf, 0x009aa7bau);
-            truncate_text_to_width(fe.formatted_type, col_buf, 88);
-            draw_text(list_x + 290, ry + 10, col_buf, 0x009aa7bau);
-            draw_text(list_x + 390, ry + 10, fe.formatted_size, 0x009aa7bau);
+            truncate_text_to_width(fe.name, col_buf, name_w);
+            draw_text(name_x, ry + 10, col_buf, 0x00e6edf7u);
+            truncate_text_to_width(fe.formatted_date, col_buf, date_w);
+            draw_text(date_x, ry + 10, col_buf, 0x009aa7bau);
+            truncate_text_to_width(fe.formatted_type, col_buf, type_w);
+            draw_text(type_x, ry + 10, col_buf, 0x009aa7bau);
+            draw_text(size_x, ry + 10, fe.formatted_size, 0x009aa7bau);
         }
     } else {
         // Grid View
@@ -1053,15 +1102,6 @@ void FileBrowser::render() {
         draw_text(detail_x + 96, info_y, fe.formatted_date, 0x009aa7bau);
         info_y += 20;
 
-        // Created row
-        draw_text(detail_x + 16, info_y, "Created", 0x005c6a7eu);
-        // Simulate creation date slightly older than hash-modified date
-        char mock_created[32];
-        int day = 15;
-        snprintf(mock_created, sizeof(mock_created), "May %d, 2026 13:07", day);
-        draw_text(detail_x + 96, info_y, mock_created, 0x009aa7bau);
-        info_y += 20;
-
         // Size row
         draw_text(detail_x + 16, info_y, "Size", 0x005c6a7eu);
         char size_bytes[32];
@@ -1073,20 +1113,13 @@ void FileBrowser::render() {
         draw_text(detail_x + 96, info_y, size_bytes, 0x009aa7bau);
         info_y += 20;
 
-        // Lines/Permissions/Owner rows
-        if (fe.kind == 1) {
-            draw_text(detail_x + 16, info_y, "Permissions", 0x005c6a7eu);
-            draw_text(detail_x + 96, info_y, "-rw-r--r-- (644)", 0x009aa7bau);
-            info_y += 20;
+        draw_text(detail_x + 16, info_y, "Permissions", 0x005c6a7eu);
+        draw_text(detail_x + 96, info_y, fe.formatted_permissions, 0x009aa7bau);
+        info_y += 20;
 
-            draw_text(detail_x + 16, info_y, "Owner", 0x005c6a7eu);
-            draw_text(detail_x + 96, info_y, "dev", 0x009aa7bau);
-            info_y += 20;
-        } else {
-            draw_text(detail_x + 16, info_y, "Permissions", 0x005c6a7eu);
-            draw_text(detail_x + 96, info_y, "drwxr-xr-x (755)", 0x009aa7bau);
-            info_y += 20;
-        }
+        draw_text(detail_x + 16, info_y, "Owner", 0x005c6a7eu);
+        draw_text(detail_x + 96, info_y, fe.formatted_owner, 0x009aa7bau);
+        info_y += 20;
 
         // Tags pill badge tags
         int tags_y = info_y + 12;
@@ -1307,6 +1340,26 @@ void FileBrowser::on_click(int x, int y, uint32_t buttons) {
     get_listing_rect(list_x, list_y, list_w, list_h);
 
     if (x >= list_x && x <= list_x + list_w && y >= list_y && y <= list_y + list_h) {
+        if (!grid_view_ && y >= list_y && y <= list_y + 36) {
+            int name_x = list_x + 38;
+            int date_x = name_x + name_col_width_ + 12;
+            int type_x = date_x + date_col_width_;
+            int size_x = type_x + type_col_width_;
+            int hit = 0;
+            if (x >= date_x - 15 && x <= date_x - 5) hit = 1;
+            else if (x >= type_x - 15 && x <= type_x - 5) hit = 2;
+            else if (x >= size_x - 15 && x <= size_x - 5) hit = 3;
+            if (hit) {
+                column_dragging_ = hit;
+                column_drag_start_x_ = x;
+                column_drag_start_width_ =
+                    hit == 1 ? name_col_width_ :
+                    hit == 2 ? date_col_width_ : type_col_width_;
+                render(); flush();
+                return;
+            }
+        }
+
         // Check Scrollbar Track grab first
         int sb_col_x = list_x + list_w - 12;
         if (x >= sb_col_x && x <= sb_col_x + 8) {
@@ -1417,16 +1470,42 @@ void FileBrowser::on_click(int x, int y, uint32_t buttons) {
 void FileBrowser::on_mouse_move(int x, int y) {
     bool dirty = false;
 
-    // A. Hover state check for scrollbar thumb
+    // A. Handle dragging of table column headers.
     int list_x, list_y, list_w, list_h;
     get_listing_rect(list_x, list_y, list_w, list_h);
+    if (column_dragging_) {
+        int delta = x - column_drag_start_x_;
+        int new_w = column_drag_start_width_ + delta;
+        if (new_w < 56) new_w = 56;
+        if (column_dragging_ == 1) {
+            if (new_w > 260) new_w = 260;
+            if (name_col_width_ != new_w) {
+                name_col_width_ = new_w;
+                dirty = true;
+            }
+        } else if (column_dragging_ == 2) {
+            if (new_w > 180) new_w = 180;
+            if (date_col_width_ != new_w) {
+                date_col_width_ = new_w;
+                dirty = true;
+            }
+        } else if (column_dragging_ == 3) {
+            if (new_w > 180) new_w = 180;
+            if (type_col_width_ != new_w) {
+                type_col_width_ = new_w;
+                dirty = true;
+            }
+        }
+    }
+
+    // B. Hover state check for scrollbar thumb
     int sb_col_x = list_x + list_w - 12;
     
     bool old_hover = scroll_hovered_;
     scroll_hovered_ = (x >= sb_col_x && x <= sb_col_x + 8 && y >= list_y && y <= list_y + list_h);
     if (scroll_hovered_ != old_hover) dirty = true;
 
-    // B. Handle dragging of scrollbar thumb
+    // C. Handle dragging of scrollbar thumb
     if (scroll_dragging_) {
         int sb_h = list_h - 8;
         
@@ -1461,6 +1540,11 @@ void FileBrowser::on_mouse_move(int x, int y) {
 
 void FileBrowser::on_mouse_release(int x, int y, uint32_t /*buttons*/) {
     (void)x; (void)y;
+    if (column_dragging_) {
+        column_dragging_ = 0;
+        render(); flush();
+        flush();
+    }
     if (scroll_dragging_) {
         scroll_dragging_ = false;
         render(); flush();
@@ -1496,10 +1580,14 @@ void FileBrowser::on_resize(int w, int h) {
 
     win_w_ = w;
     win_h_ = h;
+    if (canvas_) {
+        vui_set_size(canvas_, win_w_, win_h_);
+        vui_set_canvas_stride(canvas_, win_w_);
+    }
     
     refresh_files();
     render();
-    /* VexUI repaints automatically after EV_RESIZE */
+    flush();
 }
 
 void FileBrowser::on_tick() {
@@ -1648,7 +1736,8 @@ void FileBrowser::build_widgets() {
             int name_x = 280;
             int name_w = accept_x - 16 - name_x;
             if (name_w < 120) name_w = 120;
-            filename_input_ = vui_input(win_, name_x, btn_y, name_w, "filename.txt");
+            filename_input_ = vui_input(win_, name_x, btn_y, name_w, "Filename");
+            vui_set_text(filename_input_, "Untitled.txt");
             vui_set_anchor(filename_input_, VUI_ANCHOR_LEFT | VUI_ANCHOR_RIGHT | VUI_ANCHOR_BOTTOM);
         }
     }

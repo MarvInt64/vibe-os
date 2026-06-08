@@ -38,6 +38,7 @@
 
 #include "doomgeneric.h"
 #include "doomkeys.h"
+#include "d_event.h"
 
 #include <vibeos.h>
 #include <sys/syscall.h>
@@ -70,10 +71,10 @@
 #define EV_MOUSE_UP    3
 #define EV_KEY         4
 #define EV_CLOSE       5
-#define EV_RESIZE      6
-#define EV_CONTEXT_MENU 7
+#define EV_CONTEXT_MENU 6
 #define EV_MENU_ACTION  7
 #define EV_SCROLL      8
+#define EV_RESIZE      9
 
 /* vos_event is already defined in <vibeos.h> — no need to redefine it.
  * Use a local alias so the rest of the file is unchanged. */
@@ -117,6 +118,10 @@ static void keyq_push(unsigned char key, int pressed) {
 
 static unsigned char s_held_key = 0;
 static int s_held_life = 0;   /* decremented each DG_GetKey call */
+static int s_mouse_x = 0;
+static int s_mouse_y = 0;
+static int s_mouse_seen = 0;
+static int s_mouse_buttons = 0;
 
 static unsigned char vexui_to_doom_key(unsigned int k) {
     switch (k) {
@@ -162,14 +167,42 @@ static void parse_key_byte(unsigned char b) {
             case 'D': doom_k = KEY_LEFTARROW;  break;
         }
         s_esc_len = 0;
-        if (doom_k) { keyq_push(doom_k, 1); s_held_key = doom_k; s_held_life = 6; }
+        if (doom_k) { keyq_push(doom_k, 1); s_held_key = doom_k; s_held_life = 1; }
         return;
     }
     /* Flush a dangling ESC as KEY_ESCAPE. */
     if (s_esc_len > 0) { keyq_push(KEY_ESCAPE, 1); s_esc_len = 0; }
 
     unsigned char dk = vexui_to_doom_key((unsigned int)b);
-    if (dk) { keyq_push(dk, 1); s_held_key = dk; s_held_life = 3; }
+    if (dk) { keyq_push(dk, 1); s_held_key = dk; s_held_life = 1; }
+}
+
+static void post_mouse_event(int x, int y, int buttons, int force) {
+    event_t ev;
+    int dx = 0;
+    int dy = 0;
+
+    if (s_mouse_seen) {
+        dx = x - s_mouse_x;
+        dy = y - s_mouse_y;
+    } else {
+        s_mouse_seen = 1;
+    }
+
+    s_mouse_x = x;
+    s_mouse_y = y;
+    s_mouse_buttons = buttons & 0x07;
+
+    if (!force && dx == 0 && dy == 0) {
+        return;
+    }
+
+    ev.type = ev_mouse;
+    ev.data1 = s_mouse_buttons;
+    ev.data2 = dx * 4;
+    ev.data3 = -dy;
+    ev.data4 = 0;
+    D_PostEvent(&ev);
 }
 
 /* ---- DG_ callbacks ----------------------------------------------------- */
@@ -283,6 +316,16 @@ int DG_GetKey(int *pressed, unsigned char *doom_key) {
              * separate EV_KEY; parse them into DOOM key codes. */
             unsigned int k = ev.key;
             if (k < 256) parse_key_byte((unsigned char)k);
+        } else if (ev.type == EV_MOUSE_MOVE) {
+            post_mouse_event(ev.x, ev.y, (int)ev.buttons, 0);
+        } else if (ev.type == EV_MOUSE_DOWN) {
+            post_mouse_event(ev.x, ev.y, (int)ev.buttons, 1);
+        } else if (ev.type == EV_MOUSE_UP) {
+            post_mouse_event(ev.x, ev.y, 0, 1);
+        } else if (ev.type == EV_CONTEXT_MENU) {
+            keyq_push(KEY_USE, 1);
+            s_held_key = KEY_USE;
+            s_held_life = 1;
         } else if (ev.type == EV_RESIZE && ev.x > 0 && ev.y > 0) {
             /* Track the live content area so DG_DrawFrame scales correctly. */
             s_content_w = ev.x < BUF_MAX_W ? ev.x : BUF_MAX_W;

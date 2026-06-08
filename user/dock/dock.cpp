@@ -21,7 +21,7 @@ static const DockEntry kEntries[] = {
     {"Files", 5, 0x007ec8ffu, "/bin/filebrowser", "/icons/dock/filebrowser.svg"},
     {"Tasks", 2, 0x0076e0b5u, "/bin/taskmgr", "/icons/dock/taskmgr.svg"},
     {"Player", 3, 0x004aa8ffu, "/bin/audioplayer", "/icons/dock/player.svg"},
-    {"C++", 4, 0x008f7bf0u, "/bin/cpptest", "/icons/dock/terminal.svg"},
+    {"Editor", 4, 0x008f7bf0u, "/bin/texteditor", "/icons/dock/terminal.svg"},
     {"Info", 2, 0x00a8c7ffu, "/bin/sysinfo", 0},
 };
 
@@ -135,12 +135,14 @@ int main() {
     /* The pill sits in the lower dock_h pixels; the upper tooltip_h pixels are
      * fully transparent so the tooltip bubble has room to render above the icons. */
     vui_widget *surface = vui_pill(win, 0, tooltip_h, width, dock_h);
+    vui_set_anchor(surface, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
     /* Glassmorphism dock: deep navy-blue like macOS, with a layered
      * gradient (lighter top, darker bottom), soft border, and top highlight
      * — matching the reference dock.png aesthetic. */
     vui_set_color(surface, 0x00142c4au);
 
     vui_widget *row = vui_hbox(win, 32, tooltip_h + 8, width - 64, dock_h - 16);
+    vui_set_anchor(row, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
     vui_set_gap(row, 18);
     vui_set_padding(row, 0);
 
