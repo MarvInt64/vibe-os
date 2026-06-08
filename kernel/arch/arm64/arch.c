@@ -84,8 +84,11 @@ static char  g_cwd[256] = "/";
  * Single-process model (no scheduler yet on arm64), so one global table is
  * enough. fd 0/1/2 are reserved for stdin/stdout/stderr (UART). */
 #define ARM64_MAX_FD 16
+#define ARM64_FD_TYPE_FILE 0
+#define ARM64_FD_TYPE_PTY  1
 struct arm64_file {
     int      used;
+    int      type;       /* ARM64_FD_TYPE_* */
     int      writable;
     uint32_t ino;
     uint32_t offset;
@@ -138,19 +141,44 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 for (uint64_t i = 0; i < a2; i++)
                     serial_write_char(buf[i]);
                 regs[0] = a2;
-            } else if (a0 < ARM64_MAX_FD && g_files[a0].used && g_files[a0].writable) {
+            } else if (a0 < ARM64_MAX_FD && g_files[a0].used) {
                 struct arm64_file *f = &g_files[a0];
-                ssize_t w = ext2_write(&g_fs, f->ino, f->offset, a2, buf);
-                if (w > 0) { f->offset += (uint32_t)w; regs[0] = (uint64_t)w; }
-                else regs[0] = (uint64_t)-1;
+                if (f->type == ARM64_FD_TYPE_PTY) {
+                    /* PTY master write → UART (passthrough for now) */
+                    for (uint64_t i = 0; i < a2; i++)
+                        serial_write_char(buf[i]);
+                    regs[0] = a2;
+                } else if (f->writable) {
+                    ssize_t w = ext2_write(&g_fs, f->ino, f->offset, a2, buf);
+                    if (w > 0) { f->offset += (uint32_t)w; regs[0] = (uint64_t)w; }
+                    else regs[0] = (uint64_t)-1;
+                } else regs[0] = (uint64_t)-1;
             } else regs[0] = (uint64_t)-1;
             return;
         }
         case SYS_READ: {        /* 0: read(fd, buf, len) */
+            /* fd 0 = stdin → UART (blocking, 1 byte at a time) */
+            if (a0 == 0) {
+                char *dst = (char *)(uintptr_t)a1;
+                if (a2 == 0 || !dst) { regs[0] = 0; return; }
+                char c = arm64_uart_getc();   /* blocks until byte available */
+                dst[0] = c;
+                regs[0] = 1;
+                return;
+            }
             if (a0 < 3 || a0 >= ARM64_MAX_FD || !g_files[a0].used) {
                 regs[0] = (uint64_t)-1; return;
             }
             struct arm64_file *f = &g_files[a0];
+            /* PTY master: read from UART (passthrough for now) */
+            if (f->type == ARM64_FD_TYPE_PTY) {
+                char *dst = (char *)(uintptr_t)a1;
+                if (a2 == 0 || !dst) { regs[0] = 0; return; }
+                char c = arm64_uart_getc();
+                dst[0] = c;
+                regs[0] = 1;
+                return;
+            }
             uint32_t remain = (f->offset < f->size) ? (f->size - f->offset) : 0;
             uint32_t want   = (a2 < remain) ? (uint32_t)a2 : remain;
             if (want == 0) { regs[0] = 0; return; }
@@ -623,6 +651,32 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 arm64_yield_current(regs);  /* does not return */
             return;
         }
+        case SYS_PTY_OPEN: {    /* 45: allocate a pseudo-terminal master fd */
+            /* Allocate a free fd slot for the PTY master endpoint.
+             * Minimal passthrough: reads/writes on this fd go to UART. */
+            int fd = -1;
+            for (int i = 3; i < ARM64_MAX_FD; i++) {
+                if (!g_files[i].used) { fd = i; break; }
+            }
+            if (fd < 0) { regs[0] = (uint64_t)-1; return; }
+            g_files[fd].used = 1;
+            g_files[fd].type = ARM64_FD_TYPE_PTY;
+            g_files[fd].writable = 1;
+            regs[0] = (uint64_t)(int64_t)fd;
+            return;
+        }
+        case SYS_SPAWN_PTY: {   /* 46: spawn program with PTY slave on fd 0,1,2 */
+            /* a0 = path to executable, a1 = PTY master fd.
+             * Minimal: spawn normally; shell uses fd 0,1,2 which go to UART. */
+            char path[256];
+            copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
+            int child_pid = process_spawn_path(path, 0, 0, 0, 0);
+            regs[0] = (uint64_t)(int64_t)child_pid;
+            return;
+        }
+        case SYS_PTY_INTERRUPT: /* 47: Ctrl+C to foreground job of PTY */
+            regs[0] = 0;        /* stub: no-op for now */
+            return;
         default:
             serial_write("[svc] unknown syscall ");
             serial_write_hex_u64(num);
