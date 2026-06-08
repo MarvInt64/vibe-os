@@ -1602,8 +1602,25 @@ static void gui_run(void) {
                     g_bb = g_fb;
                 }
 
-                /* Reinit desktop compositor at new size */
-                desktop_init(g_desktop, ramfb_width(), ramfb_height());
+                /* Update desktop dimensions without destroying running apps.
+                 * desktop_init would reset all windows and orphan processes. */
+                g_desktop->screen_width  = ramfb_width();
+                g_desktop->screen_height = ramfb_height();
+                /* Clamp all visible windows to the new screen bounds */
+                for (int wi = 0; wi < WINDOW_COUNT; wi++) {
+                    struct window_state *w = &g_desktop->windows[wi];
+                    if (!w->title || !w->title[0]) continue;
+                    if (w->x < 0) w->x = 0;
+                    if (w->y < 0) w->y = 0;
+                    if (w->x + w->width  > (int)g_desktop->screen_width)
+                        w->x = (int)g_desktop->screen_width - w->width;
+                    if (w->y + w->height > (int)g_desktop->screen_height)
+                        w->y = (int)g_desktop->screen_height - w->height;
+                    if (w->x < 0) w->x = 0;
+                    if (w->y < 0) w->y = 0;
+                }
+                /* Force full redraw on next frame */
+                g_desktop->background_dirty = 1;
             }
         }
 
