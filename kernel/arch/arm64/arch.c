@@ -1654,6 +1654,8 @@ static void gui_run(void) {
                  * desktop_init would reset all windows and orphan processes. */
                 g_desktop->screen_width  = ramfb_width();
                 g_desktop->screen_height = ramfb_height();
+                g_desktop->tiles_x = (int)(ramfb_width()  / g_desktop->tile_size) + 1;
+                g_desktop->tiles_y = (int)(ramfb_height() / g_desktop->tile_size) + 1;
                 /* Clamp all visible windows to the new screen bounds */
                 for (int wi = 0; wi < WINDOW_COUNT; wi++) {
                     struct window_state *w = &g_desktop->windows[wi];
@@ -1677,6 +1679,19 @@ static void gui_run(void) {
 
                 /* Clear dirty tiles — old tile data may have stale dimensions */
                 memset(g_desktop->dirty_tiles, 0, sizeof(g_desktop->dirty_tiles));
+
+                /* Mark all visible windows dirty so surfaces are re-rendered
+                 * at their new (clamped) dimensions. */
+                for (int wi = 0; wi < WINDOW_COUNT; wi++) {
+                    if (g_desktop->windows[wi].title && g_desktop->windows[wi].title[0]) {
+                        g_desktop->window_dirty[wi] = 1;
+                        g_desktop->window_dirty_rects[wi] = (struct rect){
+                            .x = 0, .y = 0,
+                            .width = g_desktop->windows[wi].width,
+                            .height = g_desktop->windows[wi].height
+                        };
+                    }
+                }
 
                 /* Reinitialize background framebuffer at new resolution.
                  * background_storage is DESKTOP_MAX_WIDTH * DESKTOP_MAX_HEIGHT
