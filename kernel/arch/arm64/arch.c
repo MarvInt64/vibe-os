@@ -412,7 +412,7 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             }
             uint32_t pid = (this_cpu() && this_cpu()->current) ? this_cpu()->current->pid : 0;
             static int pres_dbg = 0;
-            if (pres_dbg < 3) {
+            if (pres_dbg < 20) {
                 serial_write("[present] win="); serial_write_hex_u64((uint64_t)win_id);
                 serial_write(" pid="); serial_write_hex_u64(pid);
                 serial_write(" w="); serial_write_hex_u64((uint64_t)w);
