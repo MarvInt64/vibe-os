@@ -1847,6 +1847,8 @@ static void gui_run(void) {
 
                 /* Update desktop dimensions without destroying running apps.
                  * desktop_init would reset all windows and orphan processes. */
+                int old_sw = (int)g_desktop->screen_width;
+                int old_sh = (int)g_desktop->screen_height;
                 g_desktop->screen_width  = ramfb_width();
                 g_desktop->screen_height = ramfb_height();
                 g_desktop->tiles_x = (int)(ramfb_width()  / g_desktop->tile_size) + 1;
@@ -1906,9 +1908,9 @@ static void gui_run(void) {
                 for (int wi = 0; wi < WINDOW_COUNT; wi++) {
                     struct window_state *w = &g_desktop->windows[wi];
                     if (!w->title || !w->title[0]) continue;
-                    /* Full-width windows: expand to new screen width */
-                    if (w->width == (int)(g_desktop->screen_width) ||
-                        w->width > (int)(g_desktop->screen_width) * 3 / 4) {
+                    /* Full-width windows: were full-width at old resolution,
+                     * expand (or shrink) to match the new screen width. */
+                    if (w->width == old_sw || w->width > old_sw * 3 / 4) {
                         w->width = (int)ramfb_width();
                         w->x = 0;
                     }
