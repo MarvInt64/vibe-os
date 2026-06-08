@@ -787,7 +787,38 @@ arm64-tcc: arm64-user
 	    $(ARM64_UDIR)/lt1_stdatomic.o $(ARM64_UDIR)/lt1_atomic.o \
 	    $(ARM64_UDIR)/lt1_armflush.o $(ARM64_UDIR)/lt1_dsohandle.o
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/libtcc1.a /lib/tcc/libtcc1.a
-	@echo "arm64 TCC (515 KB) installed to $(DISK_IMG)."
+	# --- Self-hosting: seed TCC source, libc headers, and libc.a ---
+	# TCC source files → /src/tcc/ (so tcc can compile itself)
+	cd third_party/tcc && clang -DC2STR conftest.c -o c2str && ./c2str include/tccdefs.h tccdefs_.h
+	@for f in third_party/tcc/*.c third_party/tcc/*.h third_party/tcc/*.def; do \
+	    bn=$$(basename "$$f"); \
+	    python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/src/tcc/$$bn" ; \
+	done
+	@for f in third_party/tcc/include/*.h; do \
+	    bn=$$(basename "$$f"); \
+	    python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/src/tcc/include/$$bn" ; \
+	done
+	# Libc headers → /usr/include/ (tcc -I/usr/include)
+	@for f in user/libc/include/*.h; do \
+	    bn=$$(basename "$$f"); \
+	    python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/usr/include/$$bn" ; \
+	done
+	@for f in user/libc/include/sys/*.h; do \
+	    bn=$$(basename "$$f"); \
+	    python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/usr/include/sys/$$bn" ; \
+	done
+	# Libc.a + crt0.o → /lib/ (tcc links against these)
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/libc.a /lib/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/crt0.o /lib/crt0.o
+	# cc: friendly front-end (tcc wrapper with default output naming)
+	$(CC) $(ARM64_UCFLAGS) -c user/cc.c -o $(ARM64_UDIR)/cc.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/cc.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/cc.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/cc.elf /bin/cc
+	# Test file: compile with self-hosted tcc
+	printf '#include <stdio.h>\nint main(void){ printf("self-hosted arm64 tcc works\\n"); return 0; }\n' > /tmp/_shtest.c
+	python3 scripts/ext2_put.py $(DISK_IMG) /tmp/_shtest.c /src/shtest.c
+	@echo "arm64 TCC + self-hosting toolchain installed to $(DISK_IMG)."
 
 # Create a blank persistent disk image if it does not exist yet. No external
 # tools needed — the kernel formats it as ext2 on first boot.
