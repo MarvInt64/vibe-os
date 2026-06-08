@@ -243,15 +243,9 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 if (a2 == 0 || !dst) { regs[0] = 0; return; }
                 struct arm64_pty *pty = f->pty;
                 if (!pty) { regs[0] = (uint64_t)-1; return; }
-                static int pty_rd_dbg = 0;
-                if (pty_rd_dbg < 3) {
-                    serial_write("[pty] read out_count="); serial_write_hex_u64((uint64_t)pty->out_count);
-                    serial_write("\r\n");
-                    pty_rd_dbg++;
-                }
                 if (pty->out_count == 0) {
-                    regs[32] -= 4;  /* re-execute SVC on resume */
-                    arm64_yield_current(regs);
+                    regs[0] = 0;   /* no data — return 0, caller will poll again */
+                    return;
                 }
                 char c = pty->out_buf[pty->out_tail];
                 pty->out_tail = (pty->out_tail + 1) % PTY_BUF_SIZE;
