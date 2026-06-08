@@ -1378,11 +1378,20 @@ static void gui_run(void) {
         /* Drain UART into keyboard_state so serial keypresses reach the
          * compositor and are forwarded to the focused app (DOOM needs Enter
          * to start, arrow keys to play, etc.).  Non-blocking — only read
-         * characters that are already in the RX FIFO. */
+         * characters that are already in the RX FIFO.
+         * Also drain virtio keyboard events (from QEMU graphical window). */
         while (serial_can_read() && keyboard.count < 32) {
             char c = serial_read_byte();
             if (c == '\r' || c == '\n') keyboard.enter_pressed = 1;
             else if (c == 0x7f || c == '\b') keyboard.backspace_pressed = 1;
+            else keyboard.chars[keyboard.count++] = c;
+        }
+        /* Drain virtio keyboard buffer */
+        while (keyboard.count < 32) {
+            char c;
+            if (!virtio_kbd_read(&c)) break;
+            if (c == '\n') keyboard.enter_pressed = 1;
+            else if (c == '\b') keyboard.backspace_pressed = 1;
             else keyboard.chars[keyboard.count++] = c;
         }
         if (keyboard.count || keyboard.enter_pressed) {

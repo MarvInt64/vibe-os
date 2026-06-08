@@ -219,6 +219,7 @@ run-arm64: kernel-arm64
 	  -device virtio-blk-device,drive=hd0 \
 	  -device ramfb \
 	  -device virtio-tablet-device \
+	  -device virtio-keyboard-device \
 	  -audiodev coreaudio,id=snd0 \
 	  -device virtio-sound-device,audiodev=snd0 \
 	  -serial stdio \

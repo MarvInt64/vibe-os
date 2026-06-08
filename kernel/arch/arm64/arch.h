@@ -79,6 +79,7 @@ int virtio_blk_get_device(struct ramdisk_device *dev);
 int  virtio_input_init(void);
 void virtio_input_poll(void);
 int  virtio_input_is_ready(void);
+int  virtio_kbd_read(char *out);
 extern int g_mouse_x, g_mouse_y, g_mouse_buttons, g_mouse_moved;
 
 /* ---- virtio-sound ----------------------------------------------------- */
