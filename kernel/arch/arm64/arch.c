@@ -147,7 +147,14 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         uint64_t a5  = regs[5];
 
         /* Shared SYS_* numbers (kernel/include/syscall.h), same ABI as x86 so
-         * the common libc + apps work unmodified across arches. */
+         * the common libc + apps work unmodified across arches.
+         *
+         * TODO: Unify with kernel/src/process.c syscall dispatch.
+         * Many of these handlers (SYS_CHDIR, SYS_GETCWD, SYS_READDIR, SYS_STAT,
+         * SYS_OPEN, SYS_CLOSE, etc.) duplicate the shared process.c logic.
+         * The shared code uses x86-specific interrupt_frame/TSS/FPU types;
+         * once abstracted, route through process_syscall_dispatch() directly.
+         * Tracked in SYSCALL_UNIFICATION.md. */
         switch (num) {
         case SYS_WRITE: {       /* 1: write(fd, buf, len) */
             const char *buf = (const char *)(uintptr_t)a1;
