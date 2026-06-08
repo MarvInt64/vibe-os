@@ -19,10 +19,12 @@ constexpr int BAR_W      = 4;   /* scrollbar width in px */
 /* Draw one glyph into an ARGB buffer at top-left (x, y) using the kernel atlas. */
 void atlas_glyph(uint32_t *buf, int stride, int buf_h, int x, int y,
                  char ch, uint32_t color, int scale) {
-    char s[2] = { ch, 0 };
-    uint64_t dims = ((uint64_t)(stride & 0xffff) << 16) | (uint64_t)(buf_h & 0xffff);
-    uint64_t pos  = ((uint64_t)(x & 0xffff) << 16) | (uint64_t)(y & 0xffff);
-    vos_text_draw(buf, stride, buf_h, x, y, s, color, scale);
+    /* Use monospace mode (bit 31 of scale) so each glyph is centred in
+     * a fixed-width cell — essential for terminal column alignment.
+     * vexui widgets (labels, buttons) don't use this wrapper; they call
+     * vos_text_draw directly with proportional spacing. */
+    vos_text_draw(buf, stride, buf_h, x, y, (char[]){ch,0}, color,
+                  (uint32_t)scale | 0x80000000u);
 }
 
 void fill_rect(uint32_t *buf, int stride, int buf_h, int x, int y, int w, int h, uint32_t c) {

@@ -2388,21 +2388,27 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
 
     if (number == SYS_TEXT_DRAW) {
         /* rdi = ARGB buf, rsi = text, rdx = (buf_w<<16)|buf_h,
-         * r10 = ((x&0xffff)<<16)|(y&0xffff), r8 = color, r9 = scale.
-         * The app's address space is active, so buf is written directly. */
+         * r10 = ((x&0xffff)<<16)|(y&0xffff), r8 = color, r9 = scale|flags.
+         * If r9 has bit 31 set, monospace mode is used. */
         uint32_t *buf = (uint32_t *)(uintptr_t)frame->rdi;
         char text[256];
         int buf_w = (int)((frame->rdx >> 16) & 0xffffu);
         int buf_h = (int)(frame->rdx & 0xffffu);
         int x = (int)(int16_t)((frame->r10 >> 16) & 0xffffu);
         int y = (int)(int16_t)(frame->r10 & 0xffffu);
-        if (buf == 0 ||
+        int scale = (int)(frame->r9 & 0x7fffffffu);
+        int mono  = (int)((frame->r9 >> 31) & 1u);
+        if (buf == 0 || scale < 1 ||
             !process_copy_user_string(text, sizeof(text), (const char *)(uintptr_t)frame->rsi)) {
             frame->rax = (uint64_t)(-SYSCALL_EINVAL);
             return 0;
         }
-        frame->rax = (uint64_t)(int64_t)draw_text_to_argb(buf, buf_w, buf_h, x, y,
-            text, (uint32_t)frame->r8, (int)frame->r9);
+        if (mono)
+            frame->rax = (uint64_t)(int64_t)draw_text_mono_to_argb(buf, buf_w, buf_h, x, y,
+                text, (uint32_t)frame->r8, scale);
+        else
+            frame->rax = (uint64_t)(int64_t)draw_text_to_argb(buf, buf_w, buf_h, x, y,
+                text, (uint32_t)frame->r8, scale);
         return 0;
     }
 

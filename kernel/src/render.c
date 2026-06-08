@@ -852,6 +852,28 @@ void draw_text(struct framebuffer *fb, int x, int y, const char *text, uint32_t 
     }
 }
 
+/* Monospace text drawing: each character is centred in a fixed-width cell
+ * (FONT_ATLAS_CELLW pixels wide) so columns stay aligned.  Used by the
+ * terminal and anywhere tabular output must line up. */
+void draw_text_mono(struct framebuffer *fb, int x, int y, const char *text, uint32_t color, int scale) {
+    int idx = atlas_idx(scale);
+    int cell = FONT_ATLAS_CELLW[idx];
+    int line_h = FONT_ATLAS_LINEH[idx];
+    int cursor_x = x;
+    int cursor_y = y;
+
+    while (*text != '\0') {
+        if (*text == '\n') {
+            cursor_x = x;
+            cursor_y += line_h;
+        } else {
+            draw_glyph_mono(fb, cursor_x, cursor_y, *text, color, scale);
+            cursor_x += cell;
+        }
+        ++text;
+    }
+}
+
 int text_line_height(int scale) {
     return FONT_ATLAS_LINEH[atlas_idx(scale)];
 }
@@ -892,6 +914,23 @@ int draw_text_to_argb(uint32_t *buf, int buf_w, int buf_h, int x, int y,
     fb.clip_x = fb.clip_y = fb.clip_width = fb.clip_height = 0;
     draw_text(&fb, x, y, text, color, scale);
     return text_width(text, scale);
+}
+
+int draw_text_mono_to_argb(uint32_t *buf, int buf_w, int buf_h, int x, int y,
+                           const char *text, uint32_t color, int scale) {
+    struct framebuffer fb;
+    if (buf == 0 || buf_w <= 0 || buf_h <= 0) {
+        return 0;
+    }
+    fb.base = buf;
+    fb.width = (uint32_t)buf_w;
+    fb.height = (uint32_t)buf_h;
+    fb.pitch = (uint32_t)buf_w * 4u;
+    fb.bpp = 32;
+    fb.clip_enabled = 0;
+    fb.clip_x = fb.clip_y = fb.clip_width = fb.clip_height = 0;
+    draw_text_mono(&fb, x, y, text, color, scale);
+    return (int)strlen(text) * FONT_ATLAS_CELLW[atlas_idx(scale)];
 }
 
 /* Packed atlas metrics for a size: lineh | ascent<<8 | cellw<<16 | space<<24.
