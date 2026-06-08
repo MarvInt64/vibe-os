@@ -606,8 +606,15 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         }
         case SYS_PROCESS_KILL: { /* 29: kill a process by PID. a0=pid */
             uint32_t target = (uint32_t)a0;
+            struct process *cur = (this_cpu() && this_cpu()->current) ? this_cpu()->current : 0;
             int result = process_kill(target);
             regs[0] = (uint64_t)(int64_t)result;
+            /* If we killed ourselves, our aspace is gone — don't ERET to it.
+             * Yield to let the scheduler switch to another process. */
+            if (cur && cur->state == PROCESS_STATE_EXITED) {
+                arm64_yield_current(regs);
+                /* not reached */
+            }
             return;
         }
         case SYS_DESKTOP_STATUS: { /* 43: top-bar status snapshot */
