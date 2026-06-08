@@ -111,6 +111,10 @@ struct arm64_file {
 static struct arm64_file g_files[ARM64_MAX_FD];
 static struct arm64_pty  g_pty;     /* single global PTY for now */
 
+/* Deferred resolution change — like x86's g_resolution_change_requested. */
+static uint32_t g_res_w = 0, g_res_h = 0;
+static int      g_res_change_pending = 0;
+
 /* Argument string for the currently-exec'd program (SYS_GETARG returns it).
  * crt0.c reads this and splits it into argv — same mechanism as x86. */
 static char g_spawn_arg[512];
@@ -498,15 +502,19 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         case SYS_DISPLAY_MODE: {    /* 27: get/set display resolution */
             uint32_t rw = (uint32_t)a0;
             if (rw == 0) {
-                /* Report the ACTUAL framebuffer size so apps lay out and
-                 * hit-test against the same dimensions the compositor uses.
-                 * (Hardcoding 800x600 while ramfb is 1280x720 mis-placed the
-                 * dock and offset all mouse input.) */
                 uint32_t w = ramfb_width(), h = ramfb_height();
                 if (w == 0 || h == 0) { w = 1280; h = 720; }
                 regs[0] = (uint64_t)(((uint64_t)(w & 0xffffu) << 16) | (h & 0xffffu));
             } else {
-                regs[0] = 0; /* resolution change not supported on arm64 */
+                uint32_t rh = (uint32_t)a1;
+                if (rw < 320) rw = 320;
+                if (rh < 200) rh = 200;
+                if (rw > 2560) rw = 2560;
+                if (rh > 1600) rh = 1600;
+                g_res_w = rw;
+                g_res_h = rh;
+                g_res_change_pending = 1;
+                regs[0] = 0;
             }
             return;
         }
@@ -1421,6 +1429,11 @@ static void shell_loop(void) {
 static struct desktop_state *g_desktop = 0;
 struct desktop_state *desktop_active(void) { return g_desktop; }
 
+/* Framebuffer + backbuffer (updated on resolution change). */
+static struct framebuffer g_fb;
+static struct framebuffer g_bb;
+static uint32_t          *g_backbuf = 0;
+
 void kernel_main_arm64(void) {
     serial_init();
 
@@ -1509,8 +1522,7 @@ static void gui_run(void) {
         return;
     }
 
-    struct framebuffer fb;
-    fb_init(&fb, (uintptr_t)ramfb_buffer(), ramfb_width(), ramfb_height(),
+    fb_init(&g_fb, (uintptr_t)ramfb_buffer(), ramfb_width(), ramfb_height(),
             ramfb_stride_px() * 4, 32);
 
     /* Allocate desktop state on the heap (it's large — contains window
@@ -1528,15 +1540,14 @@ static void gui_run(void) {
      * in one operation — this eliminates the tearing/flickering that
      * direct-to-fb rendering causes. */
     size_t bb_pixels = (size_t)ramfb_width() * (size_t)ramfb_height();
-    uint32_t *backbuf = (uint32_t *)kmalloc(bb_pixels * 4);
-    struct framebuffer bb;
-    if (backbuf) {
-        fb_init(&bb, (uintptr_t)backbuf, ramfb_width(), ramfb_height(),
+    g_backbuf = (uint32_t *)kmalloc(bb_pixels * 4);
+    if (g_backbuf) {
+        fb_init(&g_bb, (uintptr_t)g_backbuf, ramfb_width(), ramfb_height(),
                 ramfb_width() * 4, 32);
         serial_write("[gui] backbuffer allocated\r\n");
     } else {
         /* Fall back to direct rendering if OOM */
-        bb = fb;
+        g_bb = g_fb;
         serial_write("[gui] WARNING: no backbuffer (OOM) — may flicker\r\n");
     }
     /* Spawn and run GUI apps sequentially.  Since all arm64 processes
@@ -1564,6 +1575,38 @@ static void gui_run(void) {
     for (;;) {
         uint64_t frame_start = timer_tick_count();   /* CNTVCT, 24 MHz */
         bkl_acquire();
+
+        /* Deferred resolution change: reinit ramfb + compositor buffers.
+         * Must happen with BKL held so no rendering races with it. */
+        if (g_res_change_pending) {
+            g_res_change_pending = 0;
+            serial_write("[gui] resolution change to ");
+            serial_write_hex_u64(g_res_w); serial_write("x"); serial_write_hex_u64(g_res_h);
+            serial_write("\r\n");
+
+            if (ramfb_set_mode(g_res_w, g_res_h) == 0) {
+                /* Free old backbuffer */
+                if (g_backbuf && g_bb.base != g_fb.base)
+                    kfree(g_backbuf);
+
+                /* Reinit framebuffer and backbuffer */
+                fb_init(&g_fb, (uintptr_t)ramfb_buffer(), ramfb_width(), ramfb_height(),
+                        ramfb_stride_px() * 4, 32);
+
+                size_t bb_px = (size_t)ramfb_width() * (size_t)ramfb_height();
+                g_backbuf = (uint32_t *)kmalloc(bb_px * 4);
+                if (g_backbuf) {
+                    fb_init(&g_bb, (uintptr_t)g_backbuf, ramfb_width(), ramfb_height(),
+                            ramfb_width() * 4, 32);
+                } else {
+                    g_bb = g_fb;
+                }
+
+                /* Reinit desktop compositor at new size */
+                desktop_init(g_desktop, ramfb_width(), ramfb_height());
+            }
+        }
+
         /* Feed mouse input to the compositor before rendering */
         struct mouse_state mouse;
         struct keyboard_state keyboard;
@@ -1642,12 +1685,12 @@ static void gui_run(void) {
 
         /* Render scene offscreen first (backbuffer), then blit to the
          * visible framebuffer in one shot — no tearing/flickering. */
-        desktop_render(g_desktop, &bb);
-        fb_blit(&fb, &bb);
+        desktop_render(g_desktop, &g_bb);
+        fb_blit(&g_fb, &g_bb);
 
         /* Draw cursor directly on the visible framebuffer so it
          * doesn't get smeared by the backbuffer copy. */
-        desktop_draw_cursor_overlay(g_desktop, &fb);
+        desktop_draw_cursor_overlay(g_desktop, &g_fb);
 
         bkl_release();
 

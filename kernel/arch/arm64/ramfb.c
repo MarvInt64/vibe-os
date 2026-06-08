@@ -187,6 +187,56 @@ int ramfb_init(uint32_t width, uint32_t height) {
     return 0;
 }
 
+/* Reconfigure the display at a new resolution. Frees the old framebuffer,
+ * allocates a new one, and programs the ramfb config. The caller must
+ * reinitialize the compositor (desktop, fb, backbuffer) afterwards. */
+int ramfb_set_mode(uint32_t width, uint32_t height) {
+    if (width < 320 || height < 200) return -1;
+    if (width > 2560 || height > 1600) return -1;
+
+    uint32_t stride = width * 4;
+    uint32_t fbsize = stride * height;
+    uint8_t *raw = (uint8_t *)kmalloc(fbsize + 4096);
+    if (!raw) { serial_write("[ramfb] OOM for mode change\r\n"); return -1; }
+    uint8_t *fb = (uint8_t *)(((uintptr_t)raw + 4095) & ~(uintptr_t)4095);
+    memset(fb, 0, fbsize);
+
+    /* Write new config to ramfb fw_cfg */
+    uint32_t fsize = 0;
+    uint16_t key = fwcfg_find("etc/ramfb", &fsize);
+    if (!key) { kfree(raw); return -1; }
+
+    struct ramfb_cfg cfg __attribute__((aligned(16)));
+    cfg.addr   = bswap64((uint64_t)(uintptr_t)fb);
+    cfg.fourcc = bswap32(DRM_FORMAT_XRGB8888);
+    cfg.flags  = 0;
+    cfg.width  = bswap32(width);
+    cfg.height = bswap32(height);
+    cfg.stride = bswap32(stride);
+    fwcfg_dma(key, &cfg, sizeof(cfg), 1);
+
+    /* Free old framebuffer */
+    if (g_fb) {
+        /* Old buffer was page-aligned allocation — find its raw pointer.
+         * We stored the aligned pointer; the raw allocation is within 4095
+         * bytes before it. */ 
+        uint8_t *old_raw = (uint8_t *)g_fb - 4096;
+        /* Scan back to find a valid kmalloc header — just free the
+         * nearest page boundary. */
+        kfree((void *)(((uintptr_t)g_fb - 1) & ~(uintptr_t)4095));
+    }
+
+    g_fb = (uint32_t *)fb;
+    g_fb_w = width;
+    g_fb_h = height;
+    g_fb_stride = stride;
+
+    serial_write("[ramfb] mode set: ");
+    serial_write_hex_u64(width); serial_write("x"); serial_write_hex_u64(height);
+    serial_write("\r\n");
+    return 0;
+}
+
 /* Fill the whole screen with one ARGB colour. */
 void ramfb_clear(uint32_t argb) {
     if (!g_fb) return;
