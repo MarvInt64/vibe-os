@@ -157,11 +157,18 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             return;
         }
         case SYS_READ: {        /* 0: read(fd, buf, len) */
-            /* fd 0 = stdin → UART (blocking, 1 byte at a time) */
+            /* fd 0 = stdin → UART */
             if (a0 == 0) {
                 char *dst = (char *)(uintptr_t)a1;
                 if (a2 == 0 || !dst) { regs[0] = 0; return; }
-                char c = arm64_uart_getc();   /* blocks until byte available */
+                if (!serial_can_read()) {
+                    /* No input yet — yield and let other processes run.
+                     * When we're resumed, the SVC re-executes and tries again. */
+                    regs[0] = 0;  /* placeholder; real value set on retry */
+                    arm64_yield_current(regs);
+                    /* not reached */
+                }
+                char c = serial_read_byte();
                 dst[0] = c;
                 regs[0] = 1;
                 return;
@@ -175,10 +182,11 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 char *dst = (char *)(uintptr_t)a1;
                 if (a2 == 0 || !dst) { regs[0] = 0; return; }
                 if (!serial_can_read()) {
-                    regs[0] = 0;   /* no data available, caller polls again */
-                    return;
+                    regs[0] = 0;
+                    arm64_yield_current(regs);
+                    /* not reached */
                 }
-                char c = serial_read_byte();  /* data is ready */
+                char c = serial_read_byte();
                 dst[0] = c;
                 regs[0] = 1;
                 return;
