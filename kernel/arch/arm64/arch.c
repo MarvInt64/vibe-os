@@ -174,7 +174,11 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             if (f->type == ARM64_FD_TYPE_PTY) {
                 char *dst = (char *)(uintptr_t)a1;
                 if (a2 == 0 || !dst) { regs[0] = 0; return; }
-                char c = arm64_uart_getc();
+                if (!serial_can_read()) {
+                    regs[0] = 0;   /* no data available, caller polls again */
+                    return;
+                }
+                char c = serial_read_byte();  /* data is ready */
                 dst[0] = c;
                 regs[0] = 1;
                 return;
