@@ -61,6 +61,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <sys/syscall.h>
+#include <vibeos.h>
 #include <audio.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -649,7 +650,7 @@ static bool browser_audio_write_all(const int16_t *buf, int samples,
         if (stop->load(std::memory_order_acquire)) return false;
         int written = audio_write(p, (unsigned int)remaining);
         if (written > 0) { p += written; remaining -= (unsigned long)written; }
-        else __asm__ volatile("int $0x80" : : "a"(3) : "memory"); /* SYS_YIELD */
+        else vos_yield();
     }
     return true;
 }

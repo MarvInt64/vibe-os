@@ -245,6 +245,13 @@ struct StyleDecls {
     bool     pos_fixed;        /* position: fixed → skip subtree */
     bool     display_inline;   /* display: inline — no forced block break */
     bool     display_inline_block; /* display: inline-block */
+    bool     display_flex;         /* display: flex */
+    bool     display_inline_flex;  /* display: inline-flex */
+    int      flex_direction;       /* 0=row, 1=col, 2=row-rev, 3=col-rev */
+    int      justify_content;      /* flex-start=0, center=1, flex-end=2, space-between=3, space-around=4, space-evenly=5 */
+    int      align_items;          /* stretch=0, flex-start=1, center=2, flex-end=3, baseline=4 */
+    bool     flex_wrap;            /* flex-wrap: wrap */
+    int      gap;                  /* px */
 };
 
 static void apply_decls(const char *css, StyleDecls &st) {
@@ -264,7 +271,9 @@ static void apply_decls(const char *css, StyleDecls &st) {
         if (ieq(prop,"display"))         { const char *w=val; while(*w==' ')++w;
                                            st.hidden=ieq(w,"none");
                                            st.display_inline=ieq(w,"inline");
-                                           st.display_inline_block=ieq(w,"inline-block"); }
+                                           st.display_inline_block=ieq(w,"inline-block");
+                                           st.display_flex=ieq(w,"flex");
+                                           st.display_inline_flex=ieq(w,"inline-flex"); }
         else if (ieq(prop,"color"))      { unsigned c; if(parse_color(val,c)) st.color=c; }
         else if (ieq(prop,"background-color")||ieq(prop,"background"))
                                          { unsigned c; if(parse_color(val,c)) st.bg=c; }
@@ -346,6 +355,28 @@ static void apply_decls(const char *css, StyleDecls &st) {
             else if(*w!='p'/* px */) pct = pct; /* unitless: treat as percent×100 */
             if(pct>=80&&pct<=300) st.line_height_pct=pct;
         }
+        else if (ieq(prop,"flex-direction")){ const char *w=val; while(*w==' ')++w;
+                                           if(ieq(w,"row"))             st.flex_direction=0;
+                                           else if(ieq(w,"column"))     st.flex_direction=1;
+                                           else if(ieq(w,"row-reverse"))st.flex_direction=2;
+                                           else if(ieq(w,"column-reverse"))st.flex_direction=3; }
+        else if (ieq(prop,"justify-content")){ const char *w=val; while(*w==' ')++w;
+                                           if(ieq(w,"flex-start"))      st.justify_content=0;
+                                           else if(ieq(w,"center"))     st.justify_content=1;
+                                           else if(ieq(w,"flex-end"))   st.justify_content=2;
+                                           else if(ieq(w,"space-between"))st.justify_content=3;
+                                           else if(ieq(w,"space-around"))st.justify_content=4;
+                                           else if(ieq(w,"space-evenly"))st.justify_content=5; }
+        else if (ieq(prop,"align-items"))    { const char *w=val; while(*w==' ')++w;
+                                           if(ieq(w,"stretch"))         st.align_items=0;
+                                           else if(ieq(w,"flex-start")) st.align_items=1;
+                                           else if(ieq(w,"center"))     st.align_items=2;
+                                           else if(ieq(w,"flex-end"))   st.align_items=3;
+                                           else if(ieq(w,"baseline"))   st.align_items=4; }
+        else if (ieq(prop,"flex-wrap"))     { const char *w=val; while(*w==' ')++w;
+                                           st.flex_wrap=ieq(w,"wrap")||ieq(w,"wrap-reverse"); }
+        else if (ieq(prop,"gap")||ieq(prop,"grid-gap")) { const char *w=val; int px=0; while(*w==' ')++w;
+                                           while(*w>='0'&&*w<='9'){px=px*10+(*w-'0');++w;} if(px>0&&px<=200) st.gap=px; }
     }
 }
 
@@ -381,6 +412,13 @@ struct Style {
     bool     pos_fixed       = false;
     bool     display_inline  = false;
     bool     display_inline_block = false;
+    bool     display_flex         = false;
+    bool     display_inline_flex  = false;
+    int      flex_direction       = -1;
+    int      justify_content      = -1;
+    int      align_items          = -1;
+    bool     flex_wrap            = false;
+    int      gap                  = 0;
 };
 
 /* ---- layout state ------------------------------------------------------ */
@@ -425,7 +463,7 @@ static void apply_css(State &S, dom_node *node) {
     StyleDecls d{S.stk[S.sp].px, S.stk[S.sp].bold, S.stk[S.sp].underline,
                  S.stk[S.sp].italic, S.stk[S.sp].strikethrough,
                  S.stk[S.sp].color, S.stk[S.sp].bg, S.stk[S.sp].hidden,
-                 0, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, false, false, false, false, false};
+                 0, -1, -1, -1, -1, -1, -1, -1, 0, 0, 0, 0, 0, false, false, false, false, false, false, false, -1, -1, -1, false, 0};
     if (S.sheet) { char buf[640]; css_match(S.sheet, node, S.anc_stk, S.anc_sp, buf, sizeof buf); apply_decls(buf, d); }
     const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
     S.stk[S.sp].px            = d.px;
@@ -453,10 +491,17 @@ static void apply_css(State &S, dom_node *node) {
     if (d.pos_fixed)            S.stk[S.sp].pos_fixed = true;
     if (d.display_inline)       S.stk[S.sp].display_inline = true;
     if (d.display_inline_block) S.stk[S.sp].display_inline_block = true;
+    if (d.display_flex)         S.stk[S.sp].display_flex = true;
+    if (d.display_inline_flex)  S.stk[S.sp].display_inline_flex = true;
+    if (d.flex_direction >= 0)  S.stk[S.sp].flex_direction = d.flex_direction;
+    if (d.justify_content >= 0) S.stk[S.sp].justify_content = d.justify_content;
+    if (d.align_items >= 0)     S.stk[S.sp].align_items = d.align_items;
+    if (d.flex_wrap)            S.stk[S.sp].flex_wrap = true;
+    if (d.gap > 0)              S.stk[S.sp].gap = d.gap;
 }
 
 static bool check_hidden(State &S, dom_node *node) {
-    StyleDecls d{BODY_PX,false,false,false,false,COL_TEXT,0,false,0,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,false,false,false,false,false};
+    StyleDecls d{BODY_PX,false,false,false,false,COL_TEXT,0,false,0,-1,-1,-1,-1,-1,-1,-1,0,0,0,0,0,false,false,false,false,false,false,false,-1,-1,-1,false,0};
     if (S.sheet) { char buf[640]; css_match(S.sheet, node, S.anc_stk, S.anc_sp, buf, sizeof buf); apply_decls(buf, d); }
     const char *inl = dom_attr(node,"style"); if (inl) apply_decls(inl, d);
     return d.hidden || d.pos_fixed;
@@ -613,6 +658,220 @@ static void walk(State &S, dom_node *node);
 static void walk_children(State &S, dom_node *node) {
     for (dom_node *c = node->first_child; c; c = c->next_sibling)
         walk(S, c);
+}
+
+/* ---- Flexbox layout -----------------------------------------------------
+ * Lays out children of a display:flex container in a row or column,
+ * with wrapping, main-axis justification, and cross-axis alignment. */
+enum { FLEX_ROW=0, FLEX_COL=1, FLEX_ROW_REV=2, FLEX_COL_REV=3 };
+enum { JUSTIFY_START=0, JUSTIFY_CENTER=1, JUSTIFY_END=2,
+       JUSTIFY_SPACE_BETWEEN=3, JUSTIFY_SPACE_AROUND=4, JUSTIFY_SPACE_EVENLY=5 };
+enum { ALIGN_STRETCH=0, ALIGN_START=1, ALIGN_CENTER=2, ALIGN_END=3, ALIGN_BASELINE=4 };
+
+/* First pass: measure a flex child by walking it in a temporary layout
+ * and capturing its bounding box. Runs added to doc are rolled back. */
+static void measure_flex_child(State &S, dom_node *child, int &w, int &h) {
+    int saved_run_count = S.doc->run_count;
+    int saved_pool_len  = S.doc->pool_len;
+    int saved_cy        = S.cy;
+    int saved_line_h    = S.line_h;
+    bool saved_at_sol   = S.at_sol;
+    bool saved_pspace   = S.pend_space;
+    int saved_margin    = S.pending_margin;
+    int saved_cx        = S.cx;
+
+    /* Reset position temporarily so the child starts at (0,0) relative */
+    S.cy = 0; S.cx = 0; S.at_sol = true; S.pend_space = false;
+    S.pending_margin = 0; S.line_h = 0;
+
+    walk(S, child);
+
+    /* Measure bounding box of all runs added since saved_run_count */
+    int max_x = 0, max_y = 0;
+    for (int i = saved_run_count; i < S.doc->run_count; ++i) {
+        wl_run *r = &S.doc->runs[i];
+        int rx = r->x + r->w, ry = r->y + r->h;
+        if (rx > max_x) max_x = rx;
+        if (ry > max_y) max_y = ry;
+    }
+    w = max_x; h = max_y;
+    if (w < 1) w = 1; if (h < 1) h = S.lh(BODY_PX);
+
+    /* Roll back */
+    S.doc->run_count = saved_run_count;
+    S.doc->pool_len  = saved_pool_len;
+    S.cy = saved_cy; S.line_h = saved_line_h; S.at_sol = saved_at_sol;
+    S.pend_space = saved_pspace; S.pending_margin = saved_margin;
+    S.cx = saved_cx;
+}
+
+/* Main flex container layout. Places children along the main axis,
+ * wrapping if flex-wrap is enabled, then applies justify-content and
+ * align-items per line. */
+static void layout_flex_container(State &S, dom_node *node) {
+    const Style &st = S.stk[S.sp];
+    int dir     = st.flex_direction >= 0 ? st.flex_direction : 0;  /* default row */
+    int justify = st.justify_content >= 0 ? st.justify_content : 0; /* flex-start */
+    int align   = st.align_items >= 0 ? st.align_items : 0;        /* stretch */
+    bool wrap   = st.flex_wrap;
+    int gap_px  = st.gap;
+
+    int cont_left = st.left;
+    int cont_w    = S.vw - cont_left;
+    int cont_top  = S.cy;
+
+    /* ----- Pass 1: measure all children ----- */
+    int child_cap = 0;
+    for (dom_node *c = node->first_child; c; c = c->next_sibling) ++child_cap;
+    if (child_cap == 0) return;
+
+    int *child_w = (int *)__builtin_alloca((unsigned)child_cap * sizeof(int));
+    int *child_h = (int *)__builtin_alloca((unsigned)child_cap * sizeof(int));
+    dom_node **child_ptrs = (dom_node **)__builtin_alloca((unsigned)child_cap * sizeof(dom_node*));
+
+    int idx = 0;
+    for (dom_node *c = node->first_child; c; c = c->next_sibling) {
+        child_ptrs[idx] = c;
+        int cw, ch;
+        measure_flex_child(S, c, cw, ch);
+        /* If child has a CSS width, use it (clamped to container) */
+        int css_w = 0;
+        /* For now just use measured width */
+        child_w[idx] = cw; child_h[idx] = ch;
+        ++idx;
+    }
+
+    /* ----- Pass 2: place children in flex lines ----- */
+    int cur_line_start  = 0;
+    int cur_main_offset = 0;   /* offset along main axis within current line */
+    int cur_cross_offset = 0;  /* offset along cross axis (for multiple lines) */
+    int line_main_sizes[32];    /* total main-axis size per line */
+    int line_cross_sizes[32];   /* max cross-axis size per line */
+    int line_child_counts[32];
+    int line_count = 0;
+    int *line_ends = (int *)__builtin_alloca((unsigned)child_cap * sizeof(int)); /* first child AFTER this line */
+    int *child_line = (int *)__builtin_alloca((unsigned)child_cap * sizeof(int)); /* which line each child belongs to */
+
+    bool is_row = (dir == FLEX_ROW || dir == FLEX_ROW_REV);
+    int main_avail = is_row ? cont_w : 32000; /* column: unlimited height in first pass */
+
+    for (int i = 0; i < child_cap; ) {
+        int line_main_size = 0;
+        int line_cross_max = 0;
+        int line_child_cnt  = 0;
+        int line_start_i    = i;
+
+        while (i < child_cap) {
+            int item_main = is_row ? child_w[i] : child_h[i];
+            int item_cross = is_row ? child_h[i] : child_w[i];
+            int need = line_main_size > 0 ? item_main + gap_px : item_main;
+            if (!wrap || line_main_size == 0 || need <= main_avail) {
+                line_main_size = need;
+                if (item_cross > line_cross_max) line_cross_max = item_cross;
+                child_line[i] = line_count;
+                ++i; ++line_child_cnt;
+            } else {
+                break; /* wrap to next line */
+            }
+        }
+
+        line_main_sizes[line_count]  = line_main_size;
+        line_cross_sizes[line_count] = line_cross_max;
+        line_child_counts[line_count] = line_child_cnt;
+        line_ends[line_count] = i;
+        cur_cross_offset += (line_count > 0 ? line_cross_max + gap_px : 0);
+        ++line_count;
+        if (line_count >= 31) break;
+    }
+
+    /* ----- Pass 3: compute positions and place children ----- */
+    int cross_start = cont_top;
+    for (int li = 0; li < line_count; ++li) {
+        int line_main  = line_main_sizes[li];
+        int line_cross = line_cross_sizes[li];
+        int line_start = (li == 0) ? 0 : line_ends[li-1];
+        int line_end   = line_ends[li];
+
+        /* Main-axis justification */
+        int extra = main_avail - line_main;
+        if (extra < 0) extra = 0;
+        int main_pos = 0;
+        int gap_between = gap_px;
+
+        switch (justify) {
+        case JUSTIFY_CENTER:      main_pos = extra / 2; break;
+        case JUSTIFY_END:         main_pos = extra; break;
+        case JUSTIFY_SPACE_BETWEEN:
+            if (line_child_counts[li] > 1) gap_between = extra / (line_child_counts[li] - 1);
+            break;
+        case JUSTIFY_SPACE_AROUND:
+            if (line_child_counts[li] > 0) {
+                int half = extra / (line_child_counts[li] * 2);
+                main_pos = half;
+                gap_between = half * 2;
+            }
+            break;
+        case JUSTIFY_SPACE_EVENLY:
+            if (line_child_counts[li] > 0) {
+                int space = extra / (line_child_counts[li] + 1);
+                main_pos = space;
+                gap_between = space;
+            }
+            break;
+        default: break; /* flex-start */
+        }
+
+        int cross_pos = cross_start;
+
+        for (int ci = line_start; ci < line_end; ++ci) {
+            dom_node *child = child_ptrs[ci];
+            int item_main = is_row ? child_w[ci] : child_h[ci];
+            int item_cross = is_row ? child_h[ci] : child_w[ci];
+
+            /* Cross-axis alignment */
+            int cross_offset = 0;
+            int final_cross = item_cross;
+            switch (align) {
+            case ALIGN_CENTER: cross_offset = (line_cross - item_cross) / 2; break;
+            case ALIGN_END:    cross_offset = line_cross - item_cross; break;
+            case ALIGN_STRETCH: final_cross = line_cross; break;
+            default: break;
+            }
+
+            /* Place the child */
+            int saved_cx = S.cx, saved_cy = S.cy;
+            bool saved_sol = S.at_sol;
+
+            if (is_row) {
+                S.cx = cont_left + main_pos;
+                S.cy = cross_pos + cross_offset;
+            } else {
+                S.cx = cont_left + cross_offset;
+                S.cy = cross_pos + main_pos;
+            }
+            S.at_sol = true;
+            S.pend_space = false;
+            S.pending_margin = 0;
+            S.line_h = 0;
+
+            walk(S, child);
+
+            S.cx = saved_cx; S.cy = saved_cy; S.at_sol = saved_sol;
+            /* Don't update cy yet — we'll set it after all lines */
+            if (is_row) main_pos += item_main + gap_between;
+            else        main_pos += item_main + gap_between;
+        }
+
+        cross_start += line_cross + gap_px;
+    }
+
+    /* Update S.cy to after the flex container */
+    S.cy = cross_start;
+    S.at_sol = true;
+    S.pend_space = false;
+    S.pending_margin = 0;
+    S.line_h = 0;
+    S.cx = cont_left;
 }
 
 static void walk(State &S, dom_node *node) {
@@ -955,7 +1214,12 @@ static void walk(State &S, dom_node *node) {
             }
             if (pt > 0) S.cy += pt;
             if (pl > 0) { S.stk[S.sp].left += pl; if (S.at_sol) S.cx = S.stk[S.sp].left; }
-            walk_children(S, node);
+            if (S.stk[S.sp].display_flex || S.stk[S.sp].display_inline_flex) {
+                /* CSS Flexbox: lay out children along main axis with wrapping/alignment */
+                layout_flex_container(S, node);
+            } else {
+                walk_children(S, node);
+            }
             if (!S.at_sol) newline(S);
             if (pb > 0) S.cy += pb;
             if (bg_idx >= 0) {
