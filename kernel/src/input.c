@@ -26,6 +26,7 @@
 #include "io.h"
 #include "journal.h"
 #include "serial.h"
+#include "keymap.h"
 
 static int g_mouse_x;
 static int g_mouse_y;

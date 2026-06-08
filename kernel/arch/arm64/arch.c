@@ -32,6 +32,7 @@
 #include "../../include/render.h"
 #include "../../include/window.h"
 #include "../../include/input.h"
+#include "../../include/keymap.h"
 #include "../../include/winsys.h"
 #include "../../include/audio.h"
 #include "../../include/vfs.h"
@@ -1358,6 +1359,9 @@ struct desktop_state *desktop_active(void) { return g_desktop; }
 
 void kernel_main_arm64(void) {
     serial_init();
+
+    keymap_init();
+    keymap_set("de");   /* German keyboard layout */
 
     serial_write("\r\n");
     serial_write("  __   ___      _      ___  ____  \r\n");

@@ -125,7 +125,8 @@ ARM64_COMMON_SRCS := \
     kernel/src/render.c \
     kernel/src/font_atlas.c \
     kernel/src/window.c \
-    kernel/src/bkl.c
+    kernel/src/bkl.c \
+    kernel/src/keymap.c
 
 # arm64-specific sources (in kernel/arch/arm64/):
 ARM64_ARCH_SRCS := \

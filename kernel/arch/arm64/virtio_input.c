@@ -25,6 +25,7 @@
 #include "../../include/serial.h"
 #include "../../include/alloc.h"
 #include "../../include/string.h"
+#include "../../include/keymap.h"
 
 /* ---- Virtio-mmio register offsets (legacy) ----------------------------- */
 #define VL_MAGIC        0x000
@@ -193,45 +194,19 @@ static int vi_dev_init(struct vi_device *d, uintptr_t base) {
 }
 
 /* ---- Translate Linux keycode to ASCII (simple US layout) --------------- */
-static char keycode_to_ascii(uint16_t code) {
-    /* Only handle simple key presses (value=1 in EV_KEY).
-     * This is a minimal US keyboard mapping. */
+/* Keymap state — modifiers tracked across events */
+static unsigned g_kmod = 0;
+
+static void vi_update_modifiers(uint16_t code, int pressed) {
+    unsigned bit = 0;
     switch (code) {
-    /* Letters */
-    case 30: return 'a'; case 31: return 's'; case 32: return 'd';
-    case 33: return 'f'; case 34: return 'g'; case 35: return 'h';
-    case 36: return 'j'; case 37: return 'k'; case 38: return 'l';
-    case 44: return 'z'; case 45: return 'x'; case 46: return 'c';
-    case 47: return 'v'; case 48: return 'b'; case 49: return 'n';
-    case 50: return 'm';
-    case 16: return 'q'; case 17: return 'w'; case 18: return 'e';
-    case 19: return 'r'; case 20: return 't'; case 21: return 'y';
-    case 22: return 'u'; case 23: return 'i'; case 24: return 'o';
-    case 25: return 'p';
-    /* Digits */
-    case 2: return '1'; case 3: return '2'; case 4: return '3';
-    case 5: return '4'; case 6: return '5'; case 7: return '6';
-    case 8: return '7'; case 9: return '8'; case 10: return '9';
-    case 11: return '0';
-    /* Special */
-    case 57: return ' ';        /* space */
-    case 28: return '\n';       /* enter */
-    case 14: return '\b';       /* backspace */
-    case 12: return '-';        /* minus */
-    case 13: return '=';        /* equals */
-    case 39: return ';';        /* semicolon */
-    case 40: return '\'';       /* apostrophe */
-    case 51: return ',';        /* comma */
-    case 52: return '.';        /* period */
-    case 53: return '/';        /* slash */
-    case 43: return '\\';       /* backslash */
-    case 26: return '[';        /* left bracket */
-    case 27: return ']';        /* right bracket */
-    case 41: return '`';        /* grave */
-    case 15: return '\t';       /* tab */
-    case 1:  return 0x1b;       /* escape */
-    default: return 0;          /* unmapped */
+    case 42: case 54: bit = KMOD_SHIFT; break;   /* LEFTSHIFT / RIGHTSHIFT */
+    case 29: case 97: bit = KMOD_CTRL;  break;   /* LEFTCTRL / RIGHTCTRL */
+    case 56:           bit = KMOD_ALTGR; break;   /* LEFTALT */
+    case 100:          bit = KMOD_ALTGR; break;   /* RIGHTALT = AltGr */
+    default: return;
     }
+    if (pressed) g_kmod |= bit; else g_kmod &= ~bit;
 }
 
 /* ---- Initialise all devices -------------------------------------------- */
@@ -285,13 +260,17 @@ static void vi_poll_one(struct vi_device *d) {
                 if (ev->value) mb |= 2;   else mb &= ~2;
             } else if (ev->code == 0x112) {
                 if (ev->value) mb |= 4;   else mb &= ~4;
-            } else if (ev->value == 1) {
-                /* Keyboard key press */
-                char ascii = keycode_to_ascii(ev->code);
-                if (ascii && g_kbd_count < KBD_BUF_SIZE) {
-                    g_kbd_buf[g_kbd_head] = ascii;
-                    g_kbd_head = (g_kbd_head + 1) % KBD_BUF_SIZE;
-                    g_kbd_count++;
+            } else {
+                /* Track modifier state for keymap translation */
+                vi_update_modifiers(ev->code, ev->value != 0);
+                /* Translate key press to ASCII via shared keymap */
+                if (ev->value == 1) {
+                    char ascii = keymap_translate(ev->code, g_kmod);
+                    if (ascii && g_kbd_count < KBD_BUF_SIZE) {
+                        g_kbd_buf[g_kbd_head] = ascii;
+                        g_kbd_head = (g_kbd_head + 1) % KBD_BUF_SIZE;
+                        g_kbd_count++;
+                    }
                 }
             }
             break;
