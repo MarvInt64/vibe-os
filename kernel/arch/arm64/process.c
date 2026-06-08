@@ -84,6 +84,19 @@ static void aspace_free(int slot) {
     a->has_saved = 0;
 }
 
+/* Check if any living thread shares this process's address space.
+ * Threads have is_thread=1 and cr3 matching the owner. */
+static int has_living_threads(struct process *owner) {
+    for (int i = 0; i < ARM64_MAX_PROCS; i++) {
+        if (!g_procs[i].loaded) continue;
+        if (g_procs[i].state == PROCESS_STATE_EXITED) continue;
+        if (&g_procs[i] == owner) continue;
+        if (g_procs[i].is_thread && g_procs[i].cr3 == owner->cr3)
+            return 1;
+    }
+    return 0;
+}
+
 /* Suspend the running process from its EL0 exception frame and return to the
  * kernel scheduler loop; the process stays READY and resumes where it left off
  * (right after the svc) on a later slice.  Called from the syscall handler for
@@ -380,7 +393,7 @@ int process_kill(uint32_t pid) {
         arm64_aspace_switch_boot();
         set_current_slot(-1);
     }
-    if (!proc->is_thread) aspace_free(kslot);
+    if (!proc->is_thread && !has_living_threads(proc)) aspace_free(kslot);
 
     proc->loaded = 0;
     proc->state  = PROCESS_STATE_EXITED;
@@ -533,7 +546,7 @@ void process_handle_exit(uint64_t code) {
         /* The active TTBR0 still points at this process's page tables; switch
          * back to the shared boot aspace BEFORE freeing them. */
         arm64_aspace_switch_boot();
-        if (!proc->is_thread) aspace_free(g_curr3);
+        if (!proc->is_thread && !has_living_threads(proc)) aspace_free(g_curr3);
         proc->loaded = 0;
         serial_write("[process] exit pid=");
         { char b[16]; int i=0; uint32_t t=proc->pid; if(!t)b[i++]='0';
