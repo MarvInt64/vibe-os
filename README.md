@@ -1,9 +1,31 @@
 # VibeOS
 
-A hobby x86_64 operating system vibed with AI from scratch in C, C++20 and x86 assembly.
-It boots via GRUB/Multiboot2, runs entirely bare-metal, and includes a working graphical desktop, networking stack, persistent ext2 file system, and a userspace with a shell, text editor, browser and GUI apps.
+A hobby operating system vibed with AI from scratch in C, C++20 and assembly.
+It boots bare-metal on **x86_64** (GRUB/Multiboot2) and **arm64** (QEMU virt, HVF on Apple Silicon), and includes a working graphical desktop, networking stack, persistent ext2 file system, and a userspace with a shell, text editor, browser and GUI apps.
 
 ![VibeOS desktop](docs/screen1.jpg)
+
+---
+
+## Quick Start
+
+**Prerequisites:** `llvm` + `qemu` (macOS: `brew install llvm qemu`)
+
+### x86_64
+
+```sh
+make all && make disk && make apps && make run
+```
+
+The desktop starts automatically. Click **TERM** on the dock, type `browser` and enter `spiegel.de`.
+
+### arm64 (Apple Silicon)
+
+```sh
+make kernel-arm64 && make disk && make arm64-user && make run-arm64
+```
+
+At the `arm64:/$` prompt type `gui` to start the desktop, then click **Browser** on the dock.
 
 ---
 
@@ -11,7 +33,8 @@ It boots via GRUB/Multiboot2, runs entirely bare-metal, and includes a working g
 
 | Area | Details |
 |---|---|
-| **Boot** | GRUB Multiboot2 → 32-bit protected mode → 64-bit long mode; VGA text-mode fallback during early init |
+| **Architectures** | **x86_64** (GRUB Multiboot2, 32-bit protected mode → 64-bit long mode) and **arm64** (QEMU `-machine virt`, HVF acceleration on Apple Silicon, bare-metal GICv2 on real hardware); single codebase with shared kernel/userspace, arch-specific hardware drivers |
+| **Boot** | x86: GRUB Multiboot2 → 32-bit → 64-bit long mode, VGA text-mode fallback. arm64: direct kernel ELF loaded by QEMU `-kernel`, UART serial, ramfb framebuffer |
 | **Memory** | Physical frame allocator, 4-level paging, kernel heap (`kmalloc`/`kfree`), per-process page tables with full address-space isolation; **isolated compositor heap** for window buffers; **per-process image heaps** to prevent fragmentation and overlap |
 | **Interrupts** | IDT + IRQ handlers + `int 0x80` syscall interface; **ACPI enumeration** (RSDP→RSDT/XSDT→MADT) and **Local APIC + IOAPIC** interrupt routing, falling back to the legacy 8259 PIC + PIT on machines without ACPI |
 | **SMP / Multi-core** | Brings every CPU online via INIT-SIPI-SIPI; per-CPU GDT/TSS/data (GS-base) and per-CPU Local APIC timer; a **recursive big kernel lock** lets the application processors run userspace **in parallel** with the boot CPU while the kernel core stays serialised; SMP-safe heap. Boot with `-smp N` (the `make run*` targets default to 4 cores) |
@@ -20,9 +43,9 @@ It boots via GRUB/Multiboot2, runs entirely bare-metal, and includes a working g
 | **Users & auth** | `/etc/passwd` + `/etc/shadow`; numeric uids with ownership/permission checks in the VFS; `su` (password login, drops to a shell), `adduser` (Linux-style account creation, 0700 home), `whoami`, `id`, `chown`, `chmod`; `kill` restricted to the owner or root; apps resolve their working dir from the user's passwd home |
 | **Storage** | IDE/PIO driver, ramdisk (in-memory block device for early boot), persistent raw disk image |
 | **File system** | ext2 read/write; full VFS layer; `open`/`close`/`read`/`write`/`stat`/`readdir`/`chdir`/`getcwd`/`unlink`/`creat`/`mkdir` syscalls; survives reboots |
-| **Networking** | Intel e1000 NIC driver; ARP, IPv4, ICMP (`ping`), UDP, DNS, TCP; HTTP (`curl`); TLS via BearSSL (freestanding port) — `SYS_NET_HTTPS_GET` syscall exists and encrypts the connection, but certificate validation is disabled (accept-all, no trust store) and the shell `curl` command currently only uses plain HTTP |
-| **Graphics** | BGA (Bochs Graphics Adapter) driver; **tile-based dirty tracking** with **dirty tile merging** for optimized redraws; **Write-Combining (WC)** enabled via **PAT** for fast framebuffer writes; runtime resolution switching via `display <w> <h>`; **black cursor outlines** for high visibility |
-| **Window server** | Multi-window compositor; drag, resize, close; **aspect-ratio locked resizing** (`WINSYS_WINDOW_ASPECT_RATIO`); PS/2 mouse + keyboard; **per-window alpha** (glass windows); **dynamic window buffer allocation**; **compositor optimizations** (direct compose + fast opaque blits); **isolated compositor heap** prevents image corruption during heavy allocation |
+| **Networking** | x86: Intel e1000 NIC. arm64: virtio-net. ARP, IPv4, ICMP (`ping`), UDP, DNS, TCP; HTTP (`curl`); **TLS/HTTPS via BearSSL** (freestanding port) — encrypted connections work on both architectures; certificate validation is accept-all (no trust store) in the current version |
+| **Graphics** | x86: BGA (Bochs Graphics Adapter). arm64: ramfb (QEMU ram framebuffer). **Tile-based dirty tracking** with **dirty tile merging** for optimized redraws; **Write-Combining (WC)** via **PAT** on x86; runtime resolution switching via `display <w> <h>`; **black cursor outlines** for high visibility; cache-coherent framebuffer flush (`dc cvau` + `dsb sy`) on arm64 |
+| **Window server** | Multi-window compositor; drag, resize, close; **aspect-ratio locked resizing** (`WINSYS_WINDOW_ASPECT_RATIO`); PS/2 (x86) + virtio-tablet/keyboard (arm64); scroll-wheel support; **per-window alpha** (glass windows); **dynamic window buffer allocation**; **compositor optimizations** (direct compose + fast opaque blits); **isolated compositor heap** prevents image corruption during heavy allocation |
 | **Desktop chrome** | Flat blue-gray glass theme; thin line window controls; **userspace top bar app** (animated SVG hover V-logo, app menu, status indicators, SVG power glyph); floating rounded **dock** with **SVG icons**, **anti-aliased SDF rendering**, **active app status indicators/highlights**, and macOS-style context menu instance switching |
 | **Top-bar menu bar** | The focused app declares its menus via `SYS_WINDOW_SET_MENUBAR` / `vos_window_set_menubar` (titles, items, shortcuts, dividers, checkmarks, danger style) or custom VexUI menu sync; the **topbar app** draws the dropdowns and reports picks back as `VOS_EV_MENU_ACTION` |
 | **Theming** | Central design-token theme for both kernel chrome and VexUI (`bg`/`surface`/`border`/`text`/`accent`/`ok`/`warn`/`danger`/`menu_*`/`window_alpha`), overridable at runtime from `/home/user/.config/vibeos.theme`; customizable top shadow insets (`shadow_inset_top`) or shadow suppression (`VUI_WINDOW_NO_SHADOW`) |
@@ -34,8 +57,8 @@ It boots via GRUB/Multiboot2, runs entirely bare-metal, and includes a working g
 | **C++20 userspace** | Full freestanding C++20 runtime: vtables, RTTI, `typeid`, global/local statics, `new`/`delete`, `__cxa_guard_*`, `__cxa_atexit`; standard headers `<array>`, `<span>`, `<algorithm>`, `<utility>`, `<type_traits>`, `<new>`, `<typeinfo>`, etc. |
 | **Kernel C++ runtime** | Kernel-side C++20 subset (no exceptions/RTTI); `new`/`delete` via `kmalloc`; `.init_array` global ctors; automatic boot self-test |
 | **Logging** | Kernel event journal (`dmesg`); serial debug output; `SYS_LOG` / `vos_log` for userspace; crash persistence to `/journal.log` |
-| **Apps** | `sh` (interactive shell with `audiocfg`), `edit` (text editor), `browser` (revamped with custom **CSS engine**), `taskmgr` (real-time CPU accounting + a **PERFORMANCE tab with live per-core utilisation bars**), `filebrowser` (graphical file manager with an OPEN/SAVE file-dialog mode), `texteditor` + `mp3play`/audioplayer, `adduser`, `doom` (scalable aspect-ratio locked doomgeneric port), **topbar** (userspace system bar), `uidemo`, `hello`, `cpptest` |
-| **Audio** | AC97 driver with per-process voice ring buffers (multiple apps mix simultaneously); the DMA is fed lock-free from the timer IRQ, so playback stays glitch-free regardless of compositing/CPU load |
+| **Apps** | `sh` (interactive shell with `audiocfg`), `edit` (text editor), `browser` (HTTP/HTTPS browser with **CSS engine + Flexbox layout**), `taskmgr` (real-time CPU accounting + **PERFORMANCE tab with live per-core utilisation bars**), `filebrowser` (graphical file manager with OPEN/SAVE file-dialog mode), `texteditor` + `mp3play`/audioplayer, `adduser`, `doom` (scalable aspect-ratio locked doomgeneric port), **topbar** (userspace system bar), `uidemo`, `hello`, `cpptest` |
+| **Audio** | x86: Intel AC97. arm64: virtio-sound (48 kHz stereo S16). Per-process voice ring buffers (multiple apps mix simultaneously); DMA fed lock-free from timer IRQ, playback stays glitch-free regardless of compositing/CPU load |
 
 ---
 
@@ -46,6 +69,8 @@ It boots via GRUB/Multiboot2, runs entirely bare-metal, and includes a working g
 ```sh
 brew install llvm qemu xorriso
 ```
+
+For arm64 builds you only need `llvm` and `qemu` (the latter provides `qemu-system-aarch64`). HVF acceleration is built into macOS — no extra kernel module needed.
 
 Make sure the LLVM tools are on your `PATH` or that `clang`/`clang++`/`ld.lld` from the brew prefix are reachable. The Makefile auto-detects common Homebrew paths.
 
@@ -79,12 +104,14 @@ sudo pacman -S clang lld llvm qemu grub xorriso python
 
 ## Building
 
+### x86_64
+
 ```sh
 # 1. Build the kernel ELF and all userspace apps, create the bootable ISO
 make all
 
 # 2. Create the persistent disk image (only needed once)
-make disk        # creates vibeos-disk.img (32 MB ext2, survives reboots)
+make disk        # creates vibeos-disk.img (64 MB ext2, survives reboots)
 
 # 3. Install userspace apps onto the disk image
 make apps
@@ -99,24 +126,64 @@ make run
 make all && make disk && make apps && make run
 ```
 
+### arm64 (Apple Silicon / macOS with HVF)
+
+```sh
+# 1. Build the arm64 kernel
+make kernel-arm64
+
+# 2. Create the persistent disk image (shared with x86)
+make disk
+
+# 3. Build and install arm64 userspace apps
+make arm64-user
+
+# 4. Boot in QEMU with HVF acceleration
+make run-arm64
+```
+
+Or start QEMU directly:
+
+```sh
+qemu-system-aarch64 \
+  -machine virt,gic-version=2 -cpu host -accel hvf \
+  -m 512M -smp 4 \
+  -kernel build/vibeos-arm64.elf \
+  -drive file=vibeos-disk.img,if=none,id=hd0,format=raw \
+  -device virtio-blk-device,drive=hd0 \
+  -netdev user,id=net0 -device virtio-net-device,netdev=net0 \
+  -device ramfb -device virtio-tablet-device -device virtio-keyboard-device \
+  -serial stdio -no-reboot
+```
+
+> **Note:** On arm64 the desktop does NOT start automatically. Type `gui` at the
+> `arm64:/$` prompt to launch the compositor. The scheduler is purely cooperative
+> under HVF (no timer interrupts) — apps yield cooperatively via `SYS_YIELD` and
+> `SYS_TIMER_SLEEP`.
+
 On subsequent builds, `make run` is enough — it rebuilds whatever changed.
 
 ### Individual targets
 
 | Command | Description |
 |---|---|
-| `make kernel` | Compile kernel + userspace blobs → `build/vibeos.elf` |
-| `make iso` | Wrap ELF in a GRUB ISO → `build/vibeos.iso` |
+| `make kernel` | Compile x86_64 kernel → `build/vibeos.elf` |
+| `make kernel-arm64` | Compile arm64 kernel → `build/vibeos-arm64.elf` |
+| `make iso` | Wrap x86_64 ELF in a GRUB ISO → `build/vibeos.iso` |
 | `make disk` | Create blank `vibeos-disk.img` (ext2, formatted on first boot) |
-| `make apps` | Build all userspace binaries and `ext2_put` them onto the disk |
-| `make run` | Boot ISO in QEMU with HVF/KVM acceleration and e1000 networking |
-| `make run-serial` | Same, but pipe serial port to stdout (for kernel log) |
-| `make run-debug` | Same as `run` but with `-no-shutdown` (QEMU stays open on triple fault) |
+| `make apps` | Build all x86_64 userspace binaries and `ext2_put` them onto the disk |
+| `make arm64-user` | Build all arm64 userspace binaries and `ext2_put` them onto the disk |
+| `make run` | Boot x86_64 ISO in QEMU with HVF/KVM acceleration and e1000 networking |
+| `make run-arm64` | Boot arm64 kernel in QEMU with HVF acceleration and virtio devices |
+| `make run-serial` | Same as `make run`, but pipe serial port to stdout |
+| `make run-debug` | Same as `make run` but with `-no-shutdown` (QEMU stays open on triple fault) |
 | `make clean` | Remove `build/` (disk image and ISO are kept) |
 
 ---
 
 ## Running
+
+### x86_64
 
 QEMU launches with:
 - **512 MB RAM**, `vga std` framebuffer
@@ -127,6 +194,21 @@ QEMU launches with:
 - Persistent **IDE disk** backed by `vibeos-disk.img`
 
 The desktop starts automatically. Click the **TERM** icon on the taskbar to open a terminal.
+
+### arm64 (macOS / Apple Silicon)
+
+QEMU launches with:
+- **512 MB RAM**, `ramfb` framebuffer
+- **4 CPU cores** by default (`-smp 4`); **HVF** acceleration (`-accel hvf`)
+- **virtio-net** NIC with SLIRP user networking (guest IP `10.0.2.16`, DNS at `10.0.2.3`)
+- **virtio-blk** for persistent disk, **virtio-tablet/keyboard** for input
+- **virtio-sound** audio (48 kHz stereo S16) — optional, CoreAudio backend
+- Persistent disk backed by `vibeos-disk.img` (shared with x86_64)
+
+Type `gui` at the `arm64:/$` prompt to start the graphical desktop.
+The scheduler is **purely cooperative** under HVF (no GIC timer interrupts).
+Network operations use an inline compositor pump to keep the desktop responsive
+during DNS/TCP/TLS waits.
 
 ### Shell commands
 
@@ -222,38 +304,43 @@ You can create a shortcut using the terminal:
 VibeOS/
 ├── kernel/
 │   ├── include/          — kernel headers
-│   └── src/              — kernel C/C++ and assembly source
-│       ├── boot.S        — Multiboot2 entry, long-mode switch
-│       ├── ap_boot.S     — application-processor (AP) start trampoline
-│       ├── kernel.c      — main kernel init
-│       ├── process.c     — scheduler + process management
-│       ├── acpi.c        — ACPI RSDP/MADT enumeration (CPUs, APICs)
-│       ├── apic.c        — Local APIC + IOAPIC programming
-│       ├── smp.c         — bring APs online, per-CPU scheduler loop
-│       ├── cpu.c         — per-CPU data (GS-base), bkl.c — big kernel lock
-│       ├── paging.c      — virtual memory / page tables
-│       ├── net.c         — networking stack (ARP/IP/ICMP/UDP/TCP)
-│       ├── ext2_fs.c     — ext2 file system
-│       ├── window.c      — window server
-│       ├── cxx_runtime.cpp — kernel-side C++ ABI
-│       └── ...
+│   ├── src/              — kernel C/C++ and assembly source (both arches)
+│   │   ├── boot.S        — Multiboot2 entry, long-mode switch (x86_64)
+│   │   ├── ap_boot.S     — application-processor (AP) start trampoline
+│   │   ├── kernel.c      — main kernel init
+│   │   ├── process.c     — scheduler + process management
+│   │   ├── acpi.c        — ACPI RSDP/MADT enumeration (CPUs, APICs)
+│   │   ├── apic.c        — Local APIC + IOAPIC programming
+│   │   ├── smp.c         — bring APs online, per-CPU scheduler loop
+│   │   ├── cpu.c         — per-CPU data (GS-base), bkl.c — big kernel lock
+│   │   ├── paging.c      — virtual memory / page tables
+│   │   ├── net.c         — networking stack (ARP/IP/ICMP/UDP/TCP) — shared
+│   │   ├── net_tls.c     — TLS/HTTPS via BearSSL — shared
+│   │   ├── ext2_fs.c     — ext2 file system — shared
+│   │   ├── window.c      — window server — shared
+│   │   ├── render.c      — font/text rendering — shared
+│   │   ├── cxx_runtime.cpp — kernel-side C++ ABI
+│   │   └── ...
+│   └── arch/
+│       ├── x86_64/       — x86_64 arch-specific (IDT, GDT, APIC, PS/2, …)
+│       └── arm64/        — arm64 arch-specific (GICv2, virtio drivers, …)
 ├── user/
-│   ├── libc/             — freestanding libc + C++20 runtime + crt0
+│   ├── libc/             — freestanding libc + C++20 runtime + crt0 (both arches)
 │   │   └── include/      — standard headers (stdio, stdlib, string, new, …)
+│   ├── browser/          — HTTP/HTTPS browser with CSS + Flexbox engine (shared)
 │   ├── taskmgr/          — Task Manager (C++20, VexUI)
 │   ├── topbar/           — Top Bar (C++20, VexUI, userspace)
-│   ├── vexui.c/h         — retained-mode GUI toolkit
+│   ├── vexui.c/h         — retained-mode GUI toolkit (shared)
 │   ├── sh.c              — interactive shell
-│   ├── browser.c         — HTTP text browser
-│   ├── edit.c            — text editor
 │   └── ...
 ├── lib/
 │   └── svg/              — reusable SVG/SDF renderer
 ├── third_party/
-│   ├── bearssl/          — TLS library (freestanding port)
+│   ├── bearssl/          — TLS library (freestanding port, both arches)
 │   └── stb/              — stb_truetype / stb_image
-├── boot/grub/grub.cfg    — GRUB menu config
-├── linker.ld             — kernel linker script
+├── boot/grub/grub.cfg    — GRUB menu config (x86_64 only)
+├── linker.ld             — x86_64 kernel linker script
+├── linker-arm64.ld       — arm64 kernel linker script
 ├── scripts/              — build helper scripts (ext2_put.py, …)
 └── Makefile
 ```
@@ -261,6 +348,8 @@ VibeOS/
 ---
 
 ## Architecture overview
+
+### x86_64
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -272,7 +361,7 @@ VibeOS/
 ├─────────────────────────────────────────────────────────┤
 │  Kernel (ring 0)                                        │
 │  SMP scheduler (big kernel lock) · paging · heap        │
-│  VFS · ext2 · e1000 · ARP/IP/ICMP/UDP/DNS/TCP · TLS     │
+│  VFS · ext2 · e1000 · ARP/IP/ICMP/UDP/DNS/TCP · TLS    │
 │  framebuffer renderer · window server · PS/2 · AC97     │
 │  IDT · ACPI · Local APIC / IOAPIC · syscall (int 0x80)  │
 ├─────────────────────────────────────────────────────────┤
@@ -280,6 +369,28 @@ VibeOS/
 │  GRUB Multiboot2 → 32-bit → 64-bit long mode           │
 └─────────────────────────────────────────────────────────┘
         QEMU -smp N  ·  x86_64 bare metal
+```
+
+### arm64
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  Userspace (EL0)                                        │
+│  sh  edit  browser  taskmgr  topbar  doom  hello        │
+│  ↑                                                      │
+│  user/libc  (stdio/stdlib/string, crt0, C++20 ABI)      │
+│  user/vexui (retained-mode GUI toolkit, VBox/HBox)      │
+├─────────────────────────────────────────────────────────┤
+│  Kernel (EL1)                                           │
+│  Cooperative scheduler · 64 MB per-process address space│
+│  VFS · ext2 · virtio-net · virtio-blk · ramfb           │
+│  ARP/IP/ICMP/UDP/DNS/TCP · TLS (BearSSL)                │
+│  framebuffer renderer · window server · virtio-input    │
+│  GICv2 · ARM generic timer · SVC (syscall)              │
+├─────────────────────────────────────────────────────────┤
+│  Cortex-A / Apple Silicon (HVF)                         │
+│  QEMU -machine virt · arm64 bare metal                  │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---
