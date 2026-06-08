@@ -1838,6 +1838,7 @@ static void gui_run(void) {
                 size_t bb_px = (size_t)ramfb_width() * (size_t)ramfb_height();
                 g_backbuf = (uint32_t *)kmalloc(bb_px * 4);
                 if (g_backbuf) {
+                    memset(g_backbuf, 0, bb_px * 4);
                     fb_init(&g_bb, (uintptr_t)g_backbuf, ramfb_width(), ramfb_height(),
                             ramfb_width() * 4, 32);
                 } else {
@@ -1889,7 +1890,9 @@ static void gui_run(void) {
 
                 /* Reinitialize background framebuffer at new resolution.
                  * background_storage is DESKTOP_MAX_WIDTH * DESKTOP_MAX_HEIGHT
-                 * (static, big enough), so just re-init the fb struct. */
+                 * (static, big enough), so clear it and re-init the fb struct. */
+                memset(g_desktop->background_storage, 0,
+                       (size_t)g_desktop->screen_width * (size_t)g_desktop->screen_height * 4);
                 fb_init(&g_desktop->background_fb,
                         (uintptr_t)g_desktop->background_storage,
                         ramfb_width(), ramfb_height(),
