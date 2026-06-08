@@ -23,8 +23,12 @@
  */
 
 #include "net.h"
+#ifdef ARCH_ARM64
+#include "virtio_net.h"
+#else
 #include "e1000.h"
 #include "paging.h"
+#endif
 #include "process.h"
 #include "serial.h"
 #include "string.h"
@@ -38,11 +42,16 @@
  * desktop + other processes, and we resume here to re-check our condition.
  * With no process context (early boot) we fall back to an inline busy spin. */
 static void net_wait_yield(void) {
+#ifdef ARCH_ARM64
+    extern void arm64_net_wait_pump(void);
+    arm64_net_wait_pump();
+#else
     if (process_has_current()) {
         process_yield_blocking();
     } else {
         __asm__ volatile("pause");
     }
+#endif
 }
 
 /* ---- Network serialization -----------------------------------------------
@@ -102,8 +111,51 @@ enum tcp_state {
 
 #define ARP_CACHE_SIZE 8
 
-static struct e1000_device g_nic;
 static uint8_t g_mac[6];
+static int g_net_present;
+
+#ifdef ARCH_ARM64
+static int netdev_init(void) {
+    if (virtio_net_init() != 0) return 0;
+    memcpy(g_mac, virtio_net_mac(), 6);
+    return 1;
+}
+static int netdev_transmit(const void *frame, uint16_t length) {
+    return virtio_net_transmit(frame, length);
+}
+static int netdev_poll_receive(void *out_buffer, uint16_t out_capacity) {
+    return virtio_net_poll_receive(out_buffer, out_capacity);
+}
+static uintptr_t net_owner_token(void) { return 0; }
+static void net_copy_to_rx(uintptr_t owner, uint8_t *dst, const uint8_t *src, size_t n) {
+    (void)owner;
+    memcpy(dst, src, n);
+}
+#else
+static struct e1000_device g_nic;
+static int netdev_init(void) {
+    if (!e1000_init(&g_nic)) return 0;
+    memcpy(g_mac, g_nic.mac, 6);
+    return 1;
+}
+static int netdev_transmit(const void *frame, uint16_t length) {
+    return e1000_transmit(&g_nic, frame, length);
+}
+static int netdev_poll_receive(void *out_buffer, uint16_t out_capacity) {
+    return e1000_poll_receive(&g_nic, out_buffer, out_capacity);
+}
+static uintptr_t net_owner_token(void) { return paging_read_cr3(); }
+static void net_copy_to_rx(uintptr_t owner, uint8_t *dst, const uint8_t *src, size_t n) {
+    if (owner != 0) {
+        uintptr_t prev = paging_read_cr3();
+        paging_load_cr3(owner);
+        memcpy(dst, src, n);
+        paging_load_cr3(prev);
+    } else {
+        memcpy(dst, src, n);
+    }
+}
+#endif
 
 struct arp_entry {
     uint32_t ip;     /* host order */
@@ -193,7 +245,7 @@ static struct tcp_conn *tcp_find_idle(uint32_t ip, uint16_t port,
             k->rx_buf = out;
             k->rx_cap = out_cap;
             k->rx_len = 0;
-            k->rx_owner_cr3 = paging_read_cr3();
+            k->rx_owner_cr3 = net_owner_token();
             c = k;
             break;
         }
@@ -291,7 +343,7 @@ static void send_arp_request(uint32_t target_ip) {
     memset(arp + 18, 0, 6);        /* target mac unknown */
     wr32(arp + 24, target_ip);     /* target ip */
 
-    e1000_transmit(&g_nic, f, 14 + 28);
+    netdev_transmit(f, 14 + 28);
 }
 
 static void send_arp_reply(uint32_t target_ip, const uint8_t *target_mac) {
@@ -310,7 +362,7 @@ static void send_arp_reply(uint32_t target_ip, const uint8_t *target_mac) {
     memcpy(arp + 18, target_mac, 6);
     wr32(arp + 24, target_ip);
 
-    e1000_transmit(&g_nic, f, 14 + 28);
+    netdev_transmit(f, 14 + 28);
 }
 
 /* Resolve the next-hop MAC for dst_ip (gateway if off-subnet). Sends an ARP
@@ -414,7 +466,7 @@ static int tcp_send(struct tcp_conn *c, uint8_t flags, const uint8_t *payload, u
     wr32(ip + 16, c->remote_ip);
     wr16(ip + 10, ip_checksum(ip, 20));
 
-    return e1000_transmit(&g_nic, f, 14 + ip_total);
+    return netdev_transmit(f, 14 + ip_total);
 }
 
 /* Process one inbound TCP segment addressed to our connection. */
@@ -466,18 +518,7 @@ static void handle_tcp(const uint8_t *ip, const uint8_t *tcp, uint16_t seg_len) 
             copy = c->rx_cap - c->rx_len;
         }
         if (copy > 0) {
-            /* rx_buf may point into user-space (set by net_http_get).  The NIC
-             * interrupt can fire while a different process's CR3 is active, so
-             * switch to the connection owner's page tables before the copy and
-             * restore them afterward. */
-            if (c->rx_owner_cr3 != 0) {
-                uintptr_t prev = paging_read_cr3();
-                paging_load_cr3(c->rx_owner_cr3);
-                memcpy(c->rx_buf + c->rx_len, payload, (size_t)copy);
-                paging_load_cr3(prev);
-            } else {
-                memcpy(c->rx_buf + c->rx_len, payload, (size_t)copy);
-            }
+            net_copy_to_rx(c->rx_owner_cr3, c->rx_buf + c->rx_len, payload, (size_t)copy);
             c->rx_len += copy;
         }
         c->rcv_nxt += payload_len;
@@ -534,7 +575,7 @@ static void send_icmp_echo(uint32_t dst_ip, const uint8_t *dst_mac, uint16_t id,
         wr16(ip + 10, csum);
     }
 
-    e1000_transmit(&g_nic, f, 14 + ip_total);
+    netdev_transmit(f, 14 + ip_total);
 }
 
 /* ---- inbound processing ---- */
@@ -599,7 +640,7 @@ static void handle_icmp(const uint8_t *frame, const uint8_t *ip, const uint8_t *
         wr32(oip + 16, src_ip);
         wr16(oip + 10, ip_checksum(oip, 20));
 
-        e1000_transmit(&g_nic, f, 14 + ip_total);
+        netdev_transmit(f, 14 + ip_total);
     }
 }
 
@@ -683,11 +724,11 @@ void net_poll(void) {
 
     net_tls_check_guard();   /* diagnostic: catch any BearSSL I/O-buffer overflow */
 
-    if (!g_nic.present) {
+    if (!g_net_present) {
         return;
     }
 
-    while ((n = e1000_poll_receive(&g_nic, g_rxframe, sizeof(g_rxframe))) > 0) {
+    while ((n = netdev_poll_receive(g_rxframe, sizeof(g_rxframe))) > 0) {
         uint16_t ethertype;
 
         if (n < 14) {
@@ -706,17 +747,17 @@ void net_init(void) {
     memset(g_arp_cache, 0, sizeof(g_arp_cache));
     g_got_reply = 0;
 
-    if (!e1000_init(&g_nic)) {
+    if (!netdev_init()) {
         serial_write("NET: no network card; networking disabled\n");
         return;
     }
-    memcpy(g_mac, g_nic.mac, 6);
+    g_net_present = 1;
     serial_write("NET: interface up, ip=10.0.2.16 gw=10.0.2.2\n");
 }
 
 void net_get_info(struct net_info *out) {
     memset(out, 0, sizeof(*out));
-    out->up = g_nic.present;
+    out->up = g_net_present;
     memcpy(out->mac, g_mac, 6);
     out->ip = NET_IP;
     out->netmask = NET_NETMASK;
@@ -730,7 +771,7 @@ int net_ping(uint32_t dst_ip, int count, int timeout_ms, int *rtt_ms_out) {
     uint32_t hz = timer_frequency_hz();
     const uint8_t *dst_mac;
 
-    if (!g_nic.present) {
+    if (!g_net_present) {
         return -1;
     }
 
@@ -842,7 +883,7 @@ static int send_dns_query(const char *host, uint16_t id, const uint8_t *dst_mac)
     wr32(ip + 16, NET_DNS);
     wr16(ip + 10, ip_checksum(ip, 20));
 
-    return e1000_transmit(&g_nic, f, 14 + ip_total);
+    return netdev_transmit(f, 14 + ip_total);
 }
 
 int net_resolve(const char *hostname, uint32_t *out_ip, int timeout_ms) {
@@ -852,7 +893,7 @@ int net_resolve(const char *hostname, uint32_t *out_ip, int timeout_ms) {
     uint64_t deadline;
     uint64_t spins;
 
-    if (!g_nic.present || hostname == 0 || out_ip == 0) {
+    if (!g_net_present || hostname == 0 || out_ip == 0) {
         return 0;
     }
 
@@ -982,7 +1023,7 @@ int net_http_get(uint32_t dst_ip, uint16_t port, const char *host_header,
     int reused;
     int want_close = 0;
 
-    if (!g_nic.present || out == 0 || out_cap <= 0) {
+    if (!g_net_present || out == 0 || out_cap <= 0) {
         return -1;
     }
 
@@ -1012,7 +1053,7 @@ int net_http_get(uint32_t dst_ip, uint16_t port, const char *host_header,
         c->rx_len = 0;
         /* Record the CR3 so the NIC interrupt handler can switch to the
          * correct page tables before writing into this user-space buffer. */
-        c->rx_owner_cr3 = paging_read_cr3();
+        c->rx_owner_cr3 = net_owner_token();
 
         /* Three-way handshake: send SYN, wait for ESTABLISHED. */
         tcp_send(c, TCP_SYN, 0, 0);
@@ -1107,7 +1148,7 @@ int tcp_open(uint32_t dst_ip, uint16_t port, int timeout_ms) {
     const uint8_t *dst_mac;
     struct tcp_conn *c;
 
-    if (!g_nic.present) {
+    if (!g_net_present) {
         return -1;
     }
     c = tcp_alloc();
@@ -1154,6 +1195,7 @@ int tcp_stream_send(const uint8_t *data, int len) {
         c->snd_nxt += (uint32_t)chunk;
         off += chunk;
         net_poll();   /* pick up ACKs / incoming data between segments */
+        net_wait_yield(); /* keep desktop alive during large sends (TLS handshake) */
     }
     return len;
 }

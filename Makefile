@@ -126,6 +126,8 @@ ARM64_COMMON_SRCS := \
     kernel/src/render.c \
     kernel/src/font_atlas.c \
     kernel/src/window.c \
+    kernel/src/net.c \
+    kernel/src/net_tls.c \
     kernel/src/bkl.c \
     kernel/src/keymap.c
 
@@ -138,6 +140,7 @@ ARM64_ARCH_SRCS := \
     kernel/arch/arm64/virtio_blk.c \
     kernel/arch/arm64/virtio_input.c \
     kernel/arch/arm64/virtio_snd.c \
+    kernel/arch/arm64/virtio_net.c \
     kernel/arch/arm64/ramfb.c \
     kernel/arch/arm64/process.c \
     kernel/arch/arm64/stubs.c \
@@ -162,6 +165,7 @@ ARM64_CFLAGS := \
     -DARCH_ARM64=1 \
     -Ikernel/include \
     -Ikernel/arch/arm64 \
+    -Ithird_party/bearssl/inc \
     -mstrict-align \
     -fno-builtin-memcpy \
     -fno-builtin-memmove \
@@ -184,6 +188,20 @@ ARM64_OBJECTS := \
     $(patsubst kernel/arch/arm64/%.c,$(OUT_DIR)/arm64/arch/%.o,$(ARM64_ARCH_SRCS)) \
     $(patsubst kernel/arch/arm64/%.S,$(OUT_DIR)/arm64/arch/%.o,$(ARM64_ASM_SRCS))
 
+ARM64_BEARSSL_SRCS := $(filter-out %/aes_x86ni%.c %/chacha20_sse2.c %/ghash_pclmul.c %/aes_pwr8%.c,$(BEARSSL_SRCS))
+ARM64_BEARSSL_OBJS := $(patsubst $(BEARSSL_DIR)/src/%.c,$(OUT_DIR)/arm64/bearssl/%.o,$(ARM64_BEARSSL_SRCS))
+ARM64_BEARSSL_LIB := $(OUT_DIR)/arm64/bearssl/libbearssl.a
+ARM64_BEARSSL_CFLAGS := $(ARM64_CFLAGS) -I$(BEARSSL_DIR)/inc -I$(BEARSSL_DIR)/src \
+    -DBR_AES_X86NI=0 -DBR_SSE2=0 -DBR_POWER8=0 -DBR_RDRAND=0
+
+$(OUT_DIR)/arm64/bearssl/%.o: $(BEARSSL_DIR)/src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ARM64_BEARSSL_CFLAGS) -c $< -o $@
+
+$(ARM64_BEARSSL_LIB): $(ARM64_BEARSSL_OBJS)
+	@mkdir -p $(dir $@)
+	$(UAR) rcs $@ $(ARM64_BEARSSL_OBJS)
+
 $(OUT_DIR)/arm64/common/%.o: kernel/src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(ARM64_CFLAGS) -c $< -o $@
@@ -196,8 +214,8 @@ $(OUT_DIR)/arm64/arch/%.o: kernel/arch/arm64/%.S
 	@mkdir -p $(dir $@)
 	$(CC) $(ARM64_ASFLAGS) -c $< -o $@
 
-kernel-arm64: $(ARM64_OBJECTS)
-	$(LLVM_LLD) -nostdlib -static -T linker-arm64.ld -o $(OUT_DIR)/vibeos-arm64.elf $(ARM64_OBJECTS)
+kernel-arm64: $(ARM64_OBJECTS) $(ARM64_BEARSSL_LIB)
+	$(LLVM_LLD) -nostdlib -static -T linker-arm64.ld -o $(OUT_DIR)/vibeos-arm64.elf $(ARM64_OBJECTS) $(ARM64_BEARSSL_LIB)
 	@echo "arm64 kernel built: $(OUT_DIR)/vibeos-arm64.elf"
 	@$(firstword $(wildcard /opt/homebrew/opt/llvm/bin/llvm-size /usr/local/opt/llvm/bin/llvm-size) llvm-size) $(OUT_DIR)/vibeos-arm64.elf 2>/dev/null || true
 
@@ -219,6 +237,8 @@ run-arm64: kernel-arm64
 	  -kernel $(OUT_DIR)/vibeos-arm64.elf \
 	  -drive file=$(DISK_IMG),if=none,id=hd0,format=raw \
 	  -device virtio-blk-device,drive=hd0 \
+	  -netdev user,id=net0 \
+	  -device virtio-net-device,netdev=net0 \
 	  -device ramfb \
 	  -device virtio-tablet-device \
 	  -device virtio-keyboard-device \
@@ -254,6 +274,7 @@ arm64-user: $(DISK_IMG)
 	done
 	$(CC) $(ARM64_UCFLAGS) -c user/umalloc.c -o $(ARM64_UDIR)/umalloc.o
 	$(CC) $(ARM64_UCFLAGS) -c user/arm64/libc_stubs.c -o $(ARM64_UDIR)/stubs.o
+	$(CC) $(ARM64_UCFLAGS) -c user/libc/math_arm64.c -o $(ARM64_UDIR)/math.o
 	# --- arm64 assembly support (setjmp/longjmp, soft-float stubs) ---
 	$(CC) $(ARM64_UCFLAGS) -c user/arm64/setjmp.S    -o $(ARM64_UDIR)/setjmp.o
 	$(CC) $(ARM64_UCFLAGS) -c user/arm64/softfloat.S -o $(ARM64_UDIR)/softfloat.o
@@ -263,7 +284,7 @@ arm64-user: $(DISK_IMG)
 	$(UAR) rcs $(ARM64_UDIR)/libc.a \
 	    $(ARM64_UDIR)/sys.o $(ARM64_UDIR)/string.o \
 	    $(ARM64_UDIR)/stdlib.o $(ARM64_UDIR)/stdio.o \
-	    $(ARM64_UDIR)/umalloc.o $(ARM64_UDIR)/stubs.o \
+	    $(ARM64_UDIR)/umalloc.o $(ARM64_UDIR)/stubs.o $(ARM64_UDIR)/math.o \
 	    $(ARM64_UDIR)/setjmp.o $(ARM64_UDIR)/softfloat.o $(ARM64_UDIR)/cxxabi.o
 	# --- shared graphics lib for userspace: the SAME render.c/font_atlas.c the
 	#     kernel uses, compiled against the user libc (one renderer everywhere) ---
@@ -302,6 +323,33 @@ arm64-user: $(DISK_IMG)
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/topbar.elf \
 	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/topbar.o $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/topbar.elf /bin/topbar
+	# --- Browser (C++ GUI + layout engine + QuickJS) ---
+	$(CC) $(ARM64_UCFLAGS) -Iuser/browser -c user/browser/weblayout.c -o $(ARM64_UDIR)/weblayout.o
+	$(CC) $(ARM64_UCFLAGS) -Iuser/browser -c user/browser/dom.c -o $(ARM64_UDIR)/dom.o
+	$(CC) $(ARM64_UCFLAGS) -Iuser/browser -c user/browser/css.c -o $(ARM64_UDIR)/css.o
+	$(CC) $(ARM64_UCFLAGS) -Iuser/browser -Ithird_party/stb -c user/browser/appfont.c -o $(ARM64_UDIR)/appfont.o
+	$(CC) $(ARM64_UCFLAGS) -Iuser/libimage -Ithird_party/stb -c user/libimage/image.c -o $(ARM64_UDIR)/image.o
+	$(CC) $(ARM64_UCFLAGS) -D__ASSEMBLER__ -c user/browser/font_data.S -o $(ARM64_UDIR)/font_data.o
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Iuser -Iuser/browser \
+	    -c user/browser/layout_engine.cpp -o $(ARM64_UDIR)/browser_layout_engine.o
+	$(CC) $(ARM64_UCFLAGS) -Ithird_party/quickjs -DCONFIG_VERSION="\"2025-01-05\"" \
+	    -c third_party/quickjs/quickjs.c -o $(ARM64_UDIR)/quickjs.o
+	$(CC) $(ARM64_UCFLAGS) -Ithird_party/quickjs -c third_party/quickjs/cutils.c -o $(ARM64_UDIR)/quickjs_cutils.o
+	$(CC) $(ARM64_UCFLAGS) -Ithird_party/quickjs -c third_party/quickjs/dtoa.c -o $(ARM64_UDIR)/quickjs_dtoa.o
+	$(CC) $(ARM64_UCFLAGS) -Ithird_party/quickjs -c third_party/quickjs/libregexp.c -o $(ARM64_UDIR)/quickjs_libregexp.o
+	$(CC) $(ARM64_UCFLAGS) -Ithird_party/quickjs -c third_party/quickjs/libunicode.c -o $(ARM64_UDIR)/quickjs_libunicode.o
+	$(CC) $(ARM64_UCFLAGS) -Ilib/mp3 -c lib/mp3/mp3dec.c -o $(ARM64_UDIR)/mp3dec.o
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti \
+	    -Iuser -Iuser/browser -Iuser/libimage -Ilib/svg -Ilib/mp3 -Ithird_party/quickjs \
+	    -c user/browser/browser.cpp -o $(ARM64_UDIR)/browser_main.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/browser.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/browser_main.o $(ARM64_UDIR)/browser_layout_engine.o \
+	    $(ARM64_UDIR)/weblayout.o $(ARM64_UDIR)/dom.o $(ARM64_UDIR)/css.o \
+	    $(ARM64_UDIR)/appfont.o $(ARM64_UDIR)/image.o $(ARM64_UDIR)/font_data.o \
+	    $(ARM64_UDIR)/vexui.o $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/mp3dec.o \
+	    $(ARM64_UDIR)/quickjs.o $(ARM64_UDIR)/quickjs_cutils.o $(ARM64_UDIR)/quickjs_dtoa.o \
+	    $(ARM64_UDIR)/quickjs_libregexp.o $(ARM64_UDIR)/quickjs_libunicode.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/browser.elf /bin/browser
 	# --- Task Manager (C++ GUI app using VexUI; shows live processes) ---
 	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
 	    -c user/taskmgr/taskmgr.cpp -o $(ARM64_UDIR)/taskmgr.o
@@ -421,7 +469,6 @@ arm64-user: $(DISK_IMG)
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/stub.elf \
 	    $(ARM64_UDIR)/stub.o
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/stub.elf /bin/doom
-	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/stub.elf /bin/browser
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/stub.elf /bin/cpptest
 	# --- DOOM (doomgeneric + VibeOS platform layer) ---
 	@mkdir -p $(ARM64_UDIR)/doom
@@ -490,7 +537,7 @@ apps: $(DISK_IMG) $(LIBC_A)
 	$(UCC) $(UCFLAGS) $(LIBC_INC) -Ilib/svg -c lib/svg/svg.c -o build/user/svg.o
 	$(UCC) $(UCFLAGS) -Ilib/svg -c user/vexui.c -o build/user/vexui.o
 	$(UCC) $(UCFLAGS) -c user/uidemo.c -o build/user/uidemo.o
-	$(LD) -nostdlib -static -T user/linker.ld -o build/user/uidemo.elf build/user/uidemo.o build/user/vexui.o build/user/svg.o
+	$(LD) -nostdlib -static -T user/linker.ld -o build/user/uidemo.elf build/user/uidemo.o build/user/vexui.o build/user/svg.o $(LIBC_A)
 	$(USTRIP) --strip-all build/user/uidemo.elf
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/uidemo.elf /bin/uidemo
 	$(CXX) $(UCXXFLAGS) $(LIBC_INC) -Iuser -c user/taskmgr/taskmgr.cpp     -o build/user/taskmgr.o

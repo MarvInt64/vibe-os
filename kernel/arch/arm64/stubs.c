@@ -46,6 +46,14 @@ int timer_handle_interrupt(struct interrupt_frame *frame) {
 }
 
 /* ---- Journal (no-op) -------------------------------------------------- */
+void journal_log(enum journal_level level, uint32_t pid, const char *msg) {
+    (void)level; (void)pid;
+    if (msg) {
+        serial_write("[journal] ");
+        serial_write(msg);
+        serial_write("\r\n");
+    }
+}
 void journal_log_hex(enum journal_level level, uint32_t pid, const char *msg, uint64_t value) {
     (void)level; (void)pid; (void)msg; (void)value;
 }

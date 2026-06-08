@@ -35,26 +35,40 @@
 #include "journal.h"
 #include "serial.h"
 #include "string.h"
+#include "timer.h"
 #include "types.h"
 
 #include "bearssl.h"
 
 /* ---- entropy ---------------------------------------------------------- */
 static int cpu_has_rdrand(void) {
+#ifdef ARCH_ARM64
+    return 0;
+#else
     uint32_t a = 1, b = 0, c = 0, d = 0;
     __asm__ volatile("cpuid" : "=a"(a), "=b"(b), "=c"(c), "=d"(d) : "a"(1));
     (void)b; (void)d;
     return (c >> 30) & 1u;
+#endif
 }
 static uint64_t read_tsc(void) {
+#ifdef ARCH_ARM64
+    return timer_tick_count();
+#else
     uint32_t lo, hi;
     __asm__ volatile("rdtsc" : "=a"(lo), "=d"(hi));
     return ((uint64_t)hi << 32) | lo;
+#endif
 }
 static int rdrand64(uint64_t *out) {
+#ifdef ARCH_ARM64
+    (void)out;
+    return 0;
+#else
     unsigned char ok;
     __asm__ volatile("rdrand %0; setc %1" : "=r"(*out), "=qm"(ok) :: "cc");
     return ok;
+#endif
 }
 static void kgetrandom(unsigned char *buf, int len) {
     static int warned = 0;
@@ -169,11 +183,20 @@ void net_tls_check_guard(void) {
 static int tls_low_read(void *ctx, unsigned char *buf, size_t len) {
     (void)ctx;
     int n = tcp_stream_recv(buf, (int)len, 8000);
+    // serial_write("NET_TLS: low_read n=");
+    // serial_write_hex_u64((uint64_t)(int64_t)n);
+    // serial_write("\n");
     return (n <= 0) ? -1 : n;
 }
 static int tls_low_write(void *ctx, const unsigned char *buf, size_t len) {
     (void)ctx;
+    // serial_write("NET_TLS: low_write len=");
+    // serial_write_hex_u64((uint64_t)len);
+    // serial_write("\n");
     int n = tcp_stream_send(buf, (int)len);
+    // serial_write("NET_TLS: low_write ret=");
+    // serial_write_hex_u64((uint64_t)(int64_t)n);
+    // serial_write("\n");
     return (n <= 0) ? -1 : n;
 }
 
@@ -252,6 +275,9 @@ static int tls_request(const char *host_header, const char *path,
     }
     br_sslio_write_all(&g_ioc, "\r\nConnection: keep-alive\r\n\r\n", 28);
     if (br_sslio_flush(&g_ioc) != 0) {
+        serial_write("NET_TLS: flush/handshake failed, err=");
+        serial_write_hex_u64((uint64_t)br_ssl_engine_last_error(&g_sc.eng));
+        serial_write("\n");
         return -4;   /* connection unusable (e.g. server closed a pooled conn) */
     }
 
@@ -336,9 +362,9 @@ int net_https_get(uint32_t dst_ip, uint16_t port, const char *host_header,
     }   /* else: keep the connection pooled for the next same-host request */
 
     if (total == 0 && br_ssl_engine_last_error(&g_sc.eng) != 0) {
-        serial_write("NET_TLS: handshake/read failed, err=");
-        serial_write_hex_u64((uint64_t)br_ssl_engine_last_error(&g_sc.eng));
-        serial_write("\n");
+        // serial_write("NET_TLS: handshake/read failed, err=");
+        // serial_write_hex_u64((uint64_t)br_ssl_engine_last_error(&g_sc.eng));
+        // serial_write("\n");
         return -5;
     }
     return total;

@@ -46,7 +46,8 @@ _start:
     isb
 
     /* ---- Boot stack ----------------------------------------------------- */
-    adr  x0, boot_stack_top
+    adrp x0, boot_stack_top
+    add  x0, x0, :lo12:boot_stack_top
     mov  sp, x0
 
     /* ---- FP/SIMD enabled at EL1 ---------------------------------------- */
@@ -56,8 +57,10 @@ _start:
     isb
 
     /* ---- Clear BSS first (boot_l1 page tables live in BSS) ------------- */
-    adr  x0, __bss_start
-    adr  x1, __bss_end
+    adrp x0, __bss_start
+    add  x0, x0, :lo12:__bss_start
+    adrp x1, __bss_end
+    add  x1, x1, :lo12:__bss_end
     cmp  x0, x1
     b.ge .bss_done
 .bss_loop:
