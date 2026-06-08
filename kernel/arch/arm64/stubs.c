@@ -174,8 +174,7 @@ void app_draw(const struct app_instance *app, const struct app_draw_context *ctx
     int cx = ctx->content_x, cy = ctx->content_y;
     const char *title = ctx->window ? ctx->window->title : "arm64";
     draw_text(ctx->fb, cx + 16, cy + 24, title, 0xffc0d0e0, 2);
-    draw_text(ctx->fb, cx + 16, cy + 56, "running on Apple M-series", 0xff708090, 1);
-    draw_text(ctx->fb, cx + 16, cy + 80, "shared window.c compositor", 0xff90b0e0, 1);
+    draw_text(ctx->fb, cx + 16, cy + 56, "shared window.c compositor", 0xff90b0e0, 1);
 }
 
 /* ---- More builtin app stubs ------------------------------------------- */

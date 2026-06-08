@@ -1057,9 +1057,9 @@ static void cmd_uname(void) {
     uint64_t midr = read_sysreg(midr_el1);
     /* implementer 0x61 = Apple */
     if (((midr >> 24) & 0xFF) == 0x61)
-        serial_write("Apple Silicon (HVF)\r\n");
+        serial_write("HVF\r\n");
     else
-        serial_write("QEMU Cortex-A72 (TCG)\r\n");
+        serial_write("TCG\r\n");
     serial_write("  MIDR_EL1 = "); serial_write_hex_u64(midr); serial_write("\r\n");
 }
 
@@ -1388,7 +1388,6 @@ static void cmd_fb(void) {
                        0xff2a3550, 0xff1a2030, 0xff5080c0, 0xff80a0e0);
     draw_text(&fb, 250, 240, "VibeOS arm64", 0xffffffff, 3);
     draw_text(&fb, 250, 300, "shared kernel renderer", 0xff90b0e0, 2);
-    draw_text(&fb, 250, 340, "running on Apple M-series via HVF", 0xff708090, 1);
     serial_write("  rendered via shared kernel/src/render.c — check the display\r\n");
 }
 
