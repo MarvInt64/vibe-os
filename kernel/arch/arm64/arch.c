@@ -1595,6 +1595,29 @@ static void gui_run(void) {
             serial_write("\r\n");
         }
 
+        /* Ctrl+C (0x03) — interrupt the foreground job of any waiting shell.
+         * This must happen BEFORE the keyboard bytes reach the focused app
+         * (e.g. DOOM), otherwise the app might consume Ctrl+C itself or
+         * ignore it, leaving no way to kill a runaway foreground process. */
+        for (size_t ki = 0; ki < keyboard.count; ki++) {
+            if (keyboard.chars[ki] == 0x03) {
+                /* Find any process waiting for a child — that's the shell. */
+                for (int pi = 0; pi < 16; pi++) {
+                    if (g_procs[pi].loaded &&
+                        g_procs[pi].state == PROCESS_STATE_WAITING &&
+                        g_procs[pi].wait_target_pid != 0) {
+                        process_kill(g_procs[pi].wait_target_pid);
+                        break;  /* only kill one foreground job */
+                    }
+                }
+                /* Remove 0x03 from the buffer so it doesn't reach the app. */
+                for (size_t m = ki; m + 1 < keyboard.count; m++)
+                    keyboard.chars[m] = keyboard.chars[m + 1];
+                keyboard.count--;
+                ki--;  /* re-check this index (now holds the next char) */
+            }
+        }
+
         mouse.x = g_mouse_x * (int)ramfb_width() / 32767;
         mouse.y = g_mouse_y * (int)ramfb_height() / 32767;
         mouse.buttons = (uint8_t)g_mouse_buttons;
