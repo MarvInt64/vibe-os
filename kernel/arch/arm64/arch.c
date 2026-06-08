@@ -194,6 +194,17 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                     /* PTY master write → input buffer (terminal → shell) */
                     struct arm64_pty *pty = f->pty;
                     if (!pty) { regs[0] = (uint64_t)-1; return; }
+
+                    /* Auto-detect Ctrl+C (0x03): interrupt foreground job
+                     * without waiting for the shell to read it. */
+                    for (uint64_t i = 0; i < a2; i++) {
+                        if (buf[i] == 0x03 && pty->child_pid) {
+                            process_kill(pty->child_pid);
+                            regs[0] = a2;  /* report all bytes written */
+                            return;        /* drop the 0x03 — don't queue it */
+                        }
+                    }
+
                     uint64_t n = a2;
                     if (n > (uint64_t)(PTY_BUF_SIZE - pty->in_count))
                         n = (uint64_t)(PTY_BUF_SIZE - pty->in_count);
@@ -699,6 +710,33 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = (uint64_t)(int64_t)pid;
             return;
         }
+        case SYS_WAITPID: {      /* 6: wait for a child process. a0=pid */
+            uint32_t wait_pid = (uint32_t)a0;
+            /* Find child in process table */
+            struct process *child = 0;
+            for (int i = 0; i < 16; i++) {
+                if (g_procs[i].loaded && g_procs[i].pid == wait_pid) {
+                    child = &g_procs[i];
+                    break;
+                }
+            }
+            if (child && child->state == PROCESS_STATE_EXITED) {
+                /* Child already exited — return its exit code immediately. */
+                regs[0] = (uint64_t)(int64_t)child->exit_code;
+            } else if (child && child->loaded) {
+                /* Child still running — block until it exits. */
+                struct process *cur = (this_cpu() && this_cpu()->current) ? this_cpu()->current : 0;
+                if (!cur) { regs[0] = (uint64_t)-1; return; }
+                cur->wait_target_pid = wait_pid;
+                cur->state = PROCESS_STATE_WAITING;
+                arm64_sleep_current(regs);
+                /* arm64_sleep_current does not return — we come back via
+                 * arm64_resume_user with x0 set by wake_waiters(). */
+            } else {
+                regs[0] = (uint64_t)-1;  /* no such child */
+            }
+            return;
+        }
         case SYS_LOG: {          /* 33: journal log — write to serial */
             /* a0 = level (unused), a1 = message string */
             const char *msg = (const char *)(uintptr_t)a1;
@@ -839,9 +877,16 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = (uint64_t)(int64_t)child_pid;
             return;
         }
-        case SYS_PTY_INTERRUPT: /* 47: Ctrl+C to foreground job of PTY */
-            regs[0] = 0;        /* stub: no-op for now */
+        case SYS_PTY_INTERRUPT: { /* 47: Ctrl+C to foreground job of PTY */
+            struct arm64_pty *pty = &g_pty;
+            if (pty->child_pid) {
+                process_kill(pty->child_pid);
+                regs[0] = 0;
+            } else {
+                regs[0] = (uint64_t)-1;  /* no foreground job */
+            }
             return;
+        }
         default:
             serial_write("[svc] unknown syscall ");
             serial_write_hex_u64(num);

@@ -373,6 +373,9 @@ int process_spawn_path(const char *path,
 }
 
 /* ---- Kill a process --------------------------------------------------- */
+/* Forward declaration */
+static void wake_waiters(uint32_t exited_pid, int32_t exit_code);
+
 int process_kill(uint32_t pid) {
     struct process *proc = process_by_pid(pid);
     if (!proc) return -1;
@@ -397,6 +400,10 @@ int process_kill(uint32_t pid) {
 
     proc->loaded = 0;
     proc->state  = PROCESS_STATE_EXITED;
+
+    /* Wake any parent waiting on this PID. */
+    wake_waiters(pid, -1);   /* -1 = killed by signal */
+
     return 0;
 }
 
@@ -534,10 +541,27 @@ int process_run_ready_slice(void) {
 }
 
 /* ---- Called from the exception handler when a process exits ----------- */
+/* Wake any process waiting for this PID via SYS_WAITPID. */
+static void wake_waiters(uint32_t exited_pid, int32_t exit_code) {
+    for (int i = 0; i < ARM64_MAX_PROCS; i++) {
+        struct process *p = &g_procs[i];
+        if (p->loaded && p->state == PROCESS_STATE_WAITING &&
+            p->wait_target_pid == exited_pid) {
+            /* The waiter's saved frame has x0=0 from when it slept; 
+             * update it so arm64_resume_user returns the right code. */
+            if (g_aspaces[i].has_saved) {
+                g_aspaces[i].saved_frame[0] = (uint64_t)(int64_t)exit_code;
+            }
+            p->state = PROCESS_STATE_READY;
+        }
+    }
+}
+
 void process_handle_exit(uint64_t code) {
     int g_curr3 = get_current_slot();
     if (g_curr3 >= 0) {
         struct process *proc = &g_procs[g_curr3];
+        uint32_t my_pid = proc->pid;
         proc->exit_code = (int32_t)code;
         proc->state = PROCESS_STATE_EXITED;
         if (proc->user_image_allocation)
@@ -556,6 +580,8 @@ void process_handle_exit(uint64_t code) {
         serial_write_hex_u64(code);
         serial_write("\r\n");
         set_current_slot(-1);
+        /* Wake any parent waiting on this PID. */
+        wake_waiters(my_pid, (int32_t)code);
     }
     /* Return to kernel main loop */
     extern void arm64_return_to_kernel(uint64_t code) __attribute__((noreturn));
