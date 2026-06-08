@@ -155,6 +155,14 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 /* Check if this process is a PTY child (shell) → redirect to PTY */
                 struct arm64_pty *pty = &g_pty;
                 struct process *cur_proc = (this_cpu() && this_cpu()->current) ? this_cpu()->current : 0;
+                static int pty_dbg = 0;
+                if (pty_dbg < 5 && cur_proc && pty->child_pid) {
+                    serial_write("[pty] write pid="); serial_write_hex_u64(cur_proc->pid);
+                    serial_write(" child="); serial_write_hex_u64(pty->child_pid);
+                    serial_write(" match="); serial_write_hex_u64(cur_proc->pid == pty->child_pid ? 1 : 0);
+                    serial_write("\r\n");
+                    pty_dbg++;
+                }
                 if (cur_proc && pty->child_pid && cur_proc->pid == pty->child_pid) {
                     /* Write to PTY output buffer (shell → terminal) */
                     uint64_t n = a2;
@@ -755,6 +763,8 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             struct arm64_pty *pty = g_files[a1].pty;
             int child_pid = process_spawn_path(path, 0, 0, 0, 0);
             if (child_pid >= 0) pty->child_pid = (uint32_t)child_pid;
+            serial_write("[pty] spawn child_pid="); serial_write_hex_u64((uint64_t)child_pid);
+            serial_write("\r\n");
             regs[0] = (uint64_t)(int64_t)child_pid;
             return;
         }
