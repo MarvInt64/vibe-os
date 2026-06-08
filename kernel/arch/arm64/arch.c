@@ -716,6 +716,18 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             }
             uint32_t uid = (this_cpu() && this_cpu()->current) ? this_cpu()->current->uid : 0;
             int pid = process_spawn_path(path, 0, 0, uid, uid);
+
+            /* Pass optional argument (a1) to the child, same as x86. */
+            if (pid > 0 && a1 != 0) {
+                const char *arg = (const char *)(uintptr_t)a1;
+                size_t i = 0;
+                for (; i + 1 < sizeof(g_spawn_arg) && arg[i]; i++)
+                    g_spawn_arg[i] = arg[i];
+                g_spawn_arg[i] = '\0';
+            } else {
+                g_spawn_arg[0] = '\0';
+            }
+
             regs[0] = (uint64_t)(int64_t)pid;
             return;
         }
