@@ -110,6 +110,7 @@ int g_mouse_x       = 0;
 int g_mouse_y       = 0;
 int g_mouse_buttons = 0;   /* bit 0 = left, bit 1 = right, bit 2 = middle */
 int g_mouse_moved   = 0;
+int g_mouse_wheel   = 0;   /* accumulated REL_WHEEL delta, consumed per frame */
 
 /* Keyboard ring buffer — filled by virtio_input_poll, drained by compositor */
 #define KBD_BUF_SIZE 64
@@ -239,6 +240,7 @@ static void vi_poll_one(struct vi_device *d) {
     if (!d->ready) return;
 
     int mx = g_mouse_x, my = g_mouse_y, mb = g_mouse_buttons;
+    int mwheel = 0;  /* accumulated this SYN frame */
 
     __asm__ volatile("dsb sy" ::: "memory");
     uint16_t used_idx = DEV_USED(d)->idx;
@@ -252,6 +254,9 @@ static void vi_poll_one(struct vi_device *d) {
         case 3:   /* EV_ABS — absolute position (tablet) */
             if (ev->code == 0x00)       mx = (int)ev->value;      /* ABS_X */
             else if (ev->code == 0x01)  my = (int)ev->value;      /* ABS_Y */
+            break;
+        case 2:   /* EV_REL — relative motion (scroll wheel) */
+            if (ev->code == 0x08)       mwheel += (int)ev->value;  /* REL_WHEEL */
             break;
         case 1:   /* EV_KEY */
             if (ev->code == 0x110) {
@@ -303,6 +308,10 @@ static void vi_poll_one(struct vi_device *d) {
                 g_mouse_y = my;
                 g_mouse_buttons = mb;
                 g_mouse_moved = 1;
+            }
+            if (mwheel) {
+                g_mouse_wheel += mwheel;
+                mwheel = 0;
             }
             break;
         default:

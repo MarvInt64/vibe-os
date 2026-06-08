@@ -142,7 +142,7 @@ void process_init(void) {
 /* ---- Find free slot --------------------------------------------------- */
 static int find_free_slot(void) {
     for (int i = 0; i < ARM64_MAX_PROCS; i++)
-        if (!g_procs[i].loaded) return i;
+        if (!g_procs[i].loaded || g_procs[i].state == PROCESS_STATE_EXITED) return i;
     return -1;
 }
 
@@ -398,7 +398,6 @@ int process_kill(uint32_t pid) {
     }
     if (!proc->is_thread && !has_living_threads(proc)) aspace_free(kslot);
 
-    proc->loaded = 0;
     proc->state  = PROCESS_STATE_EXITED;
 
     /* Wake any parent waiting on this PID. */
@@ -547,10 +546,11 @@ static void wake_waiters(uint32_t exited_pid, int32_t exit_code) {
         struct process *p = &g_procs[i];
         if (p->loaded && p->state == PROCESS_STATE_WAITING &&
             p->wait_target_pid == exited_pid) {
-            /* The waiter's saved frame has x0=0 from when it slept; 
+            /* The waiter's saved frame has x0=0 from when it slept;
              * update it so arm64_resume_user returns the right code. */
             if (g_aspaces[i].has_saved) {
-                g_aspaces[i].saved_frame[0] = (uint64_t)(int64_t)exit_code;
+                g_aspaces[i].saved_frame[0] = (uint64_t)exited_pid;
+                g_aspaces[i].saved_frame[1] = (uint64_t)(int64_t)exit_code;
             }
             p->state = PROCESS_STATE_READY;
         }
@@ -571,7 +571,7 @@ void process_handle_exit(uint64_t code) {
          * back to the shared boot aspace BEFORE freeing them. */
         arm64_aspace_switch_boot();
         if (!proc->is_thread && !has_living_threads(proc)) aspace_free(g_curr3);
-        proc->loaded = 0;
+        
         serial_write("[process] exit pid=");
         { char b[16]; int i=0; uint32_t t=proc->pid; if(!t)b[i++]='0';
           else while(t){b[i++]=(char)('0'+t%10);t/=10;}

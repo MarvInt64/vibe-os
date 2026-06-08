@@ -101,7 +101,7 @@ static uint64_t block_user(uint64_t pa) {
  * process gets distinct physical memory behind the same virtual addresses.
  * ------------------------------------------------------------------------- */
 #define ARM64_USER_VA      0x90000000ULL
-#define ARM64_ASPACE_SLOT  (32UL * 1024 * 1024)   /* 32 MB image+stack window */
+#define ARM64_ASPACE_SLOT  (64UL * 1024 * 1024)   /* 64 MB image+stack+heap window */
 
 /* 2 MB Level-2 block descriptor, EL0 RW+X (same attrs as block_user). */
 static uint64_t block_user_l2(uint64_t pa) {

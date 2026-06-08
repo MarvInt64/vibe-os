@@ -37,6 +37,7 @@
 #include "../../include/winsys.h"
 #include "../../include/audio.h"
 #include "../../include/vfs.h"
+#include "../../include/net.h"
 
 /* ---- Timer tick counter (incremented without GIC) --------------------- */
 static volatile uint64_t g_tick = 0;
@@ -360,6 +361,14 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 g_files[a0].used = 0;
             regs[0] = 0;
             return;
+        case SYS_UNLINK: {      /* 13: unlink(path) */
+            if (!g_fs_ready) { regs[0] = (uint64_t)-1; return; }
+            char path[256];
+            copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
+            int r = ext2_unlink(&g_fs, path);
+            regs[0] = (uint64_t)(int64_t)r;
+            return;
+        }
         case SYS_MKDIR: {       /* 26: mkdir(path) → 0 or -1 */
             char path[256];
             copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
@@ -510,8 +519,8 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 uint32_t rh = (uint32_t)a1;
                 if (rw < 320) rw = 320;
                 if (rh < 200) rh = 200;
-                if (rw > 2560) rw = 2560;
-                if (rh > 1600) rh = 1600;
+                if (rw > DESKTOP_MAX_WIDTH) rw = DESKTOP_MAX_WIDTH;
+                if (rh > DESKTOP_MAX_HEIGHT) rh = DESKTOP_MAX_HEIGHT;
                 g_res_w = rw;
                 g_res_h = rh;
                 g_res_change_pending = 1;
@@ -532,11 +541,13 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             out->heap_used_bytes = kmalloc_get_physical_used();
             out->heap_total_bytes = kmalloc_get_physical_total();
             { const char *v = "0.1.0-arm64";
-              for (int vi = 0; vi < 63 && v[vi]; vi++) out->version[vi] = v[vi];
-              out->version[63] = '\0'; }
+              int vi = 0;
+              for (; vi + 1 < (int)sizeof(out->version) && v[vi]; vi++) out->version[vi] = v[vi];
+              out->version[vi] = '\0'; }
             { const char *b = __DATE__ " " __TIME__;
-              for (int bi = 0; bi < 63 && b[bi]; bi++) out->build[bi] = b[bi];
-              out->build[63] = '\0'; }
+              int bi = 0;
+              for (; bi + 1 < (int)sizeof(out->build) && b[bi]; bi++) out->build[bi] = b[bi];
+              out->build[bi] = '\0'; }
             regs[0] = 0;
             return;
         }
@@ -749,11 +760,12 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             }
             if (child && child->state == PROCESS_STATE_EXITED) {
                 /* Child already exited — return its exit code immediately. */
-                regs[0] = (uint64_t)(int64_t)child->exit_code;
+                regs[0] = (uint64_t)child->pid;
+                regs[1] = (uint64_t)(int64_t)child->exit_code;
             } else if (child && child->loaded) {
                 /* Child still running — block until it exits. */
                 struct process *cur = (this_cpu() && this_cpu()->current) ? this_cpu()->current : 0;
-                if (!cur) { regs[0] = (uint64_t)-1; return; }
+                if (!cur) { regs[0] = (uint64_t)-1; regs[1] = 0; return; }
                 cur->wait_target_pid = wait_pid;
                 cur->state = PROCESS_STATE_WAITING;
                 arm64_sleep_current(regs);
@@ -761,6 +773,7 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                  * arm64_resume_user with x0 set by wake_waiters(). */
             } else {
                 regs[0] = (uint64_t)-1;  /* no such child */
+                regs[1] = 0;
             }
             return;
         }
@@ -777,6 +790,36 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         case SYS_GETUID:        /* 55: get current user ID */
             regs[0] = (uint64_t)((this_cpu() && this_cpu()->current) ? this_cpu()->current->uid : 0);
             return;
+        case SYS_GETGID:        /* 56: get current group ID */
+            regs[0] = (uint64_t)((this_cpu() && this_cpu()->current) ? this_cpu()->current->gid : 0);
+            return;
+        case SYS_SETUID: {      /* 57: set current user ID */
+            struct process *cur = (this_cpu() && this_cpu()->current) ? this_cpu()->current : 0;
+            if (!cur) { regs[0] = (uint64_t)-1; return; }
+            uint32_t new_uid = (uint32_t)a0;
+            if (cur->uid != 0 && new_uid != cur->uid) {
+                regs[0] = (uint64_t)(-SYSCALL_EPERM);
+                return;
+            }
+            cur->uid = new_uid;
+            regs[0] = 0;
+            return;
+        }
+        case SYS_CHMOD: {       /* 58: chmod(path, mode) */
+            char path[256];
+            uint16_t mode = (uint16_t)(a1 & 0777u);
+            copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
+            regs[0] = (uint64_t)(int64_t)vfs_chmod(path, mode);
+            return;
+        }
+        case SYS_CHOWN: {       /* 59: chown(path, uid, gid) */
+            char path[256];
+            uint16_t uid = (uint16_t)a1;
+            uint16_t gid = (uint16_t)a2;
+            copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
+            regs[0] = (uint64_t)(int64_t)vfs_chown(path, uid, gid);
+            return;
+        }
         case SYS_REBOOT:        /* 51: reboot the system */
         case SYS_SHUTDOWN:      /* 52: shutdown/halt the system */
             serial_write("\r\n[shutdown] halting...\r\n");
@@ -787,25 +830,33 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             struct process *cur = (this_cpu() && this_cpu()->current)
                                   ? this_cpu()->current : (struct process *)0;
             if (!cur) { regs[0] = (uint64_t)-1; return; }
-            uintptr_t old_break = cur->heap_break;
-            static int sbrk_dbg;
-            if (!sbrk_dbg) {
-                sbrk_dbg = 1;
-                serial_write("[sbrk] inc=0x"); serial_write_hex_u64((uint64_t)inc);
-                serial_write(" old=0x"); serial_write_hex_u64(old_break);
-                serial_write(" start=0x"); serial_write_hex_u64(cur->heap_start);
-                serial_write(" top=0x"); serial_write_hex_u64(cur->user_stack_top);
-                serial_write("\r\n");
+            
+            struct process *owner = cur;
+            if (owner->is_thread) {
+                for (int i = 0; i < 16; i++) {
+                    if (g_procs[i].loaded && g_procs[i].pid == cur->parent_pid) {
+                        owner = &g_procs[i];
+                        break;
+                    }
+                }
             }
+            
+            uintptr_t old_break = owner->heap_break;
             if (inc == 0) { regs[0] = (uint64_t)old_break; return; }
             uintptr_t new_break = old_break + (uintptr_t)inc;
-            if (new_break > cur->user_stack_top - 0x40000 ||
-                new_break < cur->heap_start) {
-                serial_write("[sbrk] FAILED new=0x"); serial_write_hex_u64(new_break);
+            if (new_break > owner->user_stack_top - 0x40000 ||
+                new_break < owner->heap_start) {
+                serial_write("[sbrk] FAILED pid="); serial_write_hex_u64((uint64_t)cur->pid);
+                serial_write(" inc=0x"); serial_write_hex_u64((uint64_t)inc);
+                serial_write(" old=0x"); serial_write_hex_u64(old_break);
+                serial_write(" start=0x"); serial_write_hex_u64(owner->heap_start);
+                serial_write(" top=0x"); serial_write_hex_u64(owner->user_stack_top);
+                serial_write(" new=0x"); serial_write_hex_u64(new_break);
                 serial_write("\r\n");
                 regs[0] = (uint64_t)-1; return;
             }
-            cur->heap_break = new_break;
+            owner->heap_break = new_break;
+            if (cur != owner) cur->heap_break = new_break;
             regs[0] = (uint64_t)old_break;
             return;
         }
@@ -949,6 +1000,84 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         case SYS_CLIPBOARD_LEN:   /* 63: get clipboard length */
             regs[0] = (uint64_t)clipboard_len();
             return;
+        case SYS_NET_INFO: {      /* 22: fill struct net_info */
+            struct net_info *out = (struct net_info *)(uintptr_t)a0;
+            if (!out) {
+                regs[0] = (uint64_t)(-SYSCALL_EINVAL);
+                return;
+            }
+            net_get_info(out);
+            regs[0] = 0;
+            return;
+        }
+        case SYS_NET_RESOLVE: {   /* 24: DNS resolve */
+            char host[128];
+            uint32_t ip = 0;
+            uint32_t *out = (uint32_t *)(uintptr_t)a1;
+            if (!out) {
+                regs[0] = (uint64_t)(-SYSCALL_EINVAL);
+                return;
+            }
+            copy_user_str(host, (const char *)(uintptr_t)a0, sizeof(host));
+            net_lock();
+            if (net_resolve(host, &ip, 3000)) {
+                *out = ip;
+                regs[0] = 0;
+            } else {
+                regs[0] = (uint64_t)(-SYSCALL_ENOENT);
+            }
+            net_unlock();
+            return;
+        }
+        case SYS_NET_HTTP_GET:
+        case SYS_NET_HTTPS_GET: {
+            struct http_req {
+                uint32_t ip;
+                uint16_t port;
+                const char *host;
+                const char *path;
+                char *out;
+                int cap;
+                const char *user_agent;
+                int timeout_ms;
+            };
+            struct http_req *r = (struct http_req *)(uintptr_t)a0;
+            char host[128];
+            char path[256];
+            char ua[96];
+            int tmo;
+            if (!r || !r->out || r->cap <= 0 || !r->host || !r->path) {
+                regs[0] = (uint64_t)(-SYSCALL_EINVAL);
+                return;
+            }
+            copy_user_str(host, r->host, sizeof(host));
+            copy_user_str(path, r->path, sizeof(path));
+            if (r->user_agent) copy_user_str(ua, r->user_agent, sizeof(ua));
+            else ua[0] = '\0';
+            tmo = (r->timeout_ms > 0) ? r->timeout_ms : (num == SYS_NET_HTTPS_GET ? 15000 : 5000);
+            if (num == SYS_NET_HTTPS_GET) {
+                net_lock();
+                regs[0] = (uint64_t)(int64_t)net_https_get(r->ip, r->port, host, path, ua, r->out, r->cap, tmo);
+                net_unlock();
+            } else {
+                regs[0] = (uint64_t)(int64_t)net_http_get(r->ip, r->port, host, path, ua, r->out, r->cap, tmo);
+            }
+            return;
+        }
+        case SYS_NET_PING: {      /* 23: ICMP ping */
+            int rtt = -1;
+            int *rtt_out = (int *)(uintptr_t)a3;
+            int count = (int)a1;
+            int timeout_ms = (int)a2;
+            if (count <= 0) count = 1;
+            if (timeout_ms <= 0) timeout_ms = 1000;
+            net_lock();
+            int replies = net_ping((uint32_t)a0, count, timeout_ms, &rtt);
+            net_unlock();
+            if (rtt_out) *rtt_out = rtt;
+            regs[0] = (uint64_t)(int64_t)replies;
+            return;
+        }
         default:
             serial_write("[svc] unknown syscall ");
             serial_write_hex_u64(num);
@@ -1676,6 +1805,49 @@ static struct framebuffer g_fb;
 static struct framebuffer g_bb;
 static uint32_t          *g_backbuf = 0;
 
+static void flush_visible_framebuffer(void) {
+    uintptr_t fb_va = (uintptr_t)g_fb.base;
+    uint32_t fb_size = g_fb.height * g_fb.pitch;
+    for (uintptr_t a = fb_va; a < fb_va + fb_size; a += 64)
+        __asm__ volatile("dc cvau, %0" :: "r"(a));
+    __asm__ volatile("dsb sy" ::: "memory");
+}
+
+void arm64_net_wait_pump(void) {
+    static uint32_t call_count = 0;
+    call_count++;
+    if (!g_desktop || !g_fb.base) {
+        __asm__ volatile("yield");
+        return;
+    }
+    /* Pump every 256 calls (~60 Hz at typical loop speed, timer-independent) */
+    if ((call_count & 0xFF) != 0) {
+        __asm__ volatile("yield");
+        return;
+    }
+
+    virtio_input_poll();
+
+    struct mouse_state mouse;
+    struct keyboard_state keyboard;
+    memset(&mouse, 0, sizeof(mouse));
+    memset(&keyboard, 0, sizeof(keyboard));
+
+    mouse.x = g_mouse_x * (int)ramfb_width() / 32767;
+    mouse.y = g_mouse_y * (int)ramfb_height() / 32767;
+    mouse.buttons = (uint8_t)g_mouse_buttons;
+    mouse.moved = (uint8_t)g_mouse_moved;
+    mouse.wheel = g_mouse_wheel;
+    g_mouse_wheel = 0;
+
+    desktop_handle_input(g_desktop, &mouse, &keyboard);
+    desktop_poll_apps(g_desktop);
+    desktop_render(g_desktop, &g_bb);
+    fb_blit(&g_fb, &g_bb);
+    desktop_draw_cursor_overlay(g_desktop, &g_fb);
+    flush_visible_framebuffer();
+}
+
 void kernel_main_arm64(void) {
     serial_init();
 
@@ -1722,6 +1894,9 @@ void kernel_main_arm64(void) {
     /* Audio — virtio-sound (optional; absent unless QEMU has -device
      * virtio-sound-device).  Apps fall back to silence if not ready. */
     virtio_snd_init();
+
+    /* Network — virtio-net over QEMU user-mode networking. */
+    net_init();
 
     serial_write("[arm64] detecting platform...\r\n");
     /* Detect platform FIRST so we choose the right timer path.
@@ -1847,8 +2022,6 @@ static void gui_run(void) {
 
                 /* Update desktop dimensions without destroying running apps.
                  * desktop_init would reset all windows and orphan processes. */
-                int old_sw = (int)g_desktop->screen_width;
-                int old_sh = (int)g_desktop->screen_height;
                 g_desktop->screen_width  = ramfb_width();
                 g_desktop->screen_height = ramfb_height();
                 g_desktop->tiles_x = (int)(ramfb_width()  / g_desktop->tile_size) + 1;
@@ -1900,21 +2073,7 @@ static void gui_run(void) {
                         ramfb_width(), ramfb_height(),
                         ramfb_width() * 4, 32);
 
-                /* Expand full-width windows (topbar) and reposition
-                 * edge-anchored windows (dock) for the new resolution.
-                 * Do NOT reinit window FBs — their buffer strides remain
-                 * at the original allocation width.  The compositor's
-                 * fb_blit_rect correctly handles sub-rectangle copies. */
-                for (int wi = 0; wi < WINDOW_COUNT; wi++) {
-                    struct window_state *w = &g_desktop->windows[wi];
-                    if (!w->title || !w->title[0]) continue;
-                    /* Full-width windows: were full-width at old resolution,
-                     * expand (or shrink) to match the new screen width. */
-                    if (w->width == old_sw || w->width > old_sw * 3 / 4) {
-                        w->width = (int)ramfb_width();
-                        w->x = 0;
-                    }
-                }
+                desktop_layout_shell_panels(g_desktop);
             }
         }
 
@@ -1940,7 +2099,7 @@ static void gui_run(void) {
             char c;
             if (!virtio_kbd_read(&c)) break;
             if (c == '\n') keyboard.enter_pressed = 1;
-            else if (c == '\b') keyboard.backspace_pressed = 1;
+            else if (c == 0x7f || c == '\b') keyboard.backspace_pressed = 1;
             else keyboard.chars[keyboard.count++] = c;
         }
         if (keyboard.count || keyboard.enter_pressed) {
@@ -1976,6 +2135,8 @@ static void gui_run(void) {
         mouse.y = g_mouse_y * (int)ramfb_height() / 32767;
         mouse.buttons = (uint8_t)g_mouse_buttons;
         mouse.moved = (uint8_t)g_mouse_moved;
+        mouse.wheel = g_mouse_wheel;
+        g_mouse_wheel = 0;
         static int prev_buttons = 0;
         if ((g_mouse_buttons & 1) && !(prev_buttons & 1))
             mouse.left_pressed = 1;
@@ -2010,13 +2171,7 @@ static void gui_run(void) {
          * indefinitely without an explicit DC CVAU/CVAC.
          * We iterate every 64 bytes (the architectural minimum
          * cache-line size) across the entire framebuffer. */
-        {
-            uintptr_t fb_va   = (uintptr_t)g_fb.base;
-            uint32_t  fb_size = g_fb.height * g_fb.pitch;
-            for (uintptr_t a = fb_va; a < fb_va + fb_size; a += 64)
-                __asm__ volatile("dc cvau, %0" :: "r"(a));
-        }
-        __asm__ volatile("dsb sy" ::: "memory");
+        flush_visible_framebuffer();
 
         bkl_release();
 
@@ -2026,6 +2181,7 @@ static void gui_run(void) {
         if (arm64_timer_poll() && c_bsp) c_bsp->ticks++;
 
         virtio_input_poll();
+        net_poll();
 
         /* Decouple process scheduling from the compositor: the desktop is
          * composited once per ~60 Hz frame above, then we spend the REST of the
