@@ -59,8 +59,14 @@ typedef unsigned char uint8_t;
 #define SYS_WINDOW_CREATE 17
 #define SYS_WINDOW_PRESENT 18
 #define SYS_EVENT_POLL 19
+#ifdef ARCH_ARM64
 /* libc wrappers */
 void vos_sleep_ms(unsigned int ms);
+#define SYS_TIMER_SLEEP 20
+#else
+#define SYS_TIMER_SLEEP 20
+#define SYS_SLEEP_MS    68
+#endif
 #define SYS_GETPID 53
 #define SYS_PROCESS_SNAPSHOT 28
 #define SYS_PROCESS_KILL 29
@@ -165,7 +171,11 @@ static inline ssize_t sc6(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uin
 static void do_yield(void){ __asm__ volatile("int $0x80"::"a"((uint64_t)SYS_YIELD):"rcx","r11","memory"); }
 #endif
 /* Sleep for `ms` milliseconds — paces the UI loop so it doesn't busy-spin. */
+#ifdef ARCH_ARM64
 static void nap(unsigned int ms){ vos_sleep_ms(ms); }
+#else
+static void nap(unsigned int ms){ sc1(SYS_SLEEP_MS, (uint64_t)ms); }
+#endif
 
 /* Print a message to the controlling terminal (stdout). */
 static void emit(const char *s) {

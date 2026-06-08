@@ -253,10 +253,13 @@ arm64-user: $(DISK_IMG)
 	done
 	$(CC) $(ARM64_UCFLAGS) -c user/umalloc.c -o $(ARM64_UDIR)/umalloc.o
 	$(CC) $(ARM64_UCFLAGS) -c user/arm64/libc_stubs.c -o $(ARM64_UDIR)/stubs.o
+	# --- C++ runtime for arm64 (must be in libc.a before any app links) ---
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti \
+	    -c user/libc/cxxabi.cpp -o $(ARM64_UDIR)/cxxabi.o
 	$(UAR) rcs $(ARM64_UDIR)/libc.a \
 	    $(ARM64_UDIR)/sys.o $(ARM64_UDIR)/string.o \
 	    $(ARM64_UDIR)/stdlib.o $(ARM64_UDIR)/stdio.o \
-	    $(ARM64_UDIR)/umalloc.o $(ARM64_UDIR)/stubs.o
+	    $(ARM64_UDIR)/umalloc.o $(ARM64_UDIR)/stubs.o $(ARM64_UDIR)/cxxabi.o
 	# --- shared graphics lib for userspace: the SAME render.c/font_atlas.c the
 	#     kernel uses, compiled against the user libc (one renderer everywhere) ---
 	$(CC) $(ARM64_UCFLAGS) -Ikernel/include -c kernel/src/render.c     -o $(ARM64_UDIR)/u_render.o
@@ -279,11 +282,7 @@ arm64-user: $(DISK_IMG)
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/app.elf \
 	    $(ARM64_UDIR)/app.o $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/app.elf /bin/wallpaper
-	# --- C++ runtime for arm64 (provides new/delete) ---
-	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti \
-	    -c user/libc/cxxabi.cpp -o $(ARM64_UDIR)/cxxabi.o
-	$(UAR) rcs $(ARM64_UDIR)/libc.a $(ARM64_UDIR)/cxxabi.o
-	# --- SVG renderer for arm64 ---
+		# --- SVG renderer for arm64 ---
 	$(CC) $(ARM64_UCFLAGS) -Ilib/svg -c lib/svg/svg.c -o $(ARM64_UDIR)/svg.o
 	# --- Dock (C++ GUI app using VexUI) ---
 	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg \
@@ -315,6 +314,8 @@ arm64-user: $(DISK_IMG)
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/sh.elf \
 	    $(ARM64_UDIR)/sh.o $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/sh.elf /bin/sh
+	# --- Keymap files (text-based, loadable at runtime) ---
+	python3 scripts/ext2_put.py $(DISK_IMG) keymaps/de.txt /etc/keymap.de
 	# --- Basic UNIX utils (same .c files as x86, use libc wrappers) ---
 	$(call arm64app,user/echo.c,/bin/echo)
 	$(call arm64app,user/cat.c,/bin/cat)

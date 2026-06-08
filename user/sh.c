@@ -51,9 +51,14 @@
 #define SYS_DISPLAY_MODE 27
 #define SYS_SYSTEM_INFO 39
 #define SYS_GETUID  55
+#ifdef ARCH_ARM64
 /* Use libc wrappers instead of raw syscalls */
 void vos_sleep_ms(unsigned int ms);
 int  vos_keymap_set(const char *layout);
+#else
+#define SYS_KEYMAP_SET 67
+#define SYS_SLEEP_MS   68
+#endif
 
 typedef unsigned long size_t;
 typedef long ssize_t;
@@ -1355,7 +1360,11 @@ static void cmd_ping(const char *args) {
         }
 
         if (continuous) {
+#ifdef ARCH_ARM64
             vos_sleep_ms(1000);
+#else
+            syscall1(SYS_SLEEP_MS, 1000);
+#endif
             char c = 0;
             syscall1(SYS_YIELD, 0);
             ssize_t nr = syscall3(SYS_READ, (uint64_t)0, (uint64_t)(size_t)&c, (uint64_t)1);
@@ -1364,7 +1373,11 @@ static void cmd_ping(const char *args) {
                 break;
             }
         } else {
+#ifdef ARCH_ARM64
             vos_sleep_ms(200);
+#else
+            syscall1(SYS_SLEEP_MS, 200);
+#endif
         }
     }
 
@@ -1532,7 +1545,11 @@ static void execute_command(void) {
         cmd_ls();
     } else if (strcmp(cmd, "keymap") == 0) {
         const char *layout = g_argc > 1 ? g_args[1] : "us";
+#ifdef ARCH_ARM64
         int r = vos_keymap_set(layout);
+#else
+        int r = syscall1(SYS_KEYMAP_SET, (uint64_t)(size_t)layout);
+#endif
         if (r == 0) {
             write_str("keymap: switched to "); write_line(layout);
         } else {
