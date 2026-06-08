@@ -831,13 +831,24 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = (uint64_t)(int64_t)tid;
             return;
         }
-        case SYS_MENU_DISPATCH:  /* 44: menu action delivery — not yet on arm64 */
-        case SYS_WINDOW_SET_MENUBAR: /* 37: menu bar — not yet on arm64 */
-            /* Silent stub: the topbar polls these every frame; returning -1
-             * (it renders fine without the data) without logging avoids
-             * flooding the serial journal once it runs as a persistent app. */
-            regs[0] = (uint64_t)-1;
+        case SYS_MENU_DISPATCH: { /* 44: deliver menu action to focused window */
+            struct desktop_state *d = desktop_active();
+            if (!d) { regs[0] = (uint64_t)-1; return; }
+            desktop_dispatch_menu_action(d, (uint32_t)a0);
+            regs[0] = 0;
             return;
+        }
+        case SYS_WINDOW_SET_MENUBAR: { /* 37: set menu bar items for a window */
+            struct desktop_state *d = desktop_active();
+            if (!d) { regs[0] = (uint64_t)-1; return; }
+            const struct winsys_menubar_item *items =
+                (const struct winsys_menubar_item *)(uintptr_t)a1;
+            int count = (int)a2;
+            uint32_t pid = (this_cpu() && this_cpu()->current) ? this_cpu()->current->pid : 0;
+            int result = desktop_app_set_menubar(d, pid, (int)a0, items, count);
+            regs[0] = (uint64_t)(int64_t)result;
+            return;
+        }
         case SYS_EVENT_POLL: {  /* 19: poll for window events */
             /* rdi = win_id, rsi = struct winsys_event* (out) */
             struct desktop_state *d = desktop_active();
