@@ -421,10 +421,10 @@ bool AudioPlayer::write_all(const int16_t *pcm, int samples) {
     unsigned long remaining = (unsigned long)samples * sizeof(int16_t);
     while (remaining > 0) {
         if (g_stop.load()) return false;
-        while (g_paused.load() && !g_stop.load()) vos_sleep_ticks(2);
+        while (g_paused.load() && !g_stop.load()) vos_sleep_ms(1);
         int written = audio_write(p, (unsigned)remaining);
         if (written > 0) { p += written; remaining -= (unsigned)written; }
-        else vos_sleep_ticks(1);   /* ring full: sleep instead of busy-spinning
+        else vos_sleep_ms(1);   /* ring full: sleep instead of busy-spinning
                                     * on vos_yield(), which kept a thread always
                                     * runnable and pinned the CPU near 100%. The
                                     * ring holds ~185ms, so a 1-tick nap never

@@ -199,14 +199,15 @@ pid_t getppid(void) {
 }
 
 unsigned int sleep(unsigned int seconds) {
-    vos_sleep_ticks((unsigned long)seconds * 100);
+    vos_sleep_ms(seconds * 1000);
     return 0;
 }
 
 int usleep(useconds_t usec) {
-    unsigned long ticks = ((unsigned long)usec + 9999) / 10000;
-    if (ticks > 0) {
-        vos_sleep_ticks(ticks);
+    unsigned int ms = usec / 1000;
+    if (usec > 0 && ms == 0) ms = 1;  /* minimum 1 ms */
+    if (ms > 0) {
+        vos_sleep_ms(ms);
     } else {
         __sc0(SYS_YIELD);
     }

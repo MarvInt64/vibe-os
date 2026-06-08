@@ -53,7 +53,7 @@ typedef struct vos_menubar_item    menubar_item;
 typedef struct vos_desktop_status  desktop_status;
 
 /* Thin helpers that call the vibeos.h / libc API. */
-static void sleep_ticks(uint64_t ticks)        { vos_sleep_ticks(ticks); }
+static void sleep_ms(unsigned int ms)        { vos_sleep_ms(ms); }
 
 /* ------------------------------------------------------------------------- */
 /* Theme and layout constants                                                */
@@ -945,7 +945,7 @@ int main(void) {
 
         /* Sleep longer when idle (no animation).  At 100 Hz timer the ticks
          * below map to: animating ≈ 20 ms/frame, idle ≈ 100 ms/frame. */
-        sleep_ticks((g_logo_hover_value > 0 &&
-                     g_logo_hover_value < LOGO_HOVER_STEPS) ? 2 : 10);
+        sleep_ms((g_logo_hover_value > 0 &&
+                     g_logo_hover_value < LOGO_HOVER_STEPS) ? 20 : 100);
     }
 }
