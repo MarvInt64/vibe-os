@@ -500,12 +500,17 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = (uint64_t)(int64_t)result;
             return;
         }
-        case SYS_TIMER_SLEEP: { /* 20: sleep for N ticks */
+        case SYS_TIMER_SLEEP: { /* 20: sleep for N ticks (x86-PIT-compatible: ~100 Hz) */
             uint64_t ticks = a0;
             if (ticks == 0) { regs[0] = 0; return; }
             struct process *cur = (this_cpu() && this_cpu()->current)
                                   ? this_cpu()->current : (struct process *)0;
             if (!cur) { regs[0] = (uint64_t)-1; return; }
+            /* Apps were written for x86's ~100 Hz PIT.  Scale to CNTVCT units
+             * so SYS_TIMER_SLEEP(100) ≈ 1 second on both arches. */
+            uint64_t hz = timer_frequency_hz();
+            if (hz == 0) hz = 24000000;
+            ticks = ticks * (hz / 100);
             uint64_t now = timer_tick_count();
             cur->wake_tick = (ticks >= ~0ull - now) ? ~0ull : now + ticks;
             cur->state = PROCESS_STATE_SLEEPING;
