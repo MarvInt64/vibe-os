@@ -2748,12 +2748,16 @@ void desktop_handle_input(struct desktop_state *desktop, const struct mouse_stat
 
                 if (e->kind == CTX_SHOW) {
                     window->visible = 1;
+                    mark_background_dirty(desktop);
                     mark_window_dirty(desktop, menu_window);
                     focus_window(desktop, menu_window);
                 } else if (e->kind == CTX_HIDE) {
+                    serial_write("[ctx] HIDE win="); serial_write_hex_u64((uint64_t)menu_window);
+                    serial_write("\r\n");
                     struct rect before = window_rect(window);
                     window->visible = 0;
                     if (desktop->focused_window == menu_window) desktop->focused_window = -1;
+                    mark_background_dirty(desktop);
                     mark_dirty_rect(desktop, before);
                 } else if (e->kind == CTX_QUIT_APP) {
                     if (is_user_app_slot(menu_window)) {
