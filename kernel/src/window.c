@@ -2583,26 +2583,37 @@ static int string_contains(const char *haystack, const char *needle) {
 }
 
 static int find_window_for_dock_icon(struct desktop_state *desktop, int icon_idx) {
+    /* Fixed system windows */
     if (icon_idx == 0) return WINDOW_TERMINAL;
-    if (icon_idx == 3) return WINDOW_TASK_MANAGER;
-    if (icon_idx == 6) return WINDOW_INFO;
+    if (icon_idx == 3) return WINDOW_FILES;       /* filebrowser */
+    if (icon_idx == 4) return WINDOW_TASK_MANAGER;
 
+    /* Scan user apps by title pattern — matches the dock's kEntries order:
+     * [0]Terminal [1]DOOM [2]Browser [3]Files [4]Tasks [5]Player [6]C++ */
     int slot;
     for (slot = 0; slot < MAX_USER_APPS; ++slot) {
+        if (!desktop->user_apps[slot].created) continue;
+        const char *title = desktop->user_apps[slot].title;
+        if (icon_idx == 1 && (string_contains(title, "DOOM") || string_contains(title, "doom"))) {
+            return WINDOW_APP_FIRST + slot;
+        }
+        if (icon_idx == 2 && (string_contains(title, "Browser") || string_contains(title, "browser"))) {
+            return WINDOW_APP_FIRST + slot;
+        }
+        if (icon_idx == 5 && (string_contains(title, "Audio") || string_contains(title, "Player")
+                           || string_contains(title, "audio"))) {
+            return WINDOW_APP_FIRST + slot;
+        }
+        if (icon_idx == 6 && (string_contains(title, "C++") || string_contains(title, "cpp"))) {
+            return WINDOW_APP_FIRST + slot;
+        }
+    }
+
+    /* Fallback: scan ALL user apps for any running app that matches the icon.
+     * This handles apps that don't have a specific icon_idx assignment. */
+    for (slot = 0; slot < MAX_USER_APPS; ++slot) {
         if (desktop->user_apps[slot].created) {
-            const char *title = desktop->user_apps[slot].title;
-            if (icon_idx == 1 && (string_contains(title, "DOOM") || string_contains(title, "doom"))) {
-                return WINDOW_APP_FIRST + slot;
-            }
-            if (icon_idx == 2 && (string_contains(title, "Browser") || string_contains(title, "browser"))) {
-                return WINDOW_APP_FIRST + slot;
-            }
-            if (icon_idx == 4 && (string_contains(title, "Demo") || string_contains(title, "demo") || string_contains(title, "UI Demo"))) {
-                return WINDOW_APP_FIRST + slot;
-            }
-            if (icon_idx == 5 && (string_contains(title, "C++") || string_contains(title, "cpp"))) {
-                return WINDOW_APP_FIRST + slot;
-            }
+            return WINDOW_APP_FIRST + slot;
         }
     }
     return -1;
