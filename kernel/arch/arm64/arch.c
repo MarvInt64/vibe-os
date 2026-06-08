@@ -1923,6 +1923,14 @@ static void gui_run(void) {
          * doesn't get smeared by the backbuffer copy. */
         desktop_draw_cursor_overlay(g_desktop, &g_fb);
 
+        /* Ensure all framebuffer writes are visible to QEMU's ramfb
+         * reader before releasing BKL.  Without this barrier, the
+         * 3.7 MB framebuffer at 1280×720 may have stale cache lines
+         * when QEMU samples it, causing intermittent cursor flicker
+         * (especially visible on Apple Silicon where cache is large
+         * and write-back). */
+        __asm__ volatile("dsb sy" ::: "memory");
+
         bkl_release();
 
         /* Per-CPU tick accounting. */
