@@ -53,6 +53,8 @@ void    sched_yield_(void) { __sc0(SYS_YIELD); }
 /* ---- vibeos.h ---- */
 void vos_yield(void) { __sc0(SYS_YIELD); }
 void vos_sleep_ticks(unsigned long ticks) { __sc1(SYS_TIMER_SLEEP, (uint64_t)ticks); }
+void vos_sleep_ms(unsigned int ms)          { __sc1(SYS_SLEEP_MS, (uint64_t)ms); }
+int  vos_keymap_set(const char *layout)     { return (int)ck(__sc1(SYS_KEYMAP_SET, (uint64_t)(size_t)layout)); }
 int vos_system_info(struct vos_system_info *out) { return (int)ck(__sc1(SYS_SYSTEM_INFO, (uint64_t)(size_t)out)); }
 int  vos_spawn(const char *path) { return (int)__sc1(SYS_PROCESS_SPAWN, (uint64_t)(size_t)path); }
 int  vos_spawn_arg(const char *path, const char *arg) { return (int)__sc2(SYS_PROCESS_SPAWN, (uint64_t)(size_t)path, (uint64_t)(size_t)arg); }

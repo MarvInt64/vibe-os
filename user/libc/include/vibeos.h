@@ -27,6 +27,8 @@ int  vos_spawn_pty(const char *path, int master_fd);
 int  vos_pty_interrupt(int master_fd);
 void vos_yield(void);
 void vos_sleep_ticks(unsigned long ticks);
+void vos_sleep_ms(unsigned int ms);
+int  vos_keymap_set(const char *layout); /* "us" or "de", returns 0 on success */
 
 struct vos_system_info {
     uint64_t uptime_ticks;

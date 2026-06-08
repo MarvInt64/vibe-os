@@ -51,8 +51,9 @@
 #define SYS_DISPLAY_MODE 27
 #define SYS_SYSTEM_INFO 39
 #define SYS_GETUID  55
-#define SYS_KEYMAP_SET 67
-#define SYS_SLEEP_MS   68
+/* Use libc wrappers instead of raw syscalls */
+void vos_sleep_ms(unsigned int ms);
+int  vos_keymap_set(const char *layout);
 
 typedef unsigned long size_t;
 typedef long ssize_t;
@@ -1354,7 +1355,7 @@ static void cmd_ping(const char *args) {
         }
 
         if (continuous) {
-            syscall1(SYS_SLEEP_MS, 1000);
+            vos_sleep_ms(1000);
             char c = 0;
             syscall1(SYS_YIELD, 0);
             ssize_t nr = syscall3(SYS_READ, (uint64_t)0, (uint64_t)(size_t)&c, (uint64_t)1);
@@ -1363,7 +1364,7 @@ static void cmd_ping(const char *args) {
                 break;
             }
         } else {
-            syscall1(SYS_SLEEP_MS, 200);
+            vos_sleep_ms(200);
         }
     }
 
@@ -1531,7 +1532,7 @@ static void execute_command(void) {
         cmd_ls();
     } else if (strcmp(cmd, "keymap") == 0) {
         const char *layout = g_argc > 1 ? g_args[1] : "us";
-        int r = syscall1(SYS_KEYMAP_SET, (uint64_t)(size_t)layout);
+        int r = vos_keymap_set(layout);
         if (r == 0) {
             write_str("keymap: switched to "); write_line(layout);
         } else {
