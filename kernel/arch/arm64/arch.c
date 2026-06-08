@@ -1515,14 +1515,15 @@ static int shell_getc(char *c) {
 
 /* Minimal ANSI escape sequence consumer: reads and discards ESC [ X
  * sequences so arrow keys don't print garbage in the serial console.
+ * Handles Up/Down for command history; other escape sequences are consumed
+ * silently.
  * Returns 0 if no escape sequence was present (c is a normal char),
- * 1 if an escape was consumed (caller should ignore this input). */
-static int shell_consume_escape(char first) {
-    if (first != 0x1b) return 0;   /* not an escape */
+ * 1 if an escape was consumed and the line may have changed. */
+static int shell_consume_escape(char first, char *line, int *pos,
+                                char (*history)[256], int *hist_count,
+                                int *hist_idx) {
+    if (first != 0x1b) return 0;
 
-    /* Read the next two bytes.  shell_getc prioritises virtio_input
-     * (the source of escape sequences) so the three bytes of an
-     * ANSI escape are consumed atomically. */
     char b1 = 0, b2 = 0;
 
     for (int tries = 0; tries < 50; tries++) {
@@ -1537,13 +1538,55 @@ static int shell_consume_escape(char first) {
         virtio_input_poll();
         poll_timer();
     }
-    /* ESC [ X consumed.  Future: interpret X for history (A=Up, B=Down). */
-    (void)b2;
+
+    /* Up arrow — recall older history entry */
+    if (b2 == 'A') {
+        if (*hist_count > 0) {
+            /* First Up press: save the current line if navigating from scratch */
+            if (*hist_idx == 0 && *pos > 0) {
+                line[*pos] = '\0';
+                size_t j = 0;
+                for (; j < 255 && line[j]; j++) history[0][j] = line[j];
+                history[0][j] = '\0';
+            }
+            if (*hist_idx < *hist_count) {
+                (*hist_idx)++;
+                /* Erase current line */
+                while (*pos > 0) { serial_write("\b \b"); (*pos)--; }
+                /* Copy history entry to line buffer */
+                const char *src = history[(*hist_count) - (*hist_idx)];
+                for (; *pos < 255 && src[*pos]; (*pos)++)
+                    serial_write_char(line[*pos] = src[*pos]);
+                line[*pos] = '\0';
+            }
+        }
+        return 1;
+    }
+
+    /* Down arrow — recall newer history entry */
+    if (b2 == 'B') {
+        if (*hist_idx > 0) {
+            (*hist_idx)--;
+            while (*pos > 0) { serial_write("\b \b"); (*pos)--; }
+            if (*hist_idx > 0) {
+                const char *src = history[(*hist_count) - (*hist_idx)];
+                for (; *pos < 255 && src[*pos]; (*pos)++)
+                    serial_write_char(line[*pos] = src[*pos]);
+            }
+            line[*pos] = '\0';
+        }
+        return 1;
+    }
+
+    /* All other ESC [ X sequences: consume without action */
     return 1;
 }
 
 static void shell_loop(void) {
     static char line[256];
+    static char history[8][256];   /* last 8 commands */
+    static int  hist_count = 0;     /* number of history entries (0..8) */
+    static int  hist_idx   = 0;     /* 0 = typing new line, 1..N = browsing */
     int pos = 0;
 
     serial_write("VibeOS arm64 — type 'help' for commands\r\n");
@@ -1553,6 +1596,7 @@ static void shell_loop(void) {
         serial_write(g_cwd);
         serial_write("$ ");
         pos = 0;
+        hist_idx = 0;
 
         for (;;) {
             char c;
@@ -1562,10 +1606,11 @@ static void shell_loop(void) {
                 poll_timer();
             }
 
-            /* Consume ANSI escape sequences (arrow keys etc.) so they
-             * don't print as garbage.  virtio_input pre-converts arrow
-             * keys to \x1b[A / \x1b[B / etc. */
-            if (shell_consume_escape(c)) continue;
+            /* Consume ANSI escape sequences.  Up/Down recall history;
+             * other escape sequences (Left, Right, Home, End) are consumed
+             * silently. */
+            if (shell_consume_escape(c, line, &pos,
+                                     history, &hist_count, &hist_idx)) continue;
 
             if (c == '\r' || c == '\n') {
                 serial_write("\r\n");
@@ -1581,6 +1626,38 @@ static void shell_loop(void) {
             /* All other control characters (including lone ESC) are ignored */
         }
         run_command(line);
+        /* Save non-empty commands to history (skip if same as most recent) */
+        if (line[0]) {
+            int skip = 0;
+            if (hist_count > 0) {
+                /* Check if identical to the most recent entry */
+                const char *prev = history[(hist_count - 1) % 8];
+                size_t i = 0;
+                for (; i < 255 && line[i] && line[i] == prev[i]; i++);
+                if (line[i] == prev[i]) skip = 1;  /* identical */
+            }
+            if (!skip) {
+                if (hist_count < 8) {
+                    size_t i = 0;
+                    for (; i < 255 && line[i]; i++)
+                        history[hist_count][i] = line[i];
+                    history[hist_count][i] = '\0';
+                    hist_count++;
+                } else {
+                    /* Shift history up by one (oldest falls off) */
+                    for (int h = 0; h < 7; h++) {
+                        size_t i = 0;
+                        for (; i < 255 && history[h+1][i]; i++)
+                            history[h][i] = history[h+1][i];
+                        history[h][i] = '\0';
+                    }
+                    size_t i = 0;
+                    for (; i < 255 && line[i]; i++)
+                        history[7][i] = line[i];
+                    history[7][i] = '\0';
+                }
+            }
+        }
     }
 }
 
