@@ -1495,17 +1495,19 @@ static int uart_getc_nonblock(char *out) {
 }
 
 /* Try to read one character from any input source (UART or virtio keyboard).
- * Returns 1 and sets *c on success, 0 if no input available. */
+ * Returns 1 and sets *c on success, 0 if no input available.
+ * Checks virtio first so escape sequences (which arrive via virtio_input)
+ * are consumed atomically without UART interleaving. */
 static int shell_getc(char *c) {
-    /* Check UART first (serial port / host terminal) */
-    if (arm64_uart_can_read()) {
-        *c = arm64_uart_getc();
-        return 1;
-    }
-    /* Check virtio keyboard (QEMU window input) */
+    /* Check virtio keyboard first (QEMU window input) */
     char vk;
     if (virtio_kbd_read(&vk)) {
         *c = vk;
+        return 1;
+    }
+    /* Then check UART (serial port / host terminal) */
+    if (arm64_uart_can_read()) {
+        *c = arm64_uart_getc();
         return 1;
     }
     return 0;
@@ -1518,23 +1520,25 @@ static int shell_getc(char *c) {
 static int shell_consume_escape(char first) {
     if (first != 0x1b) return 0;   /* not an escape */
 
-    /* Try to read '[' — non-blocking, if not available just consume the ESC */
-    char b1 = 0;
+    /* Read the next two bytes.  shell_getc prioritises virtio_input
+     * (the source of escape sequences) so the three bytes of an
+     * ANSI escape are consumed atomically. */
+    char b1 = 0, b2 = 0;
+
     for (int tries = 0; tries < 50; tries++) {
         if (shell_getc(&b1)) break;
         virtio_input_poll();
         poll_timer();
     }
-    if (b1 != '[') return 1;   /* ESC + something else / lone ESC — consumed */
+    if (b1 != '[') return 1;   /* not ESC [ — consume the ESC */
 
-    /* Try to read the final byte (A/B/C/D/H/F/~) */
-    char b2 = 0;
     for (int tries = 0; tries < 50; tries++) {
         if (shell_getc(&b2)) break;
         virtio_input_poll();
         poll_timer();
     }
-    /* ESC [ X consumed (even if X is 0, i.e. timeout) */
+    /* ESC [ X consumed.  Future: interpret X for history (A=Up, B=Down). */
+    (void)b2;
     return 1;
 }
 
