@@ -110,7 +110,7 @@ $(BEARSSL_LIB): $(BEARSSL_OBJS)
 
 bearssl: $(BEARSSL_LIB)
 
-.PHONY: all kernel iso run run-debug run-serial run-arm64 clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src seed-headers kernel-arm64 arm64-user
+.PHONY: all kernel iso run run-debug run-serial run-arm64 clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src seed-headers kernel-arm64 arm64-user arm64-tcc
 
 # ============================================================
 # arm64 build — targeting QEMU virt machine.
@@ -253,13 +253,17 @@ arm64-user: $(DISK_IMG)
 	done
 	$(CC) $(ARM64_UCFLAGS) -c user/umalloc.c -o $(ARM64_UDIR)/umalloc.o
 	$(CC) $(ARM64_UCFLAGS) -c user/arm64/libc_stubs.c -o $(ARM64_UDIR)/stubs.o
+	# --- arm64 assembly support (setjmp/longjmp, soft-float stubs) ---
+	$(CC) $(ARM64_UCFLAGS) -c user/arm64/setjmp.S    -o $(ARM64_UDIR)/setjmp.o
+	$(CC) $(ARM64_UCFLAGS) -c user/arm64/softfloat.S -o $(ARM64_UDIR)/softfloat.o
 	# --- C++ runtime for arm64 (must be in libc.a before any app links) ---
 	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti \
 	    -c user/libc/cxxabi.cpp -o $(ARM64_UDIR)/cxxabi.o
 	$(UAR) rcs $(ARM64_UDIR)/libc.a \
 	    $(ARM64_UDIR)/sys.o $(ARM64_UDIR)/string.o \
 	    $(ARM64_UDIR)/stdlib.o $(ARM64_UDIR)/stdio.o \
-	    $(ARM64_UDIR)/umalloc.o $(ARM64_UDIR)/stubs.o $(ARM64_UDIR)/cxxabi.o
+	    $(ARM64_UDIR)/umalloc.o $(ARM64_UDIR)/stubs.o \
+	    $(ARM64_UDIR)/setjmp.o $(ARM64_UDIR)/softfloat.o $(ARM64_UDIR)/cxxabi.o
 	# --- shared graphics lib for userspace: the SAME render.c/font_atlas.c the
 	#     kernel uses, compiled against the user libc (one renderer everywhere) ---
 	$(CC) $(ARM64_UCFLAGS) -Ikernel/include -c kernel/src/render.c     -o $(ARM64_UDIR)/u_render.o
@@ -697,6 +701,54 @@ doom: $(DISK_IMG) $(LIBC_A)
 	python3 scripts/ext2_put.py $(DISK_IMG) build/user/doom.elf /bin/doom
 	python3 scripts/ext2_put.py $(DISK_IMG) assets/doom1.wad /games/doom1.wad
 	@echo "DOOM installed to $(DISK_IMG)."
+
+# ---- arm64 TCC (Tiny C Compiler) -------------------------------------------
+# Native aarch64 TCC that generates aarch64 code. ONE_SOURCE build from
+# the same tcc.c as x86, with TCC_TARGET_ARM64 config. Needs setjmp/longjmp
+# (arm64 setjmp.S) and soft-float stubs (arm64 softfloat.S) already in libc.
+ARM64_TCC_CFLAGS := $(ARM64_UCFLAGS) -Ibuild/arm64/tcc_config -Ithird_party/tcc
+arm64-tcc: arm64-user
+	@mkdir -p build/arm64/tcc_config
+	@echo '#define TCC_TARGET_ARM64 1'   >  build/arm64/tcc_config/config.h
+	@echo '#define TCC_VERSION "0.9.28rc-vibeos"' >> build/arm64/tcc_config/config.h
+	@echo '#define CONFIG_TCC_STATIC 1'   >> build/arm64/tcc_config/config.h
+	@echo '#define CONFIG_TCCDIR "/lib/tcc"' >> build/arm64/tcc_config/config.h
+	@echo '#define CONFIG_TCC_CRTPREFIX "/lib"' >> build/arm64/tcc_config/config.h
+	@echo '#define CONFIG_TCC_SYSINCLUDEPATHS "{B}/include:/usr/include"' >> build/arm64/tcc_config/config.h
+	@echo '#define CONFIG_TCC_LIBPATHS "{B}:/lib"' >> build/arm64/tcc_config/config.h
+	@echo '#define CONFIG_TCC_ELFINTERP ""' >> build/arm64/tcc_config/config.h
+	@echo '#define CONFIG_TCC_SEMLOCK 0'   >> build/arm64/tcc_config/config.h
+	@echo '#define CONFIG_DWARF_VERSION 4' >> build/arm64/tcc_config/config.h
+	$(CC) $(ARM64_TCC_CFLAGS) -c third_party/tcc/tcc.c -o $(ARM64_UDIR)/tcc.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/tcc.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/tcc.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/tcc.elf /bin/tcc
+	# Predefs header (same file for all targets — loaded at runtime)
+	python3 scripts/ext2_put.py $(DISK_IMG) third_party/tcc/include/tccdefs.h /usr/include/tccdefs.h
+	# TCC's own freestanding headers
+	@for f in third_party/tcc/include/*.h; do \
+	    bn=$$(basename "$$f"); \
+	    python3 scripts/ext2_put.py $(DISK_IMG) "$$f" "/lib/tcc/include/$$bn" ; \
+	done
+	# arm64 libtcc1.a (TCC runtime library)
+	$(CC) $(ARM64_TCC_CFLAGS) -c third_party/tcc/lib/libtcc1.c   -o $(ARM64_UDIR)/lt1_libtcc1.o
+	$(CC) $(ARM64_TCC_CFLAGS) -c third_party/tcc/lib/lib-arm64.c  -o $(ARM64_UDIR)/lt1_lib-arm64.o
+	$(CC) $(ARM64_TCC_CFLAGS) -c third_party/tcc/lib/va_list.c   -o $(ARM64_UDIR)/lt1_va_list.o
+	$(CC) $(ARM64_TCC_CFLAGS) -c third_party/tcc/lib/builtin.c   -o $(ARM64_UDIR)/lt1_builtin.o
+	$(CC) $(ARM64_TCC_CFLAGS) -c third_party/tcc/lib/alloca.S    -o $(ARM64_UDIR)/lt1_alloca.o
+	$(CC) $(ARM64_TCC_CFLAGS) -c third_party/tcc/lib/alloca-bt.S -o $(ARM64_UDIR)/lt1_alloca_bt.o
+	$(CC) $(ARM64_TCC_CFLAGS) -c third_party/tcc/lib/stdatomic.c -o $(ARM64_UDIR)/lt1_stdatomic.o
+	$(CC) $(ARM64_TCC_CFLAGS) -c third_party/tcc/lib/atomic.S    -o $(ARM64_UDIR)/lt1_atomic.o
+	$(CC) $(ARM64_TCC_CFLAGS) -c third_party/tcc/lib/armflush.c  -o $(ARM64_UDIR)/lt1_armflush.o
+	$(CC) $(ARM64_TCC_CFLAGS) -c third_party/tcc/lib/dsohandle.c -o $(ARM64_UDIR)/lt1_dsohandle.o
+	$(UAR) rcs $(ARM64_UDIR)/libtcc1.a \
+	    $(ARM64_UDIR)/lt1_libtcc1.o $(ARM64_UDIR)/lt1_lib-arm64.o \
+	    $(ARM64_UDIR)/lt1_va_list.o $(ARM64_UDIR)/lt1_builtin.o \
+	    $(ARM64_UDIR)/lt1_alloca.o $(ARM64_UDIR)/lt1_alloca_bt.o \
+	    $(ARM64_UDIR)/lt1_stdatomic.o $(ARM64_UDIR)/lt1_atomic.o \
+	    $(ARM64_UDIR)/lt1_armflush.o $(ARM64_UDIR)/lt1_dsohandle.o
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/libtcc1.a /lib/tcc/libtcc1.a
+	@echo "arm64 TCC (515 KB) installed to $(DISK_IMG)."
 
 # Create a blank persistent disk image if it does not exist yet. No external
 # tools needed — the kernel formats it as ext2 on first boot.
