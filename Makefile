@@ -353,8 +353,47 @@ arm64-user: $(DISK_IMG)
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/terminal.elf \
 	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/terminal.o $(ARM64_UDIR)/terminal_text_grid.o \
 	    $(ARM64_UDIR)/vexui.o $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
-	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/terminal.elf /bin/terminal
-	# --- File Browser (C++ GUI) ---
+		python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/terminal.elf /bin/terminal
+		# --- Text Editor (C++ GUI using VexUI) ---
+		clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
+		    -c user/texteditor/texteditor.cpp -o $(ARM64_UDIR)/texteditor.o
+		clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
+		    -c user/texteditor/main.cpp -o $(ARM64_UDIR)/texteditor_main.o
+		$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/texteditor.elf \
+		    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/texteditor.o $(ARM64_UDIR)/texteditor_main.o \
+		    $(ARM64_UDIR)/vexui.o $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
+			python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/texteditor.elf /bin/texteditor
+		# --- Filedialog (C++ GUI using VexUI) ---
+		clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
+		    -c user/filedialog/filedialog.cpp -o $(ARM64_UDIR)/filedialog.o
+		$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/filedialog.elf \
+		    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/filedialog.o \
+		    $(ARM64_UDIR)/vexui.o $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
+		python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/filedialog.elf /bin/filedialog
+		# --- uidemo (C GUI demo) ---
+		$(CC) $(ARM64_UCFLAGS) -Ilib/svg -c user/uidemo.c -o $(ARM64_UDIR)/uidemo.o
+		$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/uidemo.elf \
+		    $(ARM64_UDIR)/uidemo.o $(ARM64_UDIR)/vexui.o $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/libc.a
+		python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/uidemo.elf /bin/uidemo
+		# --- More UNIX utils ---
+		$(call arm64app,user/wc.c,/bin/wc)
+		$(call arm64app,user/tail.c,/bin/tail)
+		$(call arm64app,user/su.c,/bin/su)
+			$(call arm64app,user/clipboard.c,/bin/clipboard)
+			$(call arm64app,user/audiocfg.c,/bin/audiocfg)
+			$(call arm64app,user/audiotest.c,/bin/audiotest)
+			# --- mp3play (needs mp3dec header) ---
+			$(CC) $(ARM64_UCFLAGS) -Ilib/mp3 -c user/mp3play.c -o $(ARM64_UDIR)/mp3play.o
+			$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/mp3play.elf \
+			    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/mp3play.o $(ARM64_UDIR)/mp3dec.o $(ARM64_UDIR)/libc.a
+			python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/mp3play.elf /bin/mp3play
+				# --- adduser (C++) ---
+				clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti \
+				    -c user/adduser.cpp -o $(ARM64_UDIR)/adduser.o
+				$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/adduser.elf \
+				    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/adduser.o $(ARM64_UDIR)/libc.a
+				python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/adduser.elf /bin/adduser
+		# --- File Browser (C++ GUI) ---
 	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \
 	    -c user/filebrowser/filebrowser.cpp -o $(ARM64_UDIR)/filebrowser.o
 	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg -Iuser \

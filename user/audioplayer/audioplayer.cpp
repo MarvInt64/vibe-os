@@ -661,7 +661,7 @@ void AudioPlayer::run(const char *path) {
 
     win_ = vui_window_open("Audio Player", DEFAULT_W, DEFAULT_H);
     /* Dock context menu: right-click the dock icon → Quit */
-    vui_add_dock_item(win_, "Quit", cb_quit);
+    //vui_add_dock_item(win_, "Quit", cb_quit);
     int W = vui_window_width(win_);
     int H = vui_window_height(win_);
     vui_set_clear_color(win_, COL_BG);

@@ -45,6 +45,17 @@
 #include <audio.h>
 #include <mp3dec.h>
 
+#ifdef ARCH_ARM64
+static void do_yield(void) {
+    register long x8 __asm__("x8") = 3; /* SYS_YIELD */
+    __asm__ volatile("svc #0" : "+r"(x8) : : "memory");
+}
+#else
+static void do_yield(void) {
+    __asm__ volatile("int $0x80" : : "a"(3) : "memory");
+}
+#endif
+
 /* Read buffer: larger means fewer syscalls; must be at least one MP3 frame
  * (~417-1441 bytes) but we use 4 KB for efficiency. */
 #define READ_BUF  4096
@@ -68,7 +79,7 @@ static void audio_write_all(const int16_t *buf, int samples) {
             remaining -= (unsigned long)written;
         } else {
             /* Ring full — yield CPU so audio_tick() can drain it. */
-            __asm__ volatile("int $0x80" : : "a"(3) : "memory"); /* SYS_YIELD */
+            do_yield();
         }
     }
 }

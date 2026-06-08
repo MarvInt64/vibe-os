@@ -55,8 +55,12 @@
 #define SYS_GETUID  55
 #define SYS_SETUID  57
 
-/* ---- Bare syscall stubs -------------------------------------------------- */
-
+/* ---- Bare syscall stubs (use libc wrappers for portability) ----------- */
+#ifdef ARCH_ARM64
+#define sc0(n)       __sc0((long)(n))
+#define sc1(n,a0)    __sc1((long)(n), (uint64_t)(a0))
+#define sc2(n,a0,a1) __sc2((long)(n), (uint64_t)(a0), (uint64_t)(a1))
+#else
 static long sc0(unsigned long n) {
     long ret;
     __asm__ volatile("int $0x80"
@@ -83,6 +87,7 @@ static long sc2(unsigned long n, unsigned long a0, unsigned long a1) {
                      : "rcx", "r11", "memory");
     return ret;
 }
+#endif
 
 /* ---- Database lookup helpers ---------------------------------------------- */
 

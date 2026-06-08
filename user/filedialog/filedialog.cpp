@@ -22,6 +22,24 @@ FileDialog *FileDialog::instance_ = nullptr;
 /* Helper: retrieve directory entry with kind/size info in one pass. */
 static int readdir_entry_ex(const char *path, uint32_t index, char *name, size_t name_size, uint64_t *kind, uint64_t *size) {
     long ret;
+#ifdef ARCH_ARM64
+    /* arm64: SYS_READDIR returns ret in x0, kind in x1, size in x2.
+     * Use register variables so the inline asm correctly binds outputs
+     * (same pattern as filebrowser.cpp). */
+    register long x0_val __asm__("x0") = (long)(size_t)path;
+    register long x1_val __asm__("x1") = (long)index;
+    register long x2_val __asm__("x2") = (long)(size_t)name;
+    register long x3_val __asm__("x3") = (long)name_size;
+    register long x8_val __asm__("x8") = SYS_READDIR;
+    __asm__ volatile("svc #0"
+        : "+r"(x0_val), "+r"(x1_val), "+r"(x2_val)
+        : "r"(x3_val), "r"(x8_val)
+        : "memory"
+    );
+    ret = x0_val;
+    if (kind) *kind = (uint64_t)x1_val;
+    if (size) *size = (uint64_t)x2_val;
+#else
     register uint64_t r8_val   __asm__("r8")  = 0;
     register uint64_t r10_val  __asm__("r10") = name_size;
     register uint64_t rdx_val  __asm__("rdx") = (uint64_t)(size_t)name;
@@ -34,6 +52,7 @@ static int readdir_entry_ex(const char *path, uint32_t index, char *name, size_t
     );
     if (kind) *kind = rdx_val; /* kind is returned in RDX */
     if (size) *size = r8_val;  /* size is returned in R8 */
+#endif
     return (int)ret;
 }
 
