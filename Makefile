@@ -411,6 +411,10 @@ arm64-user: $(DISK_IMG)
 	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/audioplayer.o $(ARM64_UDIR)/vexui.o \
 	    $(ARM64_UDIR)/svg.o $(ARM64_UDIR)/mp3dec.o $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/audioplayer.elf /bin/audioplayer
+	# --- Seed MP3 music files (needed by audioplayer) ---
+	@if [ -f assets/music/becorbal-town.mp3 ]; then \
+	    python3 scripts/ext2_put.py $(DISK_IMG) assets/music/becorbal-town.mp3 /music/becorbal-town.mp3; \
+	fi
 	@echo "arm64 user programs: /bin/hello /bin/gfxdemo /bin/inputtest /bin/desktop /bin/wallpaper /bin/dock /bin/topbar /bin/taskmgr /bin/sh /bin/terminal /bin/filebrowser /bin/sysinfo /bin/audioplayer + utils"
 	# --- Stubs for apps not yet ported (standalone, own _start, replaces x86 ELFs) ---
 	$(CC) $(ARM64_UCFLAGS) -c user/arm64/stub_doom.c -o $(ARM64_UDIR)/stub.o

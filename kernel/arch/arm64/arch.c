@@ -1277,6 +1277,7 @@ static void cmd_exec(const char *cmdline) {
         (struct elf64_program_header *)(buf + eh->program_header_offset);
 
     /* Copy each PT_LOAD segment to PA = vaddr - ALIAS_OFF */
+    uint64_t image_end = 0;
     for (int i = 0; i < eh->program_header_count; i++) {
         if (ph[i].type != ELF_PROGRAM_TYPE_LOAD) continue;
         uint64_t vaddr = ph[i].virtual_address;
@@ -1290,10 +1291,57 @@ static void cmd_exec(const char *cmdline) {
             dst[b] = buf[ph[i].offset + b];
         for (uint64_t b = ph[i].file_size; b < ph[i].memory_size; b++)
             dst[b] = 0;
+        /* Track the highest end-of-segment address for heap placement */
+        uint64_t seg_end = (vaddr - USER_VA_BASE) + ph[i].memory_size;
+        if (seg_end > image_end) image_end = seg_end;
     }
 
     /* Make the just-written instructions visible to the I-cache */
     __asm__ volatile("dsb ish; ic ialluis; dsb ish; isb" ::: "memory");
+
+    /* Register a minimal process entry so SYS_SBRK has a heap to work with.
+     * Without this, TCC and other malloc-using apps fail with "memory full"
+     * from the serial shell — cmd_exec doesn't go through the process
+     * manager, so no struct process is created by default.
+     * ARM64_MAX_PROCS is 16 (matching process.c). */
+#define CMD_EXEC_MAX_PROCS 16
+    int proc_slot = -1;
+    for (int i = 0; i < CMD_EXEC_MAX_PROCS; i++) {
+        if (!g_procs[i].loaded) { proc_slot = i; break; }
+    }
+    if (proc_slot >= 0) {
+        struct process *proc = &g_procs[proc_slot];
+        proc->loaded     = 1;
+        proc->state      = PROCESS_STATE_RUNNING;
+        proc->entry      = eh->entry;
+        proc->code_size  = image_end;
+        /* Stack at the top of the shared 16 MB region, 256 KB guard */
+        proc->user_stack_top      = USER_VA_BASE + 0x01000000ULL - 16;
+        proc->user_virtual_base   = USER_VA_BASE;
+        proc->heap_start          = (USER_VA_BASE + image_end + 0xFFF) & ~0xFFF;
+        proc->heap_break          = proc->heap_start;
+        proc->pid                 = 0;  /* legacy: serial path has no PID tracking */
+        proc->parent_pid          = 0;
+        proc->uid                 = 0;
+        proc->gid                 = 0;
+        proc->runtime_ticks       = 0;
+        proc->cr3                 = 0;  /* shared identity map */
+        proc->user_image_allocation = 0;  /* serial path: freed by cmd_exec */
+
+        /* Extract name from path */
+        {
+            const char *name = path;
+            for (const char *s = path; *s; s++)
+                if (*s == '/') name = s + 1;
+            size_t ni = 0;
+            for (; ni < sizeof(proc->name) - 1 && name[ni] && name[ni] != ' '; ni++)
+                proc->name[ni] = name[ni];
+            proc->name[ni] = '\0';
+        }
+        memset(&proc->context, 0, sizeof(proc->context));
+
+        if (this_cpu()) this_cpu()->current = proc;
+    }
 
     /* User stack top: VA 0x91000000 (PA 0x51000000). Args are delivered via
      * SYS_GETARG (g_spawn_arg), which crt0.c splits into argv — same as x86. */
@@ -1306,6 +1354,14 @@ static void cmd_exec(const char *cmdline) {
     uint64_t rc = arm64_enter_user(eh->entry, user_sp, 0, 0);
 
     serial_write("[exec] exit code = "); serial_write_hex_u64(rc); serial_write("\r\n");
+
+    /* Clean up the serial-exec process slot if one was allocated.
+     * SYS_EXIT may have already cleared it via process_handle_exit;
+     * this is idempotent — just ensures we don't leak. */
+    if (proc_slot >= 0 && g_procs[proc_slot].loaded) {
+        g_procs[proc_slot].loaded = 0;
+    }
+    if (this_cpu()) this_cpu()->current = 0;
     kfree(buf);
 }
 
