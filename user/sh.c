@@ -51,6 +51,7 @@
 #define SYS_DISPLAY_MODE 27
 #define SYS_SYSTEM_INFO 39
 #define SYS_GETUID  55
+#define SYS_KEYMAP_SET 67
 
 typedef unsigned long size_t;
 typedef long ssize_t;
@@ -1527,6 +1528,14 @@ static void execute_command(void) {
         cmd_cd(g_argc > 1 ? g_args[1] : "");
     } else if (strcmp(cmd, "ls") == 0) {
         cmd_ls();
+    } else if (strcmp(cmd, "keymap") == 0) {
+        const char *layout = g_argc > 1 ? g_args[1] : "us";
+        int r = syscall1(SYS_KEYMAP_SET, (uint64_t)(size_t)layout);
+        if (r == 0) {
+            write_str("keymap: switched to "); write_line(layout);
+        } else {
+            write_str("keymap: unknown layout '"); write_str(layout); write_line("'");
+        }
     } else if (strcmp(cmd, "ifconfig") == 0 || strcmp(cmd, "ip") == 0) {
         cmd_ifconfig();
     } else if (strcmp(cmd, "ping") == 0) {
