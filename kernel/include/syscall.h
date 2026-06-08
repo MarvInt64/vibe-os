@@ -134,7 +134,12 @@ enum syscall_number {
 	SYS_INPUT_POLL = 66,
 	/* rdi = layout name ("us", "de") — switch keyboard layout at runtime.
 	 * Returns 0 on success, -1 if the layout is unknown. */
-	SYS_KEYMAP_SET = 67
+	SYS_KEYMAP_SET = 67,
+	/* rdi = milliseconds — sleep the calling process for at least this many
+	 * milliseconds. Converts to CNTVCT ticks internally using the arch timer
+	 * frequency so callers don't need to know the hardware tick rate.
+	 * Returns 0 on success. */
+	SYS_SLEEP_MS = 68
 };
 
 struct system_info_snapshot {

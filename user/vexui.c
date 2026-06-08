@@ -60,6 +60,7 @@ typedef unsigned char uint8_t;
 #define SYS_WINDOW_PRESENT 18
 #define SYS_EVENT_POLL 19
 #define SYS_TIMER_SLEEP 20
+#define SYS_SLEEP_MS    68
 #define SYS_GETPID 53
 #define SYS_PROCESS_SNAPSHOT 28
 #define SYS_PROCESS_KILL 29
@@ -163,10 +164,8 @@ static inline ssize_t sc6(uint64_t n, uint64_t a0, uint64_t a1, uint64_t a2, uin
 }
 static void do_yield(void){ __asm__ volatile("int $0x80"::"a"((uint64_t)SYS_YIELD):"rcx","r11","memory"); }
 #endif
-/* Sleep for `ticks` scheduler ticks — paces the UI loop so it doesn't busy-spin
- * (which starved the rest of the desktop and made periodic refreshers present
- * far faster than intended). */
-static void nap(uint64_t ticks){ sc1(SYS_TIMER_SLEEP, ticks); }
+/* Sleep for `ms` milliseconds — paces the UI loop so it doesn't busy-spin. */
+static void nap(unsigned int ms){ sc1(SYS_SLEEP_MS, (uint64_t)ms); }
 
 /* Print a message to the controlling terminal (stdout). */
 static void emit(const char *s) {
@@ -2364,7 +2363,7 @@ void __attribute__((noreturn)) vui_run(vui_window *w) {
         if (w->dirty) { repaint(w); w->dirty = 0; }
         /* Pace idle UI apps near 16 Hz. Input is still sampled by the kernel;
          * this loop only needs to refresh app state and repaint dirty widgets. */
-        nap(6);
+        nap(60);   /* ~16 fps idle pacing */
     }
     sc1(SYS_EXIT, 0);
     for(;;){}

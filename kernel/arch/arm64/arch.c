@@ -385,6 +385,22 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = 0;
             return;
         }
+        case SYS_SLEEP_MS: {    /* 68: sleep for N milliseconds */
+            uint64_t ms = a0;
+            if (ms == 0) { regs[0] = 0; return; }
+            struct process *cur = (this_cpu() && this_cpu()->current)
+                                  ? this_cpu()->current : (struct process *)0;
+            if (!cur) { regs[0] = (uint64_t)-1; return; }
+            uint64_t hz = timer_frequency_hz();
+            if (hz == 0) hz = 24000000;
+            uint64_t ticks = ms * (hz / 1000);
+            uint64_t now = timer_tick_count();
+            cur->wake_tick = (ticks >= ~0ull - now) ? ~0ull : now + ticks;
+            cur->state = PROCESS_STATE_SLEEPING;
+            regs[0] = 0;
+            arm64_sleep_current(regs);
+            /* not reached */
+        }
         case SYS_KEYMAP_SET: {  /* 67: switch keyboard layout at runtime */
             const char *name = (const char *)(uintptr_t)a0;
             int result = keymap_set(name);

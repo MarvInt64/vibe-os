@@ -81,7 +81,8 @@ enum {
     SYS_CPU_INFO      = 64,
     SYS_FB_INFO       = 65,  /* rdi = struct vos_fb_info* → linear framebuffer */
     SYS_INPUT_POLL    = 66,  /* rdi = struct vos_input_state* → mouse state */
-    SYS_KEYMAP_SET    = 67   /* rdi = layout name ("us"|"de") → 0 on success */
+    SYS_KEYMAP_SET    = 67,  /* rdi = layout name ("us"|"de") → 0 on success */
+    SYS_SLEEP_MS      = 68   /* rdi = ms → sleep for N milliseconds */
 };
 
 #ifdef ARCH_ARM64
