@@ -62,7 +62,8 @@ private:
     int  shell_pid_ = -1;
 
     char line_[256];
-    int  line_len_ = 0;
+    int  line_len_    = 0;
+    int  cursor_pos_  = 0;       /* cursor position within line_ */
 
     bool dirty_ = true;
     int  blink_counter_ = 0;
@@ -110,6 +111,7 @@ void Terminal::send_line() {
         write(master_fd_, line_, (size_t)line_len_);
     }
     line_len_ = 0;
+    cursor_pos_ = 0;
 }
 
 void Terminal::on_key(unsigned int key) {
@@ -169,6 +171,7 @@ void Terminal::on_key(unsigned int key) {
                 strncpy(line_, history_[history_count_ - 1 - history_idx_], 256);
                 line_len_ = strlen(line_);
                 for(int i = 0; i < line_len_; i++) echo(line_[i]);
+                cursor_pos_ = line_len_;  /* cursor at end after recall */
             }
             return;
         } else if (key == 'B') { // Down
@@ -178,10 +181,23 @@ void Terminal::on_key(unsigned int key) {
                 strncpy(line_, history_[history_count_ - 1 - history_idx_], 256);
                 line_len_ = strlen(line_);
                 for(int i = 0; i < line_len_; i++) echo(line_[i]);
+                cursor_pos_ = line_len_;
             } else if (history_idx_ == 0) {
                 history_idx_ = -1;
                 while(line_len_ > 0) { echo('\b'); line_len_--; }
                 line_len_ = 0;
+                cursor_pos_ = 0;
+            }
+            return;
+        } else if (key == 'C') { // Right
+            if (cursor_pos_ < line_len_) {
+                echo(line_[cursor_pos_++]);
+            }
+            return;
+        } else if (key == 'D') { // Left
+            if (cursor_pos_ > 0) {
+                cursor_pos_--;
+                echo('\b');
             }
             return;
         }
@@ -191,15 +207,36 @@ void Terminal::on_key(unsigned int key) {
     
     if (key == '\n' || key == '\r') {
         send_line();
+        cursor_pos_ = 0;
     } else if (key == 0x08 || key == 0x7f) {   /* backspace */
-        if (line_len_ > 0) {
-            --line_len_;
-            echo('\b');
+        if (cursor_pos_ > 0) {
+            /* Shift everything after cursor left by 1 */
+            for (int i = cursor_pos_; i < line_len_; i++)
+                line_[i - 1] = line_[i];
+            line_len_--;
+            cursor_pos_--;
+            /* Redraw from cursor to end, then clear trailing cell */
+            for (int i = cursor_pos_; i < line_len_; i++)
+                echo(line_[i]);
+            echo(' ');  /* clear the last cell */
+            /* Move cursor back to correct position */
+            for (int i = cursor_pos_; i <= line_len_; i++)
+                echo('\b');
         }
     } else if (key >= 0x20 && key < 0x7f) {     /* printable ASCII */
         if (line_len_ < (int)sizeof(line_) - 2) {
-            line_[line_len_++] = (char)key;
-            echo((char)key);
+            /* Shift everything from cursor right by 1 */
+            for (int i = line_len_; i > cursor_pos_; i--)
+                line_[i] = line_[i - 1];
+            line_[cursor_pos_] = (char)key;
+            line_len_++;
+            /* Redraw from cursor to end */
+            for (int i = cursor_pos_; i < line_len_; i++)
+                echo(line_[i]);
+            cursor_pos_++;
+            /* Move cursor back to correct position */
+            for (int i = cursor_pos_; i < line_len_; i++)
+                echo('\b');
         }
     }
     if (dirty_) repaint();

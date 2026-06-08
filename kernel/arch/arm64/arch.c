@@ -1494,6 +1494,50 @@ static int uart_getc_nonblock(char *out) {
     return 1;
 }
 
+/* Try to read one character from any input source (UART or virtio keyboard).
+ * Returns 1 and sets *c on success, 0 if no input available. */
+static int shell_getc(char *c) {
+    /* Check UART first (serial port / host terminal) */
+    if (arm64_uart_can_read()) {
+        *c = arm64_uart_getc();
+        return 1;
+    }
+    /* Check virtio keyboard (QEMU window input) */
+    char vk;
+    if (virtio_kbd_read(&vk)) {
+        *c = vk;
+        return 1;
+    }
+    return 0;
+}
+
+/* Minimal ANSI escape sequence consumer: reads and discards ESC [ X
+ * sequences so arrow keys don't print garbage in the serial console.
+ * Returns 0 if no escape sequence was present (c is a normal char),
+ * 1 if an escape was consumed (caller should ignore this input). */
+static int shell_consume_escape(char first) {
+    if (first != 0x1b) return 0;   /* not an escape */
+
+    /* Try to read '[' — non-blocking, if not available just consume the ESC */
+    char b1 = 0;
+    for (int tries = 0; tries < 50; tries++) {
+        if (shell_getc(&b1)) break;
+        virtio_input_poll();
+        poll_timer();
+    }
+    if (b1 != '[') return 1;   /* ESC + something else / lone ESC — consumed */
+
+    /* Try to read the final byte (A/B/C/D/H/F/~) */
+    char b2 = 0;
+    for (int tries = 0; tries < 50; tries++) {
+        if (shell_getc(&b2)) break;
+        virtio_input_poll();
+        poll_timer();
+    }
+    /* ESC [ X consumed (even if X is 0, i.e. timeout) */
+    return 1;
+}
+
 static void shell_loop(void) {
     static char line[256];
     int pos = 0;
@@ -1509,8 +1553,15 @@ static void shell_loop(void) {
         for (;;) {
             char c;
             /* Spin until a character arrives, polling timer + input each iteration */
-            while (!uart_getc_nonblock(&c))
+            while (!shell_getc(&c)) {
                 virtio_input_poll();
+                poll_timer();
+            }
+
+            /* Consume ANSI escape sequences (arrow keys etc.) so they
+             * don't print as garbage.  virtio_input pre-converts arrow
+             * keys to \x1b[A / \x1b[B / etc. */
+            if (shell_consume_escape(c)) continue;
 
             if (c == '\r' || c == '\n') {
                 serial_write("\r\n");
@@ -1523,6 +1574,7 @@ static void shell_loop(void) {
                 line[pos++] = c;
                 serial_write_char(c);
             }
+            /* All other control characters (including lone ESC) are ignored */
         }
         run_command(line);
     }
