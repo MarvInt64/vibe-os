@@ -546,13 +546,8 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             uint64_t cap = a3;
             struct vfs_dir_entry e;
             if (!vfs_readdir(path, idx, &e)) {
-                static int rd_dbg = 0;
-                if (++rd_dbg <= 3) {
-                    serial_write("[readdir] MISS path="); serial_write(path);
-                    serial_write(" idx="); serial_write_hex_u64(idx);
-                    serial_write("\r\n");
-                }
-                regs[0] = (uint64_t)-1; return;
+                regs[0] = 0;   /* end of directory, not an error */
+                return;
             }
             /* Copy name to user buffer */
             size_t name_len = 0;
