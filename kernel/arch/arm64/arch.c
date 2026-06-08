@@ -1385,6 +1385,11 @@ static void gui_run(void) {
             else if (c == 0x7f || c == '\b') keyboard.backspace_pressed = 1;
             else keyboard.chars[keyboard.count++] = c;
         }
+        if (keyboard.count || keyboard.enter_pressed) {
+            serial_write("[kbd] count="); serial_write_hex_u64(keyboard.count);
+            serial_write(" enter="); serial_write_hex_u64(keyboard.enter_pressed);
+            serial_write("\r\n");
+        }
 
         mouse.x = g_mouse_x * (int)ramfb_width() / 32767;
         mouse.y = g_mouse_y * (int)ramfb_height() / 32767;
