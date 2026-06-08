@@ -3121,6 +3121,23 @@ int desktop_app_create_ex(struct desktop_state *desktop, uint32_t pid, const str
     if (width > (int)WINDOW_APP_CONTENT_MAX_WIDTH) width = (int)WINDOW_APP_CONTENT_MAX_WIDTH;
     if (height > (int)WINDOW_APP_CONTENT_MAX_HEIGHT) height = (int)WINDOW_APP_CONTENT_MAX_HEIGHT;
 
+    /* SINGLE_INSTANCE: if another window with the same title already
+     * exists, bring it to front instead of creating a duplicate. */
+    if ((flags & WINSYS_WINDOW_SINGLE_INSTANCE) != 0u && options->title) {
+        for (int si = 0; si < MAX_USER_APPS; si++) {
+            if (desktop->user_apps[si].created &&
+                desktop->user_apps[si].title[0] &&
+                strcmp(desktop->user_apps[si].title, options->title) == 0) {
+                int existing = WINDOW_APP_FIRST + si;
+                desktop->windows[existing].visible = 1;
+                desktop->context_menu_open = 0;
+                mark_window_dirty(desktop, existing);
+                focus_window(desktop, existing);
+                return existing;
+            }
+        }
+    }
+
     /* Reuse existing slot if this PID already has one; else find free slot. */
     slot = find_slot_by_pid(desktop, pid);
     if (slot < 0) slot = find_free_slot(desktop);

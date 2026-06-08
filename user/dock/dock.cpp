@@ -128,7 +128,7 @@ int main() {
         "Dock", width, height,
         VUI_WINDOW_FRAMELESS | VUI_WINDOW_NO_DOCK |
             VUI_WINDOW_POSITIONED | VUI_WINDOW_ALWAYS_ON_TOP |
-            VUI_WINDOW_TRANSLUCENT,
+            VUI_WINDOW_TRANSLUCENT | VUI_WINDOW_SINGLE_INSTANCE,
         x, y, tooltip_h);
     vui_set_clear_color(win, VUI_COLOR_TRANSPARENT);
 

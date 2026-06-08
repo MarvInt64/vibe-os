@@ -23,6 +23,7 @@
 /* Do not draw a drop shadow beneath this window (useful for shell panels). */
 #define WINSYS_WINDOW_NO_SHADOW     0x00000020u
 #define WINSYS_WINDOW_ASPECT_RATIO  0x00000040u
+#define WINSYS_WINDOW_SINGLE_INSTANCE 0x00000080u /* refuse if same title already running */
 
 struct winsys_window_options {
     const char *title;

@@ -845,7 +845,8 @@ static int create_topbar_window(void) {
                   | WIN_POSITIONED
                   | WIN_ALWAYS_ON_TOP
                   | WIN_TRANSLUCENT
-                  | WIN_NO_SHADOW;
+                  | WIN_NO_SHADOW
+                  | VOS_WINDOW_SINGLE_INSTANCE;
     options.x = 0;
     options.y = 0;
 

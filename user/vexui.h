@@ -49,6 +49,7 @@ typedef unsigned int vui_u32;
 #define VUI_WINDOW_TRANSLUCENT   0x00000010u
 #define VUI_WINDOW_NO_SHADOW     0x00000020u   /* suppress drop shadow (shell panels) */
 #define VUI_WINDOW_ASPECT_RATIO  0x00000040u   /* lock window resizing to its initial aspect ratio */
+#define VUI_WINDOW_SINGLE_INSTANCE  0x00000080u /* refuse if same title already running */
 
 typedef struct vui_window vui_window;
 typedef struct vui_widget vui_widget;

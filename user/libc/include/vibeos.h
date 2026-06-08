@@ -210,6 +210,7 @@ int vos_window_create(const char *title, int w, int h);   /* >=0 id, <0 = no ser
 #define VOS_WINDOW_TRANSLUCENT   0x00000010u  /* window background is transparent */
 #define VOS_WINDOW_NO_SHADOW     0x00000020u  /* suppress drop shadow */
 #define VOS_WINDOW_ASPECT_RATIO  0x00000040u
+#define VOS_WINDOW_SINGLE_INSTANCE 0x00000080u /* refuse if same title already running */
 struct vos_window_options {
     const char *title;
     int32_t width;
