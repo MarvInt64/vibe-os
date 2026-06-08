@@ -131,7 +131,10 @@ enum syscall_number {
 	SYS_FB_INFO = 65,
 	/* rdi = struct vos_input_state* (x,y,buttons,moved) — 0 on success.
 	 * Polls the virtio-input device and fills in the current mouse state. */
-	SYS_INPUT_POLL = 66
+	SYS_INPUT_POLL = 66,
+	/* rdi = layout name ("us", "de") — switch keyboard layout at runtime.
+	 * Returns 0 on success, -1 if the layout is unknown. */
+	SYS_KEYMAP_SET = 67
 };
 
 struct system_info_snapshot {

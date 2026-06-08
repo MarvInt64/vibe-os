@@ -80,7 +80,8 @@ enum {
     SYS_CLIPBOARD_LEN = 63,
     SYS_CPU_INFO      = 64,
     SYS_FB_INFO       = 65,  /* rdi = struct vos_fb_info* → linear framebuffer */
-    SYS_INPUT_POLL    = 66   /* rdi = struct vos_input_state* → mouse state */
+    SYS_INPUT_POLL    = 66,  /* rdi = struct vos_input_state* → mouse state */
+    SYS_KEYMAP_SET    = 67   /* rdi = layout name ("us"|"de") → 0 on success */
 };
 
 #ifdef ARCH_ARM64

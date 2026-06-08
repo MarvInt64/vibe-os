@@ -385,6 +385,12 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = 0;
             return;
         }
+        case SYS_KEYMAP_SET: {  /* 67: switch keyboard layout at runtime */
+            const char *name = (const char *)(uintptr_t)a0;
+            int result = keymap_set(name);
+            regs[0] = (uint64_t)(int64_t)result;
+            return;
+        }
         case SYS_INPUT_POLL: {  /* 66: fill struct vos_input_state* with mouse state */
             /* struct vos_input_state { int x, y, buttons, moved; }; */
             int *out = (int *)(uintptr_t)a0;   /* EL0 ptr, EL1-readable */
