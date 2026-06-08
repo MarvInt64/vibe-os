@@ -118,6 +118,7 @@ bearssl: $(BEARSSL_LIB)
 # Portable kernel sources (no x86 port I/O, no APIC, no IDE):
 ARM64_COMMON_SRCS := \
     kernel/src/alloc.c \
+    kernel/src/clipboard.c \
     kernel/src/string.c \
     kernel/src/ext2_fs.c \
     kernel/src/ramdisk.c \

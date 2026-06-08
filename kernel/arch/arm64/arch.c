@@ -33,6 +33,7 @@
 #include "../../include/window.h"
 #include "../../include/input.h"
 #include "../../include/keymap.h"
+#include "../../include/clipboard.h"
 #include "../../include/winsys.h"
 #include "../../include/audio.h"
 #include "../../include/vfs.h"
@@ -911,6 +912,25 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             }
             return;
         }
+        case SYS_CLIPBOARD_SET: { /* 61: set clipboard, a0=data, a1=len */
+            const char *data = (const char *)(uintptr_t)a0;
+            uint32_t   len   = (uint32_t)a1;
+            if (!data || len > CLIPBOARD_MAX_BYTES) {
+                regs[0] = (uint64_t)-1;
+                return;
+            }
+            regs[0] = (uint64_t)clipboard_set(data, len);
+            return;
+        }
+        case SYS_CLIPBOARD_GET: { /* 62: get clipboard, a0=buf, a1=cap */
+            char    *buf = (char *)(uintptr_t)a0;
+            uint32_t cap = (uint32_t)a1;
+            regs[0] = (uint64_t)clipboard_get(buf, cap);
+            return;
+        }
+        case SYS_CLIPBOARD_LEN:   /* 63: get clipboard length */
+            regs[0] = (uint64_t)clipboard_len();
+            return;
         default:
             serial_write("[svc] unknown syscall ");
             serial_write_hex_u64(num);
