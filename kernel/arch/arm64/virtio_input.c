@@ -266,10 +266,33 @@ static void vi_poll_one(struct vi_device *d) {
                 /* Translate key press to ASCII via shared keymap */
                 if (ev->value == 1) {
                     char ascii = keymap_translate(ev->code, g_kmod);
-                    if (ascii && g_kbd_count < KBD_BUF_SIZE) {
-                        g_kbd_buf[g_kbd_head] = ascii;
-                        g_kbd_head = (g_kbd_head + 1) % KBD_BUF_SIZE;
-                        g_kbd_count++;
+                    if (ascii) {
+                        if (g_kbd_count < KBD_BUF_SIZE) {
+                            g_kbd_buf[g_kbd_head] = ascii;
+                            g_kbd_head = (g_kbd_head + 1) % KBD_BUF_SIZE;
+                            g_kbd_count++;
+                        }
+                    } else {
+                        /* Special keys: generate ANSI escape sequences.
+                         * Arrow keys etc. aren't in the keymap table. */
+                        const char *seq = 0;
+                        switch (ev->code) {
+                            case 103: seq = "\x1b[A"; break;   /* UP */
+                            case 108: seq = "\x1b[B"; break;   /* DOWN */
+                            case 105: seq = "\x1b[D"; break;   /* LEFT */
+                            case 106: seq = "\x1b[C"; break;   /* RIGHT */
+                            case 102: seq = "\x1b[H"; break;   /* HOME */
+                            case 107: seq = "\x1b[F"; break;   /* END */
+                        }
+                        if (seq) {
+                            for (const char *p = seq; *p; p++) {
+                                if (g_kbd_count < KBD_BUF_SIZE) {
+                                    g_kbd_buf[g_kbd_head] = *p;
+                                    g_kbd_head = (g_kbd_head + 1) % KBD_BUF_SIZE;
+                                    g_kbd_count++;
+                                }
+                            }
+                        }
                     }
                 }
             }
