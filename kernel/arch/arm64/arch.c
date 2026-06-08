@@ -203,6 +203,9 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             } else regs[0] = (uint64_t)-1;
             return;
         }
+        case SYS_IOCTL:         /* 2: no-op stub */
+            regs[0] = 0;
+            return;
         case SYS_READ: {        /* 0: read(fd, buf, len) */
             /* fd 0 = stdin → UART (or PTY for shell) */
             if (a0 == 0) {
@@ -212,16 +215,21 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 struct arm64_pty *pty = &g_pty;
                 struct process *cur_proc = (this_cpu() && this_cpu()->current) ? this_cpu()->current : 0;
                 if (cur_proc && pty->child_pid && cur_proc->pid == pty->child_pid) {
-                    /* Read from PTY input buffer (terminal → shell) */
-                    if (pty->in_count == 0) {
+                    /* Read from PTY input buffer (terminal → shell).
+                     * Return as many bytes as available up to a2. */
+                    uint64_t n = a2;
+                    if (n > (uint64_t)pty->in_count)
+                        n = (uint64_t)pty->in_count;
+                    if (n == 0) {
                         regs[32] -= 4;  /* re-execute SVC on resume */
                         arm64_yield_current(regs);
                     }
-                    char c = pty->in_buf[pty->in_tail];
-                    pty->in_tail = (pty->in_tail + 1) % PTY_BUF_SIZE;
-                    pty->in_count--;
-                    dst[0] = c;
-                    regs[0] = 1;
+                    for (uint64_t i = 0; i < n; i++) {
+                        dst[i] = pty->in_buf[pty->in_tail];
+                        pty->in_tail = (pty->in_tail + 1) % PTY_BUF_SIZE;
+                    }
+                    pty->in_count -= (int)n;
+                    regs[0] = n;
                     return;
                 }
                 if (!serial_can_read()) {
