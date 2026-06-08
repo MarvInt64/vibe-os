@@ -66,3 +66,20 @@ conductor/
 # ---- Third-party source trees that are NOT submodules -------------------
 third_party/quickjs/
 .cache
+
+# ---- One-off bugfix scripts ----------------------------------------------
+fix_arch.py
+fix_bkl.py
+fix_process.py
+
+# ---- QEMU output artifact ------------------------------------------------
+qemu_out.txt
+
+# ---- Scratch files -------------------------------------------------------
+scratch/
+
+# ---- Embedded TCC repo (managed separately) ------------------------------
+third_party/tcc/
+
+# ---- Obsolete stubs (DOOM now runs natively on arm64) --------------------
+user/arm64/stub_doom.c
