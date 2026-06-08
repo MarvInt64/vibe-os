@@ -86,6 +86,17 @@ static char  g_cwd[256] = "/";
 #define ARM64_MAX_FD 16
 #define ARM64_FD_TYPE_FILE 0
 #define ARM64_FD_TYPE_PTY  1
+#define PTY_BUF_SIZE 4096
+
+struct arm64_pty {
+    char   in_buf[PTY_BUF_SIZE];    /* master writes → slave reads (terminal→shell) */
+    int    in_head, in_tail, in_count;
+    char   out_buf[PTY_BUF_SIZE];   /* slave writes → master reads (shell→terminal) */
+    int    out_head, out_tail, out_count;
+    int    master_fd;
+    uint32_t child_pid;              /* shell pid attached to slave */
+};
+
 struct arm64_file {
     int      used;
     int      type;       /* ARM64_FD_TYPE_* */
@@ -93,8 +104,11 @@ struct arm64_file {
     uint32_t ino;
     uint32_t offset;
     uint32_t size;
+    struct arm64_pty *pty;  /* valid when type == ARM64_FD_TYPE_PTY */
 };
+
 static struct arm64_file g_files[ARM64_MAX_FD];
+static struct arm64_pty  g_pty;     /* single global PTY for now */
 
 /* Argument string for the currently-exec'd program (SYS_GETARG returns it).
  * crt0.c reads this and splits it into argv — same mechanism as x86. */
@@ -137,17 +151,42 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         switch (num) {
         case SYS_WRITE: {       /* 1: write(fd, buf, len) */
             const char *buf = (const char *)(uintptr_t)a1;
-            if (a0 <= 2) {      /* stdout/stderr → UART */
+            if (a0 <= 2) {      /* stdout/stderr */
+                /* Check if this process is a PTY child (shell) → redirect to PTY */
+                struct arm64_pty *pty = &g_pty;
+                struct process *cur_proc = (this_cpu() && this_cpu()->current) ? this_cpu()->current : 0;
+                if (cur_proc && pty->child_pid && cur_proc->pid == pty->child_pid) {
+                    /* Write to PTY output buffer (shell → terminal) */
+                    uint64_t n = a2;
+                    if (n > (uint64_t)(PTY_BUF_SIZE - pty->out_count))
+                        n = (uint64_t)(PTY_BUF_SIZE - pty->out_count);
+                    for (uint64_t i = 0; i < n; i++) {
+                        pty->out_buf[pty->out_head] = buf[i];
+                        pty->out_head = (pty->out_head + 1) % PTY_BUF_SIZE;
+                    }
+                    pty->out_count += (int)n;
+                    regs[0] = n;
+                    return;
+                }
+                /* Normal stdout/stderr → UART */
                 for (uint64_t i = 0; i < a2; i++)
                     serial_write_char(buf[i]);
                 regs[0] = a2;
             } else if (a0 < ARM64_MAX_FD && g_files[a0].used) {
                 struct arm64_file *f = &g_files[a0];
                 if (f->type == ARM64_FD_TYPE_PTY) {
-                    /* PTY master write → UART (passthrough for now) */
-                    for (uint64_t i = 0; i < a2; i++)
-                        serial_write_char(buf[i]);
-                    regs[0] = a2;
+                    /* PTY master write → input buffer (terminal → shell) */
+                    struct arm64_pty *pty = f->pty;
+                    if (!pty) { regs[0] = (uint64_t)-1; return; }
+                    uint64_t n = a2;
+                    if (n > (uint64_t)(PTY_BUF_SIZE - pty->in_count))
+                        n = (uint64_t)(PTY_BUF_SIZE - pty->in_count);
+                    for (uint64_t i = 0; i < n; i++) {
+                        pty->in_buf[pty->in_head] = buf[i];
+                        pty->in_head = (pty->in_head + 1) % PTY_BUF_SIZE;
+                    }
+                    pty->in_count += (int)n;
+                    regs[0] = n;
                 } else if (f->writable) {
                     ssize_t w = ext2_write(&g_fs, f->ino, f->offset, a2, buf);
                     if (w > 0) { f->offset += (uint32_t)w; regs[0] = (uint64_t)w; }
@@ -157,15 +196,29 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             return;
         }
         case SYS_READ: {        /* 0: read(fd, buf, len) */
-            /* fd 0 = stdin → UART */
+            /* fd 0 = stdin → UART (or PTY for shell) */
             if (a0 == 0) {
                 char *dst = (char *)(uintptr_t)a1;
                 if (a2 == 0 || !dst) { regs[0] = 0; return; }
+                /* Check if this process is a PTY child (shell) — redirect to PTY */
+                struct arm64_pty *pty = &g_pty;
+                struct process *cur_proc = (this_cpu() && this_cpu()->current) ? this_cpu()->current : 0;
+                if (cur_proc && pty->child_pid && cur_proc->pid == pty->child_pid) {
+                    /* Read from PTY input buffer (terminal → shell) */
+                    if (pty->in_count == 0) {
+                        regs[32] -= 4;  /* re-execute SVC on resume */
+                        arm64_yield_current(regs);
+                    }
+                    char c = pty->in_buf[pty->in_tail];
+                    pty->in_tail = (pty->in_tail + 1) % PTY_BUF_SIZE;
+                    pty->in_count--;
+                    dst[0] = c;
+                    regs[0] = 1;
+                    return;
+                }
                 if (!serial_can_read()) {
-                    /* No data: back up ELR so we re-execute the SVC on resume */
-                    regs[32] -= 4;  /* point ELR back to SVC instruction */
+                    regs[32] -= 4;
                     arm64_yield_current(regs);
-                    /* not reached */
                 }
                 char c = serial_read_byte();
                 dst[0] = c;
@@ -176,16 +229,19 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 regs[0] = (uint64_t)-1; return;
             }
             struct arm64_file *f = &g_files[a0];
-            /* PTY master: read from UART (passthrough for now) */
+            /* PTY master: read from shell output buffer */
             if (f->type == ARM64_FD_TYPE_PTY) {
                 char *dst = (char *)(uintptr_t)a1;
                 if (a2 == 0 || !dst) { regs[0] = 0; return; }
-                if (!serial_can_read()) {
+                struct arm64_pty *pty = f->pty;
+                if (!pty) { regs[0] = (uint64_t)-1; return; }
+                if (pty->out_count == 0) {
                     regs[32] -= 4;  /* re-execute SVC on resume */
                     arm64_yield_current(regs);
-                    /* not reached */
                 }
-                char c = serial_read_byte();
+                char c = pty->out_buf[pty->out_tail];
+                pty->out_tail = (pty->out_tail + 1) % PTY_BUF_SIZE;
+                pty->out_count--;
                 dst[0] = c;
                 regs[0] = 1;
                 return;
@@ -671,24 +727,34 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         }
         case SYS_PTY_OPEN: {    /* 45: allocate a pseudo-terminal master fd */
             /* Allocate a free fd slot for the PTY master endpoint.
-             * Minimal passthrough: reads/writes on this fd go to UART. */
+             * Uses the global g_pty ring buffers for Terminal ↔ Shell I/O. */
             int fd = -1;
             for (int i = 3; i < ARM64_MAX_FD; i++) {
                 if (!g_files[i].used) { fd = i; break; }
             }
             if (fd < 0) { regs[0] = (uint64_t)-1; return; }
+            /* Reset PTY buffers */
+            memset(&g_pty, 0, sizeof(g_pty));
+            g_pty.master_fd = fd;
             g_files[fd].used = 1;
             g_files[fd].type = ARM64_FD_TYPE_PTY;
             g_files[fd].writable = 1;
+            g_files[fd].pty = &g_pty;
             regs[0] = (uint64_t)(int64_t)fd;
             return;
         }
         case SYS_SPAWN_PTY: {   /* 46: spawn program with PTY slave on fd 0,1,2 */
-            /* a0 = path to executable, a1 = PTY master fd.
-             * Minimal: spawn normally; shell uses fd 0,1,2 which go to UART. */
+            /* a0 = path, a1 = PTY master fd.
+             * Spawn child with its fd 0,1,2 reading/writing the PTY buffers. */
             char path[256];
             copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
+            if (a1 < 3 || a1 >= ARM64_MAX_FD || !g_files[a1].used ||
+                g_files[a1].type != ARM64_FD_TYPE_PTY) {
+                regs[0] = (uint64_t)-1; return;
+            }
+            struct arm64_pty *pty = g_files[a1].pty;
             int child_pid = process_spawn_path(path, 0, 0, 0, 0);
+            if (child_pid >= 0) pty->child_pid = (uint32_t)child_pid;
             regs[0] = (uint64_t)(int64_t)child_pid;
             return;
         }
