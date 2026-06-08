@@ -88,6 +88,9 @@ int  virtio_snd_ready(void);
 int  virtio_snd_write(uint32_t pid, const void *buf, unsigned long bytes);
 void virtio_snd_mix_tick(void);
 int  virtio_snd_busy_slots(void);
+void virtio_snd_set_rate(uint32_t hz);
+void virtio_snd_set_volume(uint32_t vol);
+uint32_t virtio_snd_get_rate(void);
 
 /* ---- ramfb framebuffer ------------------------------------------------ */
 int       ramfb_init(uint32_t width, uint32_t height);

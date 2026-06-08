@@ -146,6 +146,9 @@ static struct tx_slot g_tx[TX_SLOTS] __attribute__((aligned(PAGE_SIZE)));
 #define SND_PREROLL_BYTES 8192           /* buffer this much before a voice starts */
 #define SND_PREROLL_TIMEOUT 10           /* ...or start anyway after N ticks */
 
+static uint32_t g_snd_rate   = 48000;    /* current sample rate (Hz) */
+static uint32_t g_snd_volume = 80;       /* master volume 0–100 */
+
 struct snd_voice {
     uint32_t pid;                /* owner (0 = free) */
     uint8_t  ring[SND_RING_SIZE];
@@ -453,6 +456,7 @@ void virtio_snd_mix_tick(void) {
         int16_t mixed[SND_PERIOD_BYTES / 2];
         for (int i = 0; i < SND_PERIOD_BYTES / 2; i++) {
             int32_t s = acc[i];
+            if (g_snd_volume < 100) s = s * (int32_t)g_snd_volume / 100;
             if (s > 32767) s = 32767; else if (s < -32768) s = -32768;
             mixed[i] = (int16_t)s;
         }
@@ -466,4 +470,14 @@ int virtio_snd_busy_slots(void) {
     int n = 0;
     for (int i = 0; i < TX_SLOTS; i++) if (g_tx[i].busy) n++;
     return n;
+}
+
+/* ---- Rate / Volume IOCTL ----------------------------------------------- */
+uint32_t virtio_snd_get_rate(void)   { return g_snd_rate; }
+void     virtio_snd_set_rate(uint32_t hz) {
+    if (hz >= 8000 && hz <= 192000) g_snd_rate = hz;
+}
+uint32_t virtio_snd_get_volume(void) { return g_snd_volume; }
+void     virtio_snd_set_volume(uint32_t vol) {
+    if (vol <= 100) g_snd_volume = vol;
 }

@@ -680,13 +680,18 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             out->present     = virtio_snd_ready() ? 1u : 0u;
             out->channels    = 2;
             out->bits        = 16;
-            out->sample_rate = 48000;
+            out->sample_rate = virtio_snd_get_rate();
             regs[0] = 0;
             return;
         }
-        case SYS_AUDIO_IOCTL:    /* 60: no rate/volume control on virtio-snd yet */
+        case SYS_AUDIO_IOCTL: {  /* 60: rate / volume control for virtio-snd */
+            uint32_t req = (uint32_t)a0;
+            uint32_t val = (uint32_t)a1;
+            if (req == 0) virtio_snd_set_rate(val);       /* SET_RATE */
+            else if (req == 3) virtio_snd_set_volume(val); /* SET_VOLUME */
             regs[0] = 0;
             return;
+        }
         case SYS_CPU_INFO: {     /* 64: a0=struct cpu_info_snapshot* buf, a1=max */
             struct cpu_info_snapshot *buf = (struct cpu_info_snapshot *)(uintptr_t)a0;
             unsigned max = (unsigned)a1;
@@ -1814,19 +1819,21 @@ static void flush_visible_framebuffer(void) {
 }
 
 void arm64_net_wait_pump(void) {
-    static uint32_t call_count = 0;
-    call_count++;
     if (!g_desktop || !g_fb.base) {
-        __asm__ volatile("yield");
-        return;
-    }
-    /* Pump every 256 calls (~60 Hz at typical loop speed, timer-independent) */
-    if ((call_count & 0xFF) != 0) {
-        __asm__ volatile("yield");
+        __asm__ volatile("msr daifclr, #2; wfi; msr daifset, #2");
         return;
     }
 
+    __asm__ volatile("msr daifclr, #2; wfi; msr daifset, #2");
+
     virtio_input_poll();
+
+    static uint64_t last_pump = 0;
+    uint64_t now = timer_tick_count();
+    uint64_t hz = timer_frequency_hz();
+    if (hz == 0) hz = 24000000;
+    if (now - last_pump < hz / 60) return;
+    last_pump = now;
 
     struct mouse_state mouse;
     struct keyboard_state keyboard;
