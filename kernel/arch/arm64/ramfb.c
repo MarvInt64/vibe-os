@@ -72,6 +72,7 @@ static uint64_t bswap64(uint64_t v){
 
 /* ---- framebuffer state ------------------------------------------------ */
 static uint32_t *g_fb = 0;
+static void     *g_fb_raw = 0;   /* original kmalloc pointer for free */
 static uint32_t  g_fb_w = 0, g_fb_h = 0, g_fb_stride = 0;
 
 uint32_t *ramfb_buffer(void) { return g_fb; }
@@ -177,6 +178,7 @@ int ramfb_init(uint32_t width, uint32_t height) {
     fwcfg_dma(key, &cfg, sizeof(cfg), 1);   /* write config → display turns on */
 
     g_fb = (uint32_t *)fb;
+    g_fb_raw = raw;
     g_fb_w = width; g_fb_h = height; g_fb_stride = stride;
 
     serial_write("[ramfb] ");
@@ -215,18 +217,13 @@ int ramfb_set_mode(uint32_t width, uint32_t height) {
     cfg.stride = bswap32(stride);
     fwcfg_dma(key, &cfg, sizeof(cfg), 1);
 
-    /* Free old framebuffer */
-    if (g_fb) {
-        /* Old buffer was page-aligned allocation — find its raw pointer.
-         * We stored the aligned pointer; the raw allocation is within 4095
-         * bytes before it. */ 
-        uint8_t *old_raw = (uint8_t *)g_fb - 4096;
-        /* Scan back to find a valid kmalloc header — just free the
-         * nearest page boundary. */
-        kfree((void *)(((uintptr_t)g_fb - 1) & ~(uintptr_t)4095));
+    /* Free old framebuffer using the saved raw pointer */
+    if (g_fb_raw) {
+        kfree(g_fb_raw);
     }
 
     g_fb = (uint32_t *)fb;
+    g_fb_raw = raw;
     g_fb_w = width;
     g_fb_h = height;
     g_fb_stride = stride;
