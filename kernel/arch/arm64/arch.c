@@ -758,6 +758,11 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         case SYS_GETUID:        /* 55: get current user ID */
             regs[0] = (uint64_t)((this_cpu() && this_cpu()->current) ? this_cpu()->current->uid : 0);
             return;
+        case SYS_REBOOT:        /* 51: reboot the system */
+        case SYS_SHUTDOWN:      /* 52: shutdown/halt the system */
+            serial_write("\r\n[shutdown] halting...\r\n");
+            __asm__ volatile("msr daifset, #3");
+            while (1) __asm__ volatile("wfi");
         case SYS_SBRK: {        /* 42: grow/shrink process heap */
             intptr_t inc = (intptr_t)a0;
             struct process *cur = (this_cpu() && this_cpu()->current)
