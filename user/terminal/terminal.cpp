@@ -87,24 +87,24 @@ void Terminal::echo(char c) {
 }
 
 void Terminal::send_line() {
-    /* Terminate the line with newline and hand it to the shell.
-     * Newline termination matches TTY behaviour; NUL termination
-     * breaks programs (su, etc.) that read char-by-char until '\n'. */
-    if (line_len_ < (int)sizeof(line_) - 1) {
-        line_[line_len_++] = '\n';
-    }
-    
-    /* Save to history */
-    if (line_len_ > 1) { // Only if not empty
+    /* Save the current line to history BEFORE appending the newline.
+     * The history entries must not contain control characters. */
+    if (line_len_ > 0) { // Only if not empty (excluding newline)
+        /* Temporarily terminate for strncpy */
+        line_[line_len_] = '\0';
         if (history_count_ < MAX_HISTORY) {
             strncpy(history_[history_count_++], line_, 256);
         } else {
-            // Shift history
             for (int i = 0; i < MAX_HISTORY - 1; i++) strncpy(history_[i], history_[i+1], 256);
             strncpy(history_[MAX_HISTORY - 1], line_, 256);
         }
     }
     history_idx_ = -1;
+
+    /* Terminate the line with newline and hand it to the shell. */
+    if (line_len_ < (int)sizeof(line_) - 1) {
+        line_[line_len_++] = '\n';
+    }
 
     echo('\n');
     if (master_fd_ >= 0) {
