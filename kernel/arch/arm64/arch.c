@@ -206,6 +206,33 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         case SYS_IOCTL:         /* 2: no-op stub */
             regs[0] = 0;
             return;
+        case SYS_CHDIR: {       /* 11: change directory */
+            char path[256];
+            copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
+            /* Simple chdir: just verify the path exists and is a directory */
+            uint32_t ino = ext2_lookup_inode(&g_fs, path);
+            if (!ino) { regs[0] = (uint64_t)-1; return; }
+            struct ext2_inode *node = &g_fs.inode_table[ino - 1];
+            if (!(node->mode & 0x4000)) { regs[0] = (uint64_t)-1; return; }
+            /* Update global cwd */
+            size_t i;
+            for (i = 0; path[i] && i < sizeof(g_cwd) - 1; i++)
+                g_cwd[i] = path[i];
+            g_cwd[i] = '\0';
+            regs[0] = 0;
+            return;
+        }
+        case SYS_GETCWD: {      /* 12: get current working directory */
+            char *buf = (char *)(uintptr_t)a0;
+            uint64_t len = a1;
+            if (!buf || !len) { regs[0] = (uint64_t)-1; return; }
+            size_t i;
+            for (i = 0; g_cwd[i] && i < len - 1; i++)
+                buf[i] = g_cwd[i];
+            buf[i] = '\0';
+            regs[0] = 0;
+            return;
+        }
         case SYS_READ: {        /* 0: read(fd, buf, len) */
             /* fd 0 = stdin → UART (or PTY for shell) */
             if (a0 == 0) {
