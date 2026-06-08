@@ -1669,6 +1669,14 @@ static void gui_run(void) {
                 }
                 /* Force full redraw on next frame */
                 g_desktop->background_dirty = 1;
+                g_desktop->dirty = 1;
+                g_desktop->dirty_rect.x = 0;
+                g_desktop->dirty_rect.y = 0;
+                g_desktop->dirty_rect.width = (int)ramfb_width();
+                g_desktop->dirty_rect.height = (int)ramfb_height();
+
+                /* Clear dirty tiles — old tile data may have stale dimensions */
+                memset(g_desktop->dirty_tiles, 0, sizeof(g_desktop->dirty_tiles));
 
                 /* Reinitialize background framebuffer at new resolution.
                  * background_storage is DESKTOP_MAX_WIDTH * DESKTOP_MAX_HEIGHT
@@ -1677,6 +1685,18 @@ static void gui_run(void) {
                         (uintptr_t)g_desktop->background_storage,
                         ramfb_width(), ramfb_height(),
                         ramfb_width() * 4, 32);
+
+                /* Reinitialize ALL window FBs at current window sizes.
+                 * Window dimensions may have been clamped above, so FBs
+                 * must match. */
+                for (int wi = 0; wi < WINDOW_COUNT; wi++) {
+                    struct window_state *w = &g_desktop->windows[wi];
+                    if (!w->title || !w->title[0]) continue;
+                    fb_init(&g_desktop->window_fbs[wi],
+                            (uintptr_t)g_desktop->window_fbs[wi].base,
+                            w->width, w->height,
+                            w->width * 4, 32);
+                }
 
                 /* Expand full-width windows (topbar) to match new width. */
                 for (int wi = 0; wi < WINDOW_COUNT; wi++) {
