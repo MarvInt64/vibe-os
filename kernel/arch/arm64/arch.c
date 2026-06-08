@@ -162,9 +162,8 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 char *dst = (char *)(uintptr_t)a1;
                 if (a2 == 0 || !dst) { regs[0] = 0; return; }
                 if (!serial_can_read()) {
-                    /* No input yet — yield and let other processes run.
-                     * When we're resumed, the SVC re-executes and tries again. */
-                    regs[0] = 0;  /* placeholder; real value set on retry */
+                    /* No data: back up ELR so we re-execute the SVC on resume */
+                    regs[32] -= 4;  /* point ELR back to SVC instruction */
                     arm64_yield_current(regs);
                     /* not reached */
                 }
@@ -182,7 +181,7 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 char *dst = (char *)(uintptr_t)a1;
                 if (a2 == 0 || !dst) { regs[0] = 0; return; }
                 if (!serial_can_read()) {
-                    regs[0] = 0;
+                    regs[32] -= 4;  /* re-execute SVC on resume */
                     arm64_yield_current(regs);
                     /* not reached */
                 }
