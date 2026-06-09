@@ -141,14 +141,14 @@ static int window_always_on_top(const struct window_state *window) {
 }
 
 static int ui_titlebar_height(const struct desktop_state *desktop) {
-    return large_ui(desktop) ? 38 : 30;
+    return large_ui(desktop) ? 28 : 24;
 }
 
 /* Work-area reservation for the userspace shell dock. The dock itself is no
  * longer rendered by the kernel; this keeps maximized/initial windows from
  * covering the always-on-top dock app until shell-owned work-area hints exist. */
 static int ui_taskbar_height(const struct desktop_state *desktop) {
-    return large_ui(desktop) ? 104 : 80;
+    return large_ui(desktop) ? 88 : 72;
 }
 
 static int ui_left_work_area_inset(const struct desktop_state *desktop) {
@@ -640,10 +640,10 @@ static void build_app_draw_context(struct desktop_state *desktop, const struct w
         app_ctx->content_width = window->width;
         app_ctx->content_height = window->height;
     } else {
-        app_ctx->content_x = large_ui(desktop) ? 22 : 16;
-        app_ctx->content_y = large_ui(desktop) ? 58 : 48;
-        app_ctx->content_width = window->width - (large_ui(desktop) ? 44 : 32);
-        app_ctx->content_height = window->height - (large_ui(desktop) ? 82 : 66);
+        app_ctx->content_x = large_ui(desktop) ? 12 : 10;
+        app_ctx->content_y = large_ui(desktop) ? 36 : 32;
+        app_ctx->content_width = window->width - (large_ui(desktop) ? 24 : 20);
+        app_ctx->content_height = window->height - (large_ui(desktop) ? 54 : 48);
     }
     app_ctx->text_scale = window->app_slot == WINDOW_TERMINAL ? ui_terminal_text_scale(desktop) : ui_window_text_scale(desktop);
     app_ctx->line_step = window->app_slot == WINDOW_TERMINAL ? ui_terminal_line_step(desktop) : text_line_height(app_ctx->text_scale) + (large_ui(desktop) ? 10 : 7);
@@ -733,9 +733,9 @@ static void normalize_z_order(struct desktop_state *desktop) {
  * the buttons drawn in draw_window_frame so the hit-testing actually lines up. */
 static int window_button_hit(const struct desktop_state *desktop, const struct window_state *window, int px, int py) {
     int large = large_ui(desktop);
-    int size = large ? 16 : 12;
-    int gap = large ? 24 : 18;
-    int by = window->y + (large ? 12 : 10);
+    int size = large ? 14 : 12;
+    int gap = large ? 20 : 18;
+    int by = window->y + (large ? 7 : 6);
     int xr = window->x + window->width;
     int x_close = xr - gap - (large ? 4 : 0);
     int x_max = xr - (gap * 2) - (large ? 6 : 0);
@@ -762,8 +762,8 @@ static int titlebar_hit(const struct desktop_state *desktop, const struct window
 }
 
 static int resize_hit(const struct desktop_state *desktop, const struct window_state *window, int px, int py) {
-    int edge_grip = large_ui(desktop) ? 12 : 9;
-    int corner_grip = large_ui(desktop) ? 26 : 20;
+    int edge_grip = large_ui(desktop) ? 8 : 6;
+    int corner_grip = large_ui(desktop) ? 18 : 14;
     int edges = 0;
 
     if (window_frameless(window) || !point_in_rect(px, py, window->x, window->y, window->width, window->height)) {
