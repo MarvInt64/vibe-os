@@ -812,7 +812,7 @@ static void app_window_max_size(struct desktop_state *desktop, int *max_w, int *
     if (*max_h > (int)WINDOW_APP_SURFACE_MAX_HEIGHT) *max_h = (int)WINDOW_APP_SURFACE_MAX_HEIGHT;
 }
 
-static void update_app_content_size_slot(struct desktop_state *desktop, int slot) {
+void update_app_content_size_slot(struct desktop_state *desktop, int slot) {
     int cw;
     int ch;
     int win_idx = WINDOW_APP_FIRST + slot;

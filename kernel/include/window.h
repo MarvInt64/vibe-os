@@ -190,6 +190,7 @@ struct desktop_state {
 
 void desktop_init(struct desktop_state *desktop, uint32_t screen_width, uint32_t screen_height);
 void desktop_layout_shell_panels(struct desktop_state *desktop);
+void update_app_content_size_slot(struct desktop_state *desktop, int slot);
 void desktop_handle_input(struct desktop_state *desktop, const struct mouse_state *mouse, const struct keyboard_state *keyboard);
 void desktop_poll_apps(struct desktop_state *desktop);
 void desktop_render(struct desktop_state *desktop, struct framebuffer *fb);

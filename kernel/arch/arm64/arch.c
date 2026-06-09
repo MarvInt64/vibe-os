@@ -2241,6 +2241,14 @@ static void gui_run(void) {
                         ramfb_width() * 4, 32);
 
                 desktop_layout_shell_panels(g_desktop);
+
+                /* Resize content buffers for all active user apps so they
+                 * fill the new window dimensions.  Without this, apps keep
+                 * their old (smaller) buffers and render into a corner. */
+                for (int si = 0; si < MAX_USER_APPS; si++) {
+                    if (g_desktop->user_apps[si].created)
+                        update_app_content_size_slot(g_desktop, si);
+                }
             }
         }
 
