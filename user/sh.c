@@ -1104,7 +1104,7 @@ static int parse_uint(const char *s) {
 static void cmd_display(int argc) {
     /* Curated list of resolutions the BGA/QEMU std-vga reliably supports. */
     static const char *modes[] = {
-        "1920 1080", "1680 1050", "1512 982", "1440 900",
+        "2048 1152", "1920 1080", "1680 1050", "1512 982", "1440 900",
         "1366 768", "1280 800", "1280 720", "1024 768", "800 600", 0
     };
     uint32_t cur = (uint32_t)syscall2(SYS_DISPLAY_MODE, 0, 0);

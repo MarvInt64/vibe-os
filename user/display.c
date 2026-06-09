@@ -35,12 +35,13 @@
 #include <unistd.h>
 #include <sys/syscall.h>
 
-/* A single mode as returned by SYS_EDID_READ: { w, h, hz_x100 }. */
+/* A single mode as returned by SYS_EDID_READ: { w, h, hz_x100 }.
+ * Must be packed — the kernel writes 3 × uint16_t (6 bytes) per entry. */
 struct edid_mode_entry {
     unsigned short w;
     unsigned short h;
     unsigned short hz_x100;
-};
+} __attribute__((packed));
 
 /* Max modes we can fetch (matches kernel's edid_info.modes[64]). */
 #define MAX_MODES 64
@@ -86,7 +87,7 @@ int main(int argc, char *argv[]) {
     printf("  %-12s %-8s   %s\n", "------------", "--------", "----");
     for (int i = 0; i < n; i++) {
         const char *mark = (modes[i].w == cur_w && modes[i].h == cur_h)
-                           ? " ← current" : "";
+                           ? " <- current" : "";
         printf("  %4ux%-7u %3u.%-02u Hz %s\n",
                modes[i].w, modes[i].h,
                modes[i].hz_x100 / 100, modes[i].hz_x100 % 100,
