@@ -73,7 +73,7 @@ static void sleep_ms(unsigned int ms)        { vos_sleep_ms(ms); }
 #define BAR_HEIGHT             54
 #define WINDOW_HEIGHT          340
 #define MENU_ITEM_HEIGHT       26
-#define MAX_WINDOW_WIDTH       1920
+#define MAX_WINDOW_WIDTH       2048
 #define DEFAULT_WINDOW_WIDTH   1024
 #define MAX_TOP_LEVEL_MENUS    16
 #define MENU_TITLE_PADDING_X   8

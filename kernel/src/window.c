@@ -640,10 +640,10 @@ static void build_app_draw_context(struct desktop_state *desktop, const struct w
         app_ctx->content_width = window->width;
         app_ctx->content_height = window->height;
     } else {
-        app_ctx->content_x = large_ui(desktop) ? 12 : 10;
-        app_ctx->content_y = large_ui(desktop) ? 36 : 32;
-        app_ctx->content_width = window->width - (large_ui(desktop) ? 24 : 20);
-        app_ctx->content_height = window->height - (large_ui(desktop) ? 54 : 48);
+        app_ctx->content_x = 2;
+        app_ctx->content_y = ui_titlebar_height(desktop) + 2;
+        app_ctx->content_width = window->width - 4;
+        app_ctx->content_height = window->height - ui_titlebar_height(desktop) - 4;
     }
     app_ctx->text_scale = window->app_slot == WINDOW_TERMINAL ? ui_terminal_text_scale(desktop) : ui_window_text_scale(desktop);
     app_ctx->line_step = window->app_slot == WINDOW_TERMINAL ? ui_terminal_line_step(desktop) : text_line_height(app_ctx->text_scale) + (large_ui(desktop) ? 10 : 7);
