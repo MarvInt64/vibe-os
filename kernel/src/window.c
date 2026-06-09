@@ -826,9 +826,11 @@ void update_app_content_size_slot(struct desktop_state *desktop, int slot) {
                       ? WINDOW_TRANSPARENT_KEY : g_chrome_theme.bg;
         old_w = desktop->user_apps[slot].content_width;
         old_h = desktop->user_apps[slot].content_height;
-        /* Grow the backing store first; only adopt the new size if it fit. */
-        if (!ensure_content_buffer(desktop, slot, cw, ch, fill)) return;
-        reflow_content_buffer(desktop, slot, old_w, old_h, cw, ch, fill);
+        /* Try to grow/shrink the backing store.  Free-then-alloc
+         * avoids OOM from holding two large buffers at once.
+         * If it fails, still forward the resize to the app so it
+         * can adapt its rendering to the new viewport. */
+        ensure_content_buffer(desktop, slot, cw, ch, fill);
         desktop->user_apps[slot].content_width = cw;
         desktop->user_apps[slot].content_height = ch;
         app_enqueue_event_slot(desktop, slot, WINSYS_EVENT_RESIZE, cw, ch, 0, 0);
@@ -1135,35 +1137,28 @@ static int ensure_surface_buffer(struct desktop_state *desktop, int slot, int w,
     return 1;
 }
 
-/* Grow a user slot's content buffer to at least w*h pixels (grow-only),
- * clearing freshly grown storage to the transparent key so unpresented rows
- * never leak heap garbage. Returns 1 on success. */
+/* Grow a user slot's content buffer to w*h pixels.
+ * Frees old buffer first so gfx_alloc never holds 2× memory at once.
+ * Returns 1 on success, 0 on allocation failure. */
 static int ensure_content_buffer(struct desktop_state *desktop, int slot, int w, int h, uint32_t fill) {
     struct user_app_slot *a = &desktop->user_apps[slot];
     int need = w * h, i;
-    uint32_t *old;
-    int old_w, old_h;
     uint32_t *p;
     if (need <= 0) return 1;
     if (a->content_storage && need <= a->content_cap_px) return 1;
-    old = a->content_storage;
-    old_w = a->content_width;
-    old_h = a->content_height;
+
+    /* Free the old buffer now so the heap needs only 1× memory. */
+    if (a->content_storage) {
+        kfree(a->content_storage);
+        a->content_storage = 0;
+        a->content_cap_px = 0;
+    }
+
     p = (uint32_t *)gfx_alloc((size_t)need * sizeof(uint32_t));
     if (p == 0) return 0;
     a->content_storage = p;
     a->content_cap_px = need;
     for (i = 0; i < need; ++i) a->content_storage[i] = fill;
-    if (old && old_w > 0 && old_h > 0) {
-        int copy_w = old_w < w ? old_w : w;
-        int copy_h = old_h < h ? old_h : h;
-        for (int y = 0; y < copy_h; ++y)
-            for (int x = 0; x < copy_w; ++x)
-                a->content_storage[y * w + x] = old[y * old_w + x];
-        kfree(old);
-    } else if (old) {
-        kfree(old);
-    }
     return 1;
 }
 
