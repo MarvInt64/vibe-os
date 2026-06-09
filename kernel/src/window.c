@@ -816,16 +816,12 @@ void update_app_content_size_slot(struct desktop_state *desktop, int slot) {
     int cw;
     int ch;
     int win_idx = WINDOW_APP_FIRST + slot;
-    int old_w;
-    int old_h;
     app_content_size_for_window(desktop, &desktop->windows[win_idx], &cw, &ch);
     if (cw > (int)WINDOW_APP_CONTENT_MAX_WIDTH) cw = (int)WINDOW_APP_CONTENT_MAX_WIDTH;
     if (ch > (int)WINDOW_APP_CONTENT_MAX_HEIGHT) ch = (int)WINDOW_APP_CONTENT_MAX_HEIGHT;
     if (desktop->user_apps[slot].content_width != cw || desktop->user_apps[slot].content_height != ch) {
         uint32_t fill = (desktop->windows[win_idx].flags & WINSYS_WINDOW_TRANSLUCENT)
                       ? WINDOW_TRANSPARENT_KEY : g_chrome_theme.bg;
-        old_w = desktop->user_apps[slot].content_width;
-        old_h = desktop->user_apps[slot].content_height;
         /* Try to grow/shrink the backing store.  Free-then-alloc
          * avoids OOM from holding two large buffers at once.
          * If it fails, still forward the resize to the app so it
