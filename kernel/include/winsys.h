@@ -12,7 +12,7 @@
 /* Max app window size. WIDTH spans the full screen so the top-bar app can be a
  * single full-width window (the per-slot content/surface buffers scale with
  * this). */
-#define WINSYS_MAX_WIDTH  1920
+#define WINSYS_MAX_WIDTH  2048
 #define WINSYS_MAX_HEIGHT 1200
 
 #define WINSYS_WINDOW_FRAMELESS     0x00000001u

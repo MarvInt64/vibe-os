@@ -65,7 +65,7 @@ struct desktop_state *desktop_active(void) {
     return g_wm_active ? &g_desktop : 0;
 }
 static struct tty g_cli_tty;
-static uint32_t g_backbuffer_storage[1920u * 1080u];
+static uint32_t g_backbuffer_storage[2048u * 1152u];
 static uint32_t s_cursor_backup[32 * 32];
 static struct rect s_cursor_backup_rect;
 
@@ -244,7 +244,7 @@ static void cli_write_kernel_text(const char *text) {
 }
 
 /* Desired desktop resolution; changeable at runtime via the `display` tool.
- * Clamped to the statically-allocated backbuffer max (1920x1080). */
+ * Clamped to the statically-allocated backbuffer max (2048x1152). */
 static uint32_t g_req_width = 1512;
 static uint32_t g_req_height = 982u;
 static volatile int g_resolution_change_requested = 0;
