@@ -795,6 +795,17 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             uint32_t uid = (this_cpu() && this_cpu()->current) ? this_cpu()->current->uid : 0;
             int pid = process_spawn_path(path, 0, 0, uid, uid);
 
+            /* Record the parent so is_pty_session() can walk the chain. */
+            if (pid > 0) {
+                for (int k = 0; k < 16; k++) {
+                    if (g_procs[k].loaded && g_procs[k].pid == (uint32_t)pid) {
+                        g_procs[k].parent_pid = (this_cpu() && this_cpu()->current)
+                            ? this_cpu()->current->pid : 0;
+                        break;
+                    }
+                }
+            }
+
             /* Pass optional argument (a1) to the child, same as x86. */
             if (pid > 0 && a1 != 0) {
                 const char *arg = (const char *)(uintptr_t)a1;
@@ -1034,7 +1045,18 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             }
             struct arm64_pty *pty = g_files[a1].pty;
             int child_pid = process_spawn_path(path, 0, 0, 0, 0);
-            if (child_pid >= 0) pty->child_pid = (uint32_t)child_pid;
+            if (child_pid >= 0) {
+                pty->child_pid = (uint32_t)child_pid;
+                /* Record the parent so is_pty_session() can walk the chain
+                 * for grandchildren spawned by the shell. */
+                for (int k = 0; k < 16; k++) {
+                    if (g_procs[k].loaded && g_procs[k].pid == (uint32_t)child_pid) {
+                        g_procs[k].parent_pid = (this_cpu() && this_cpu()->current)
+                            ? this_cpu()->current->pid : 0;
+                        break;
+                    }
+                }
+            }
             serial_write("[pty] spawn child_pid="); serial_write_hex_u64((uint64_t)child_pid);
             serial_write("\r\n");
             regs[0] = (uint64_t)(int64_t)child_pid;
