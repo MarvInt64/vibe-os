@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <dirent.h>
 
 // Static buffer for the canvas framebuffer
@@ -397,8 +398,65 @@ void FileBrowser::refresh_files() {
 
         strcpy(fe.formatted_date, "Not tracked");
         format_permissions(fe.mode, fe.formatted_permissions, sizeof(fe.formatted_permissions));
-        snprintf(fe.formatted_owner, sizeof(fe.formatted_owner), "%u:%u",
-                 (unsigned)fe.uid, (unsigned)fe.gid);
+
+        /* Resolve owner and group names from /etc/passwd. */
+        {
+            char owner_name[32] = "?";
+            char group_name[32] = "?";
+
+            int fd = open("/etc/passwd", O_RDONLY);
+            if (fd >= 0) {
+                char buf[4096];
+                ssize_t n = read(fd, buf, sizeof(buf) - 1);
+                close(fd);
+                if (n > 0) {
+                    buf[n] = '\0';
+                    char *line = buf;
+                    while (*line) {
+                        char *nl = line;
+                        while (*nl && *nl != '\n') nl++;
+                        /* Format: name:x:uid:gid:... */
+                        char *p = line;
+                        /* field 0: name */
+                        char *name_start = p;
+                        while (p < nl && *p != ':') p++;
+                        int name_len = (int)(p - name_start);
+                        if (p < nl) p++; /* skip ':' (password) */
+                        while (p < nl && *p != ':') p++;
+                        if (p < nl) p++; /* skip ':' */
+                        /* field 2: uid */
+                        unsigned int entry_uid = 0;
+                        while (p < nl && *p >= '0' && *p <= '9') {
+                            entry_uid = entry_uid * 10 + (unsigned int)(*p - '0');
+                            p++;
+                        }
+                        if (entry_uid == (unsigned)fe.uid && owner_name[0] == '?') {
+                            int copy = name_len < 31 ? name_len : 31;
+                            for (int i = 0; i < copy; i++) owner_name[i] = name_start[i];
+                            owner_name[copy] = '\0';
+                        }
+                        if (p < nl) p++; /* skip ':' */
+                        /* field 3: gid */
+                        unsigned int entry_gid = 0;
+                        while (p < nl && *p >= '0' && *p <= '9') {
+                            entry_gid = entry_gid * 10 + (unsigned int)(*p - '0');
+                            p++;
+                        }
+                        if (entry_gid == (unsigned)fe.gid && group_name[0] == '?') {
+                            int copy = name_len < 31 ? name_len : 31;
+                            for (int i = 0; i < copy; i++) group_name[i] = name_start[i];
+                            group_name[copy] = '\0';
+                        }
+                        if (owner_name[0] != '?' && group_name[0] != '?') break;
+                        line = nl;
+                        if (*line == '\n') line++;
+                    }
+                }
+            }
+
+            snprintf(fe.formatted_owner, sizeof(fe.formatted_owner), "%s:%s",
+                     owner_name, group_name);
+        }
 
         entry_count_++;
     }
