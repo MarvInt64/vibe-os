@@ -268,7 +268,7 @@ define arm64app
 endef
 
 ARM64_USER_STAMP := $(ARM64_UDIR)/.installed.stamp
-ARM64_USER_DEPS := Makefile user/arm64/link.ld $(shell find user lib/svg lib/mp3 third_party/quickjs third_party/doomgeneric assets/icons assets/wallpapers keymaps -type f 2>/dev/null)
+ARM64_USER_DEPS := Makefile user/arm64/link.ld assets/doom1.wad $(shell find user lib/svg lib/mp3 third_party/quickjs third_party/doomgeneric assets/icons assets/wallpapers keymaps -type f 2>/dev/null)
 
 arm64-user: $(ARM64_USER_STAMP)
 
@@ -506,6 +506,7 @@ $(ARM64_USER_STAMP): $(DISK_IMG) $(ARM64_USER_DEPS)
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/doom/doom.elf \
 	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/doom/*.o $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/doom/doom.elf /bin/doom
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/doom1.wad /games/doom1.wad
 	@touch $(ARM64_USER_STAMP)
 
 # ARM64 DOOM flags: same sources as x86, but with arm64 target + doom-specific warnings
