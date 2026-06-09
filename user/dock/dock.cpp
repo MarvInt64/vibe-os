@@ -24,21 +24,6 @@ static DockEntry g_entries[] = {
 #define DOCK_COUNT (int)(sizeof(g_entries) / sizeof(g_entries[0]))
 
 static vui_widget *sButtons[6];
-static int  g_held_idx    = -1;   /* which icon the mouse is down on */
-static int  g_held_ticks  = 0;
-static int  g_drag_active = 0;
-static int  g_mouse_x = 0, g_mouse_y = 0;
-
-/* Icon hit-test (relative to dock window). */
-static int icon_at(int mx, int my) {
-    /* y: below the tooltip headroom, within the 58px icon row */
-    if (my < 38 || my > 38 + 58) return -1;
-    for (int i = 0; i < DOCK_COUNT; i++) {
-        int ix = 50 + i * (58 + 38);
-        if (mx >= ix && mx <= ix + 58) return i;
-    }
-    return -1;
-}
 
 static void apply_entry(int idx) {
     vui_widget *b = sButtons[idx];
@@ -59,11 +44,8 @@ static void swap_entries(int a, int b) {
     apply_entry(b);
 }
 
-/* ---- Callbacks --------------------------------------------------------- */
-
-static void on_tick(vui_window *win) {
+static void dock_on_tick(vui_window *win) {
     (void)win;
-    /* Running dots */
     for (int i = 0; i < DOCK_COUNT; i++) {
         bool running = false;
         const char *path = g_entries[i].path;
@@ -81,42 +63,51 @@ static void on_tick(vui_window *win) {
         }
         vui_set_running(sButtons[i], running ? 1 : 0);
     }
-
-    /* Drag activation timer: ~400ms held still starts drag */
-    if (g_held_idx >= 0 && !g_drag_active) {
-        if (++g_held_ticks > 25) {
-            g_drag_active = 1;
-        }
-    }
 }
 
-static void on_mouse_down(vui_window *win, int x, int y, vui_u32 btns) {
+static void launch_app(vui_widget *self) {
+    const char *path = (const char *)vui_get_user(self);
+    if (path) vos_spawn(path);
+}
+
+/* ---- Drag support (window-level callbacks) ----------------------------- */
+static int  g_held_idx   = -1;
+static int  g_held_ticks = 0;
+static int  g_drag_on    = 0;
+
+static int icon_at(int mx, int my) {
+    if (my < 38 || my > 38 + 58) return -1;
+    for (int i = 0; i < DOCK_COUNT; i++) {
+        int ix = 50 + i * (58 + 38);
+        if (mx >= ix && mx <= ix + 58) return i;
+    }
+    return -1;
+}
+
+static void on_mouse_dn(vui_window *win, int x, int y, vui_u32 btns) {
     (void)win; (void)btns;
-    g_mouse_x = x; g_mouse_y = y;
-    if (g_drag_active) return;
+    vos_log(VOS_LOG_APP, "dock: mouse-down");
     g_held_idx   = icon_at(x, y);
     g_held_ticks = 0;
+    g_drag_on    = 0;
 }
 
 static void on_mouse_up(vui_window *win, int x, int y, vui_u32 btns) {
     (void)win; (void)btns;
-    if (g_drag_active && g_held_idx >= 0) {
+    vos_log(VOS_LOG_APP, "dock: mouse-up");
+    if (g_drag_on && g_held_idx >= 0) {
         int dst = icon_at(x, y);
         if (dst >= 0 && dst != g_held_idx)
             swap_entries(g_held_idx, dst);
-    } else if (g_held_idx >= 0 && !g_drag_active) {
-        /* Short click → launch */
-        const char *path = (const char *)vui_get_user(sButtons[g_held_idx]);
-        if (path) vos_spawn(path);
     }
-    g_held_idx    = -1;
-    g_held_ticks  = 0;
-    g_drag_active = 0;
+    g_held_idx   = -1;
+    g_held_ticks = 0;
+    g_drag_on    = 0;
 }
 
-static void on_mouse_move(vui_window *win, int x, int y, vui_u32 btns) {
+static void on_mouse_mv(vui_window *win, int x, int y, vui_u32 btns) {
     (void)win; (void)btns;
-    if (!g_drag_active || g_held_idx < 0) return;
+    if (!g_drag_on || g_held_idx < 0) return;
     int dst = icon_at(x, y);
     if (dst >= 0 && dst != g_held_idx) {
         swap_entries(g_held_idx, dst);
@@ -124,15 +115,21 @@ static void on_mouse_move(vui_window *win, int x, int y, vui_u32 btns) {
     }
 }
 
+static void dock_tick2(vui_window *win) {
+    dock_on_tick(win);
+    if (g_held_idx >= 0 && !g_drag_on) {
+        if (++g_held_ticks > 25) {
+            g_drag_on = 1;
+            vos_log(VOS_LOG_APP, "dock: drag started");
+        }
+    }
+}
+
 int main() {
     uint32_t mode = vos_display_mode_get();
     int screen_w = (int)((mode >> 16) & 0xffffu);
     int screen_h = (int)(mode & 0xffffu);
-    int width;
-    int dock_h     = 78;
-    int tooltip_h  = 28;
-    int height     = dock_h + tooltip_h;
-    int x, y;
+    int width, dock_h = 78, tooltip_h = 28, height = dock_h + tooltip_h, x, y;
 
     if (screen_w <= 0) screen_w = 1024;
     if (screen_h <= 0) screen_h = 768;
@@ -167,13 +164,14 @@ int main() {
         sButtons[i] = button;
         vui_set_size(button, 58, 58);
         apply_entry(i);
+        vui_on_click(button, launch_app);
         vui_box_add(row, button);
     }
 
-    vui_on_tick(win, on_tick);
-    vui_on_mouse_click(win, on_mouse_down);
+    vui_on_tick(win, dock_tick2);
+    vui_on_mouse_click(win, on_mouse_dn);
     vui_on_mouse_release(win, on_mouse_up);
-    vui_on_mouse_move(win, on_mouse_move);
+    vui_on_mouse_move(win, on_mouse_mv);
 
     vui_run(win);
 }
