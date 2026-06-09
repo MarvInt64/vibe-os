@@ -46,6 +46,8 @@
 #include "winsys.h"
 #include "version.h"
 #include "io.h"
+#include "bga.h"
+#include "edid.h"
 
 /* Provided by kernel.c: the live compositor, or 0 if the GUI isn't running. */
 struct desktop_state *desktop_active(void);
@@ -2274,6 +2276,47 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         g_current_process = 0;
         frame->rax = 0;
         return 1;
+    }
+
+    if (number == SYS_EDID_READ) {
+        /* rdi = struct { uint16_t w, h, hz_x100 } *buf, rsi = capacity.
+         * Reads the display EDID via BGA DDC and fills the buffer with
+         * supported modes.  Returns number of modes written. */
+        struct edid_info info;
+        uint8_t raw[EDID_BLOCK_SIZE];
+        int count = 0;
+        if (bga_read_edid(raw) == 0 && edid_parse(raw, &info) == 0) {
+            count = info.mode_count;
+        }
+        if (count <= 0) {
+            /* No EDID — return a default set of common modes. */
+            static const uint16_t defaults[][3] = {
+                {1920,1080,6000},{1680,1050,6000},{1440,900,6000},
+                {1366,768,6000},{1280,720,6000},{1024,768,6000},
+                {800,600,6000},
+            };
+            count = (int)(sizeof(defaults) / sizeof(defaults[0]));
+            uint16_t *dst = (uint16_t *)(uintptr_t)frame->rdi;
+            uint64_t cap = frame->rsi;
+            if (cap > (uint64_t)count) cap = (uint64_t)count;
+            for (uint64_t i = 0; i < cap; i++) {
+                dst[i*3+0] = defaults[i][0];
+                dst[i*3+1] = defaults[i][1];
+                dst[i*3+2] = defaults[i][2];
+            }
+            frame->rax = cap;
+            return 0;
+        }
+        uint16_t *dst = (uint16_t *)(uintptr_t)frame->rdi;
+        uint64_t cap = frame->rsi;
+        if (cap > (uint64_t)count) cap = (uint64_t)count;
+        for (uint64_t i = 0; i < cap; i++) {
+            dst[i*3+0] = info.modes[i].hactive;
+            dst[i*3+1] = info.modes[i].vactive;
+            dst[i*3+2] = info.modes[i].refresh_hz;
+        }
+        frame->rax = cap;
+        return 0;
     }
 
     if (number == SYS_WINDOWMGR_START) {

@@ -3,6 +3,7 @@
 
 #include "multiboot2.h"
 #include "types.h"
+#include "edid.h"
 
 #define BGA_LFB_FALLBACK_PHYS_ADDR 0xFD000000u
 #define BGA_DEFAULT_WIDTH 1920u
@@ -10,5 +11,6 @@
 #define BGA_DEFAULT_BPP 32u
 
 int bga_init_framebuffer(struct boot_framebuffer *out_fb, uint32_t width, uint32_t height, uint32_t bpp);
+int bga_read_edid(uint8_t edid_raw[EDID_BLOCK_SIZE]);
 
 #endif

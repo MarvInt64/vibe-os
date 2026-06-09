@@ -139,7 +139,11 @@ enum syscall_number {
 	 * milliseconds. Converts to CNTVCT ticks internally using the arch timer
 	 * frequency so callers don't need to know the hardware tick rate.
 	 * Returns 0 on success. */
-	SYS_SLEEP_MS = 68
+	SYS_SLEEP_MS = 68,
+	/* Read connected display's EDID and return a list of supported modes.
+	 * rdi = struct edid_mode_entry* buf (user, capacity count entries),
+	 * rsi = max entries.  Returns number of modes written (0 if no EDID). */
+	SYS_EDID_READ = 70
 };
 
 struct system_info_snapshot {

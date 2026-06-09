@@ -25,6 +25,7 @@
 #include "bga.h"
 #include "io.h"
 #include "serial.h"
+#include "edid.h"
 
 #define BGA_IOPORT_INDEX 0x01CEu
 #define BGA_IOPORT_DATA 0x01CFu
@@ -124,6 +125,8 @@ static uintptr_t bga_find_lfb_address(void) {
     return BGA_LFB_FALLBACK_PHYS_ADDR;
 }
 
+static uintptr_t bga_lfb = 0;
+
 static void bga_write(uint16_t index, uint16_t value) {
     outw(BGA_IOPORT_INDEX, index);
     outw(BGA_IOPORT_DATA, value);
@@ -154,10 +157,113 @@ int bga_init_framebuffer(struct boot_framebuffer *out_fb, uint32_t width, uint32
     }
 
     lfb_address = bga_find_lfb_address();
+    bga_lfb = lfb_address;
     out_fb->address = lfb_address;
     out_fb->width = width;
     out_fb->height = height;
     out_fb->pitch = width * (bpp / 8u);
     out_fb->bpp = (uint8_t)bpp;
     return 1;
+}
+
+/* ---- BGA DDC / I2C bit-banging for EDID -------------------------------- */
+
+#define BGA_I2C_OFFSET  0x500u
+#define I2C_SCL         0x01u
+#define I2C_SDA         0x02u
+#define I2C_DIR         0x04u   /* 1 = output, 0 = input */
+
+/* Read the I2C register (volatile MMIO). */
+static inline uint8_t i2c_read_reg(void) {
+    return *(volatile uint8_t *)(bga_lfb + BGA_I2C_OFFSET);
+}
+
+/* Write the I2C register. */
+static inline void i2c_write_reg(uint8_t val) {
+    *(volatile uint8_t *)(bga_lfb + BGA_I2C_OFFSET) = val;
+}
+
+/* Short delay for I2C timing (~5 µs). */
+static void i2c_delay(void) {
+    for (volatile int i = 0; i < 100; i++) { __asm__ volatile("" ::: "memory"); }
+}
+
+static void i2c_scl_lo(void) { i2c_write_reg(I2C_DIR); }   /* SCL=0, SDA=0 */
+static void i2c_scl_hi(void) { i2c_write_reg(I2C_DIR | I2C_SCL); }  /* SCL=1 */
+static void i2c_sda_lo(void) { i2c_write_reg(I2C_DIR); }
+static void i2c_sda_hi(void) { i2c_write_reg(I2C_DIR | I2C_SDA); }
+static uint8_t i2c_sda_in(void) { return i2c_read_reg() & I2C_SDA; }
+
+static void i2c_start(void) {
+    i2c_sda_hi(); i2c_delay();
+    i2c_scl_hi(); i2c_delay();
+    i2c_sda_lo(); i2c_delay();
+    i2c_scl_lo(); i2c_delay();
+}
+
+static void i2c_stop(void) {
+    i2c_sda_lo(); i2c_delay();
+    i2c_scl_hi(); i2c_delay();
+    i2c_sda_hi(); i2c_delay();
+}
+
+/* Send one byte, return 0 if ACK'd, -1 if NACK'd. */
+static int i2c_send_byte(uint8_t b) {
+    for (int i = 7; i >= 0; i--) {
+        if (b & (1 << i)) i2c_sda_hi(); else i2c_sda_lo();
+        i2c_delay();
+        i2c_scl_hi(); i2c_delay();
+        i2c_scl_lo(); i2c_delay();
+    }
+    /* Release SDA for ACK, switch to input */
+    i2c_write_reg(I2C_SCL);  /* SCL=1, SDA=input */
+    i2c_delay();
+    i2c_scl_hi(); i2c_delay();
+    int ack = i2c_sda_in();  /* 0 = ACK, 1 = NACK */
+    i2c_scl_lo(); i2c_delay();
+    i2c_write_reg(I2C_DIR);  /* back to output mode */
+    return ack ? -1 : 0;
+}
+
+/* Read one byte, send ack=0 for ACK, ack=1 for NACK. */
+static uint8_t i2c_recv_byte(int ack) {
+    uint8_t val = 0;
+    i2c_write_reg(I2C_SCL);  /* SCL=1, SDA=input */
+    for (int i = 7; i >= 0; i--) {
+        i2c_scl_hi(); i2c_delay();
+        if (i2c_sda_in()) val |= (1 << i);
+        i2c_scl_lo(); i2c_delay();
+    }
+    /* Send ACK/NACK */
+    i2c_write_reg(I2C_DIR);  /* back to output */
+    if (ack) i2c_sda_hi(); else i2c_sda_lo();
+    i2c_delay();
+    i2c_scl_hi(); i2c_delay();
+    i2c_scl_lo(); i2c_delay();
+    return val;
+}
+
+/*
+ * Read the 128-byte base EDID block from the display via DDC2B.
+ * Returns 0 on success, -1 if no display responded (I2C NACK).
+ * The raw EDID block is written to `edid_raw[128]`.
+ */
+int bga_read_edid(uint8_t edid_raw[EDID_BLOCK_SIZE]) {
+    if (bga_lfb == 0 || !edid_raw) return -1;
+
+    /* DDC2B: send start, I2C addr 0xA0 (write), EDID offset 0x00,
+     * repeated start, I2C addr 0xA1 (read), read 128 bytes, stop. */
+    i2c_start();
+    if (i2c_send_byte(0xA0) != 0) { i2c_stop(); return -1; }  /* display addr write */
+    if (i2c_send_byte(0x00) != 0) { i2c_stop(); return -1; }  /* EDID offset 0 */
+
+    i2c_start();  /* repeated start */
+    if (i2c_send_byte(0xA1) != 0) { i2c_stop(); return -1; }  /* display addr read */
+
+    for (int i = 0; i < EDID_BLOCK_SIZE; i++) {
+        edid_raw[i] = i2c_recv_byte(i == EDID_BLOCK_SIZE - 1 ? 1 : 0);
+    }
+
+    i2c_stop();
+    return 0;
 }
