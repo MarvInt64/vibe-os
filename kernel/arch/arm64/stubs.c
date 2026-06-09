@@ -167,8 +167,39 @@ ssize_t vfs_write(const char *path, size_t off, const void *data, size_t n) {
 int vfs_create(const char *path) { (void)path; return -1; }
 int vfs_unlink(const char *path) { (void)path; return -1; }
 int vfs_open_ino(const char *path, uint32_t *ino) { (void)path; ino=0; return -1; }
-int vfs_chmod(const char *path, uint16_t mode) { (void)path; (void)mode; return -1; }
-int vfs_chown(const char *path, uint16_t uid, uint16_t gid) { (void)path; (void)uid; (void)gid; return -1; }
+int vfs_chmod(const char *path, uint16_t mode) {
+    if (!g_fs_ready || !path) return -1;
+    uint32_t ino = ext2_lookup_inode(&g_fs, path);
+    if (!ino) return -2;  /* ENOENT */
+
+    uint32_t caller_uid = process_current_uid();
+    struct ext2_inode *ip = &g_fs.inode_table[ino - 1];
+
+    /* Only the file owner or root may change permission bits. */
+    if (caller_uid != 0 && caller_uid != (uint32_t)ip->uid)
+        return -1;  /* EPERM */
+
+    ip->mode = (ip->mode & ~(uint16_t)0777u) | (mode & 0777u);
+    ext2_write_inode(&g_fs, ino);
+    return 0;
+}
+
+int vfs_chown(const char *path, uint16_t uid, uint16_t gid) {
+    if (!g_fs_ready || !path) return -1;
+    uint32_t ino = ext2_lookup_inode(&g_fs, path);
+    if (!ino) return -2;  /* ENOENT */
+
+    uint32_t caller_uid = process_current_uid();
+
+    /* Only root may reassign file ownership. */
+    if (caller_uid != 0) return -1;  /* EPERM */
+
+    struct ext2_inode *ip = &g_fs.inode_table[ino - 1];
+    ip->uid = uid;
+    ip->gid = gid;
+    ext2_write_inode(&g_fs, ino);
+    return 0;
+}
 
 /* ---- Builtin app stubs (arm64 has no kernel-builtin apps) -------------- */
 struct app_instance;
