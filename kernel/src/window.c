@@ -797,8 +797,8 @@ static void app_content_size_for_window(struct desktop_state *desktop, const str
         *ch = window->height;
         return;
     }
-    int ix = large_ui(desktop) ? 44 : 32;
-    int iy = large_ui(desktop) ? 82 : 66;
+    int ix = 4;
+    int iy = ui_titlebar_height(desktop) + 4;
     *cw = window->width - ix;
     *ch = window->height - iy;
     if (*cw < 1) *cw = 1;
@@ -806,8 +806,8 @@ static void app_content_size_for_window(struct desktop_state *desktop, const str
 }
 
 static void app_window_max_size(struct desktop_state *desktop, int *max_w, int *max_h) {
-    *max_w = (int)WINDOW_APP_CONTENT_MAX_WIDTH + (large_ui(desktop) ? 44 : 32);
-    *max_h = (int)WINDOW_APP_CONTENT_MAX_HEIGHT + (large_ui(desktop) ? 82 : 66);
+    *max_w = (int)WINDOW_APP_CONTENT_MAX_WIDTH + 4;
+    *max_h = (int)WINDOW_APP_CONTENT_MAX_HEIGHT + ui_titlebar_height(desktop) + 4;
     if (*max_w > (int)WINDOW_APP_SURFACE_MAX_WIDTH) *max_w = (int)WINDOW_APP_SURFACE_MAX_WIDTH;
     if (*max_h > (int)WINDOW_APP_SURFACE_MAX_HEIGHT) *max_h = (int)WINDOW_APP_SURFACE_MAX_HEIGHT;
 }
@@ -2446,8 +2446,8 @@ static void app_content_origin_for_window(struct desktop_state *desktop, int win
         *ox = w->x;
         *oy = w->y;
     } else {
-        *ox = w->x + (large_ui(desktop) ? 22 : 16);
-        *oy = w->y + (large_ui(desktop) ? 58 : 48);
+        *ox = w->x + 2;
+        *oy = w->y + ui_titlebar_height(desktop) + 2;
     }
 }
 
@@ -3318,8 +3318,8 @@ int desktop_app_create_ex(struct desktop_state *desktop, uint32_t pid, const str
         frame_w = width;
         frame_h = height;
     } else {
-        frame_w = width + (large_ui(desktop) ? 44 : 32);
-        frame_h = height + (large_ui(desktop) ? 82 : 66);
+        frame_w = width + 4;
+        frame_h = height + ui_titlebar_height(desktop) + 4;
     }
 
     for (i = 0; i + 1 < sizeof(desktop->user_apps[slot].title) && options->title && options->title[i]; ++i) {
@@ -3403,7 +3403,7 @@ int desktop_app_create(struct desktop_state *desktop, uint32_t pid, const char *
 static void app_content_origin(struct desktop_state *desktop, int win_idx, int *cx, int *cy) {
     struct window_state *wn = &desktop->windows[win_idx];
     if (window_frameless(wn)) { *cx = 0; *cy = 0; }
-    else { *cx = large_ui(desktop) ? 22 : 16; *cy = large_ui(desktop) ? 58 : 48; }
+    else { *cx = 2; *cy = ui_titlebar_height(desktop) + 2; }
 }
 
 /* Present a sub-rectangle [dx,dy,dw,dh] (in the app's content space) from the
