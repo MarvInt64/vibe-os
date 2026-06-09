@@ -2291,9 +2291,9 @@ int syscall_handle_interrupt(struct interrupt_frame *frame) {
         if (count <= 0) {
             /* No EDID — return a default set of common modes. */
             static const uint16_t defaults[][3] = {
-                {1920,1080,6000},{1680,1050,6000},{1440,900,6000},
-                {1366,768,6000},{1280,720,6000},{1024,768,6000},
-                {800,600,6000},
+                {2048,1152,6000},{1920,1080,6000},{1680,1050,6000},
+                {1440,900,6000},{1366,768,6000},{1280,720,6000},
+                {1024,768,6000},{800,600,6000},
             };
             count = (int)(sizeof(defaults) / sizeof(defaults[0]));
             uint16_t *dst = (uint16_t *)(uintptr_t)frame->rdi;

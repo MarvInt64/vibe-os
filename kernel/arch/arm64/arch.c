@@ -589,10 +589,10 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
              * common resolutions that QEMU's ramfb / virtio-gpu supports.
              * Format: array of { uint16_t w, h, hz_x100 } at a0, capacity in a1. */
             static const uint16_t modes[][3] = {
-                {1920,1080,6000},{1680,1050,6000},{1600,900,6000},
-                {1440,900,6000},{1366,768,6000},{1280,1024,6000},
-                {1280,720,6000},{1024,768,6000},{800,600,6000},
-                {640,480,6000},
+                {2048,1152,6000},{1920,1080,6000},{1680,1050,6000},
+                {1600,900,6000},{1440,900,6000},{1366,768,6000},
+                {1280,1024,6000},{1280,720,6000},{1024,768,6000},
+                {800,600,6000},{640,480,6000},
             };
             int nmodes = (int)(sizeof(modes) / sizeof(modes[0]));
             uint16_t *dst = (uint16_t *)(uintptr_t)a0;
