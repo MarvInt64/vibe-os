@@ -46,11 +46,11 @@ At the `arm64:/$` prompt type `gui` to start the desktop, then click **Browser**
 | **Networking** | x86: Intel e1000 NIC. arm64: virtio-net. ARP, IPv4, ICMP (`ping`), UDP, DNS, TCP; HTTP (`curl`); **TLS/HTTPS via BearSSL** (freestanding port) — encrypted connections work on both architectures; certificate validation is accept-all (no trust store) in the current version |
 | **Graphics** | x86: BGA (Bochs Graphics Adapter). arm64: ramfb (QEMU ram framebuffer). **Tile-based dirty tracking** with **dirty tile merging** for optimized redraws; **Write-Combining (WC)** via **PAT** on x86; runtime resolution switching via `display <w> <h>`; **black cursor outlines** for high visibility; cache-coherent framebuffer flush (`dc cvau` + `dsb sy`) on arm64 |
 | **Window server** | Multi-window compositor; drag, resize, close; **aspect-ratio locked resizing** (`WINSYS_WINDOW_ASPECT_RATIO`); PS/2 (x86) + virtio-tablet/keyboard (arm64); scroll-wheel support; **per-window alpha** (glass windows); **dynamic window buffer allocation**; **compositor optimizations** (direct compose + fast opaque blits); **isolated compositor heap** prevents image corruption during heavy allocation |
-| **Desktop chrome** | Flat blue-gray glass theme; thin line window controls; **userspace top bar app** (animated SVG hover V-logo, app menu, status indicators, SVG power glyph); floating rounded **dock** with **SVG icons**, **anti-aliased SDF rendering**, **active app status indicators/highlights**, and macOS-style context menu instance switching |
+| **Desktop chrome** | Flat blue-gray glass theme; thin line window controls; **userspace top bar app** (animated SVG hover V-logo, app menu, status indicators, SVG power glyph); floating rounded **dock** with a smooth translucent glass pill, centered **SVG icons**, **anti-aliased SDF rendering**, **active app status indicators/highlights**, long-press drag reordering with animated slot shifting, and macOS-style context menu instance switching |
 | **Top-bar menu bar** | The focused app declares its menus via `SYS_WINDOW_SET_MENUBAR` / `vos_window_set_menubar` (titles, items, shortcuts, dividers, checkmarks, danger style) or custom VexUI menu sync; the **topbar app** draws the dropdowns and reports picks back as `VOS_EV_MENU_ACTION` |
 | **Theming** | Central design-token theme for both kernel chrome and VexUI (`bg`/`surface`/`border`/`text`/`accent`/`ok`/`warn`/`danger`/`menu_*`/`window_alpha`), overridable at runtime from `/home/user/.config/vibeos.theme`; customizable top shadow insets (`shadow_inset_top`) or shadow suppression (`VUI_WINDOW_NO_SHADOW`) |
 | **Wallpaper** | Userspace decodes an image (shared `user/libimage`, stb_image) and hands pixels to the kernel via `SYS_SET_WALLPAPER`; `/bin/wallpaper [path]` (default `/wallpapers/default.png`); plain theme-blue backdrop when none set |
-| **VexUI toolkit** | Retained-mode widget library: labels, rounded buttons, **pill buttons**, panels, **cards**, **status badges/pills**, **rounded inputs**, **tabs** (accent underline), progress bars, **sparklines**, **dock tiles**; **VBox/HBox layout containers** with `expand`/`fill`/`gap`/`padding`; in-window menu bar; **interactive and styled scrollbars**; **hover delivery to unfocused panels**; **dirty-on-change setters + damaged-rect partial presents** for efficient redraws |
+| **VexUI toolkit** | Retained-mode widget library: labels, rounded buttons, **pill buttons**, panels, **cards**, **status badges/pills**, **rounded inputs**, **tabs** (accent underline), progress bars, **sparklines**, **dock tiles**, smooth glass **pill surfaces**; **VBox/HBox layout containers** with `expand`/`fill`/`gap`/`padding`; in-window menu bar; **interactive and styled scrollbars**; **hover delivery to unfocused panels**; **dirty-on-change setters + damaged-rect partial presents** for efficient redraws |
 | **Font rendering** | Built-in bitmap font atlas (`font_atlas.c`) used by VexUI and the kernel terminal; DejaVu Sans TTF embedded via `.incbin` + stb_truetype glyph cache (`appfont.c`) used by the browser for anti-aliased proportional text |
 | **Userspace libc** | Freestanding libc: **buffered `<stdio.h>` `FILE` streams** (`fopen`/`fread`/`fwrite`/`fseek`/`fclose`, with real `"w"` truncation), stdlib/string/ctype, `time`/`math`/`setjmp`; `crt0` (entry, `.init_array` ctors, `_exit`); user heap (`umalloc`); `vos_home_dir()` resolves the session user's home |
 | **SVG Rendering** | Reusable **lib/svg** library with **anti-aliased SDF (Signed Distance Field) renderer**; used by the dock for high-quality vector icons |
@@ -328,6 +328,7 @@ VibeOS/
 │   ├── libc/             — freestanding libc + C++20 runtime + crt0 (both arches)
 │   │   └── include/      — standard headers (stdio, stdlib, string, new, …)
 │   ├── browser/          — HTTP/HTTPS browser with CSS + Flexbox engine (shared)
+│   ├── dock/             — Floating userspace dock (C++20, VexUI)
 │   ├── taskmgr/          — Task Manager (C++20, VexUI)
 │   ├── topbar/           — Top Bar (C++20, VexUI, userspace)
 │   ├── vexui.c/h         — retained-mode GUI toolkit (shared)
@@ -489,12 +490,12 @@ VexUI provides a comprehensive set of Retained-Mode UI controls. Here is a list 
 #### Container & Structural Widgets
 * **`vui_panel(w, x, y, width, height, title)`**: A standard container surface with an optional top border and text title.
 * **`vui_card(w, x, y, width, height, title)`**: A rounded container card surface with a shaded background (ideal for grouping metrics).
-* **`vui_pill(w, x, y, width, height)`**: A large, pill-shaped rounded background plate (used for containers like the desktop dock).
+* **`vui_pill(w, x, y, width, height)`**: A large, pill-shaped glass background plate with a smooth vertical gradient (used for containers like the desktop dock).
 
 #### Interactive Buttons & Inputs
 * **`vui_button(w, x, y, text)`**: A standard clickable button with rounded corners.
 * **`vui_pill_button(w, x, y, text)`**: A fully-rounded, capsule-shaped pill button (often used for tags or quick actions).
-* **`vui_tile_button(w, x, y, text)`**: A squared, desktop-shortcut style button supporting custom SVG icon overlays.
+* **`vui_tile_button(w, x, y, text)`**: A squared dock/desktop tile supporting custom SVG icon overlays, centered icon rendering, hover/press states, and running-app indicators.
 * **`vui_input(w, x, y, width, placeholder)`**: A rounded text field that accepts keyboard input and handles focused selection.
 
 #### Data Display & Graphics

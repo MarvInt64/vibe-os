@@ -544,6 +544,38 @@ static void fill_round_rect(struct vui_window *w,int x,int y,int wid,int hgt,int
     rrect_fill_aa(w, x, y, wid, hgt, r, border);
     rrect_fill_aa(w, x+1, y+1, wid-2, hgt-2, r>1?r-1:0, fill);
 }
+
+static vui_u32 mix_argb(vui_u32 a, vui_u32 b, unsigned step, unsigned total) {
+    uint32_t aa = (a >> 24) & 0xffu, ar = (a >> 16) & 0xffu, ag = (a >> 8) & 0xffu, ab = a & 0xffu;
+    uint32_t ba = (b >> 24) & 0xffu, br = (b >> 16) & 0xffu, bg = (b >> 8) & 0xffu, bb = b & 0xffu;
+    if (total == 0) return a;
+    return ((((aa * (total - step)) + (ba * step)) / total) << 24) |
+           ((((ar * (total - step)) + (br * step)) / total) << 16) |
+           ((((ag * (total - step)) + (bg * step)) / total) << 8) |
+           (((ab * (total - step)) + (bb * step)) / total);
+}
+
+static void fill_round_rect_vgradient(struct vui_window *w,int x,int y,int wid,int hgt,int r,
+                                      vui_u32 top,vui_u32 bottom,vui_u32 border){
+    int iy, ix;
+    if (wid<=0||hgt<=0) return;
+    if (r<0) r=0; if (r>hgt/2) r=hgt/2; if (r>wid/2) r=wid/2;
+    rrect_fill_aa(w, x, y, wid, hgt, r, border);
+    x += 1; y += 1; wid -= 2; hgt -= 2; if (r > 1) r -= 1;
+    if (wid<=0||hgt<=0) return;
+    for (iy=0; iy<hgt; ++iy){
+        vui_u32 c = mix_argb(top, bottom, (unsigned)iy, (unsigned)(hgt > 1 ? hgt - 1 : 1));
+        int py = y + iy;
+        int corner = (iy<r) || (iy>=hgt-r);
+        if (!corner){ rect(w, x, py, wid, 1, c); continue; }
+        for (ix=0; ix<wid; ++ix){
+            int cov=rr_cov(x+ix,py,x,y,wid,hgt,r);
+            if (cov==4) put(w, x+ix, py, c);
+            else if (cov>0) blend_put(w, x+ix, py, c, cov*255/4);
+        }
+    }
+}
+
 static void glass_box(struct vui_window *w, int x, int y, int wid, int hgt, vui_u32 fill, int strong) {
     vui_u32 body = glass(fill, strong ? 242u : 224u);
     vui_u32 top = glass(strong ? mix(g_theme.border_hi, 0x00ffffffu, 1u, 3u)
@@ -1646,11 +1678,11 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
          * reference dock rather than tinting every app icon. */
         uint32_t accent = wd->color ? wd->color : g_theme.accent;
         int cx = wd->x + wd->w / 2;
-        int cy = wd->y + wd->h / 2 - 3;
         int active = (wd->hover || wd->pressed);
         int pad = 5;
         int tx = wd->x + pad, ty = wd->y + pad;
         int tw = wd->w - 2 * pad, th = wd->h - 2 * pad;
+        int cy = ty + th / 2;
         uint32_t bd = active ? argb(0x0088b8e8u, 170u)
                              : argb(0x00446889u, 150u);
         uint32_t fill = active ? argb(0x001b3b63u, 158u)
@@ -1785,28 +1817,19 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         }
         break; }
     case W_PILL: {
-        /* Dock shelf: a dark blue capsule with intentionally stepped horizontal
-         * bands. The reference reads less like a smooth gradient and more like
-         * a hard glass strip with a dark inner border. */
+        /* Dock shelf: one smooth translucent glass capsule. Keep the depth in
+         * subtle highlights instead of drawing visible horizontal bands. */
         uint32_t fill = wd->color ? wd->color : g_theme.surface;
 
         int r = 18;
         if (r > wd->h / 2) r = wd->h / 2;
         int hh = wd->h;  /* total pill height */
 
-        fill_round_rect(w, wd->x, wd->y, wd->w, hh, r,
-                        argb(0x00071d35u, 238u), argb(0x004f7eacu, 178u));
-        fill_round_rect(w, wd->x + 1, wd->y + 1, wd->w - 2, hh - 2, r - 1,
-                        argb(fill, 226u), argb(0x0005152au, 190u));
+        vui_u32 top = argb(mix(fill, 0x004c78a8u, 1u, 3u), 210u);
+        vui_u32 bottom = argb(mix(fill, 0x00030f20u, 1u, 2u), 224u);
+        vui_u32 edge = argb(0x00395f86u, 110u);
 
-        int ix = wd->x + r;
-        int iw = wd->w - 2 * r;
-        rect(w, ix, wd->y + 4, iw, 1, argb(0x00ffffffu, 56u));
-        rect(w, ix, wd->y + 5, iw, hh / 3 - 5, argb(0x00264a73u, 86u));
-        rect(w, ix, wd->y + hh / 3, iw, hh / 3, argb(0x00132e50u, 148u));
-        rect(w, ix, wd->y + hh * 2 / 3, iw, hh - (hh * 2 / 3) - 5,
-             argb(0x0007172du, 122u));
-        rect(w, ix + 1, wd->y + hh - 5, iw - 2, 1, argb(0x006f9dd0u, 58u));
+        fill_round_rect_vgradient(w, wd->x, wd->y, wd->w, hh, r, top, bottom, edge);
         break; }
     case W_METRIC: {
         /* Self-contained metric card: title + big value + sub-label + a chart

@@ -29,7 +29,7 @@ static DockEntry g_entries[] = {
 #define ICON_GAP    38
 #define ICON_STRIDE (ICON_SIZE + ICON_GAP)
 #define ICON_X0     50
-#define ICON_Y0     48
+#define ICON_Y0     38
 
 static vui_widget *sButtons[6];
 
@@ -130,7 +130,7 @@ static void recalc_targets(int src_entry, int mouse_slot) {
 
 /* Lerp overlays toward their target slots. */
 static void animate_drag(void) {
-    float speed = 8.0f;
+    float speed = 16.0f;
     for (int i = 0; i < DOCK_COUNT; i++) {
         float target = (float)slot_x(g_target_slot[i]);
         float dx = target - g_cur_x[i];
