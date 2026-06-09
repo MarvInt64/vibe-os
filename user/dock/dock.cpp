@@ -50,9 +50,9 @@ static void apply_entry(int idx) {
 
 static void apply_overlay(vui_widget *ov, int entry_idx) {
     DockEntry *e = &g_entries[entry_idx];
-    if (e->icon_path) vui_set_icon_svg_path(ov, e->icon_path);
-    /* Tint the overlay to match the entry colour. */
     vui_set_color(ov, e->color);
+    vui_set_value(ov, e->icon);
+    if (e->icon_path) vui_set_icon_svg_path(ov, e->icon_path);
 }
 
 static void dock_on_tick(vui_window *win) {
@@ -293,9 +293,12 @@ int main() {
         apply_entry(i);
         vui_box_add(row, button);
 
-        /* Pre-create overlay icons for drag animation, hidden initially. */
-        vui_widget *ov = vui_image(win, slot_x(i), ICON_Y0, ICON_SIZE);
+        /* Pre-create overlay tiles for drag animation, hidden initially.
+         * Using vui_tile_button (W_TILE) so they render identically to the
+         * normal dock buttons: dark rounded-rect pill + SVG icon. */
+        vui_widget *ov = vui_tile_button(win, slot_x(i), ICON_Y0, "");
         sOverlays[i] = ov;
+        vui_set_size(ov, ICON_SIZE, ICON_SIZE);
         vui_set_visible(ov, 0);
     }
 
