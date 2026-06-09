@@ -79,6 +79,8 @@ int vfs_stat_path(const char *path, struct vfs_stat *stat) {
     struct ext2_inode *node = &g_fs.inode_table[ino - 1];
     stat->size = node->size;
     stat->mode = node->mode;
+    stat->uid  = node->uid;
+    stat->gid  = node->gid;
     stat->kind = (node->mode & 0x4000) ? VFS_NODE_DIRECTORY : VFS_NODE_FILE;
     return 1;
 }

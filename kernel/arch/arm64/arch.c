@@ -677,13 +677,17 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             regs[0] = 0;
             arm64_yield_current(regs);
             /* not reached */
-        case SYS_STAT: {         /* 9: stat path — returns kind, size, mode */
+        case SYS_STAT: {         /* 9: stat path — returns kind, size, mode, uid/gid */
             const char *path = (const char *)(uintptr_t)a0;
             struct vfs_stat st;
             if (!vfs_stat_path(path, &st)) { regs[0] = (uint64_t)-1; return; }
             regs[0] = (uint64_t)(st.kind == VFS_NODE_DIRECTORY ? 2 : 1);
             regs[1] = st.size;
             regs[2] = st.mode;
+            /* Pack uid/gid into x3, matching the x86 r9 convention. */
+            regs[3] = (uint64_t)st.mode
+                    | ((uint64_t)st.uid << 16)
+                    | ((uint64_t)st.gid << 32);
             return;
         }
         case SYS_READDIR: {      /* 10: readdir(path, idx, name, cap) → kind, size */
