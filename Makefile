@@ -297,17 +297,17 @@ arm64-user: $(DISK_IMG)
 	# --- input test: polls virtio-input and prints to serial ---
 	$(call arm64app,user/inputtest.c,/bin/inputtest)
 	# --- desktop: uses the shared renderer as a userspace lib ---
-	$(CC) $(ARM64_UCFLAGS) -Ikernel/include -c user/desktop.c -o $(ARM64_UDIR)/app.o
-	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/app.elf \
-	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/app.o $(ARM64_UDIR)/libgfx.a $(ARM64_UDIR)/libc.a
-	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/app.elf /bin/desktop
+	$(CC) $(ARM64_UCFLAGS) -Ikernel/include -c user/desktop.c -o $(ARM64_UDIR)/desktop_app.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/desktop_app.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/desktop_app.o $(ARM64_UDIR)/libgfx.a $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/desktop_app.elf /bin/desktop
 	# --- VexUI toolkit for arm64 ---
 	$(CC) $(ARM64_UCFLAGS) -Ilib/svg -c user/vexui.c -o $(ARM64_UDIR)/vexui.o
 	# --- wallpaper: minimal arm64 wallpaper (no libimage dependency) ---
-	$(CC) $(ARM64_UCFLAGS) -c user/wallpaper_arm64.c -o $(ARM64_UDIR)/app.o
-	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/app.elf \
-	    $(ARM64_UDIR)/app.o $(ARM64_UDIR)/libc.a
-	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/app.elf /bin/wallpaper
+	$(CC) $(ARM64_UCFLAGS) -c user/wallpaper_arm64.c -o $(ARM64_UDIR)/wallpaper.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/wallpaper.elf \
+	    $(ARM64_UDIR)/wallpaper.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/wallpaper.elf /bin/wallpaper
 		# --- SVG renderer for arm64 ---
 	$(CC) $(ARM64_UCFLAGS) -Ilib/svg -c lib/svg/svg.c -o $(ARM64_UDIR)/svg.o
 	# --- Dock (C++ GUI app using VexUI) ---
