@@ -24,7 +24,19 @@ static DockEntry g_entries[] = {
 };
 #define DOCK_COUNT (int)(sizeof(g_entries) / sizeof(g_entries[0]))
 
+/* Icon geometry: 58px buttons, 38px gap, starting x=50. */
+#define ICON_SIZE   58
+#define ICON_GAP    38
+#define ICON_STRIDE (ICON_SIZE + ICON_GAP)
+#define ICON_X0     50
+#define ICON_Y0     48
+
 static vui_widget *sButtons[6];
+
+/* Drag-mode overlay icons: one per slot, created once and reused.
+ * During normal operation they're hidden; during drag they replace
+ * the hbox buttons so we can animate positions freely. */
+static vui_widget *sOverlays[6];
 
 static void apply_entry(int idx) {
     vui_widget *b = sButtons[idx];
@@ -36,13 +48,11 @@ static void apply_entry(int idx) {
     vui_set_tooltip(b, e->label);
 }
 
-static void swap_entries(int a, int b) {
-    if (a == b || a < 0 || b < 0 || a >= DOCK_COUNT || b >= DOCK_COUNT) return;
-    DockEntry tmp = g_entries[a];
-    g_entries[a] = g_entries[b];
-    g_entries[b] = tmp;
-    apply_entry(a);
-    apply_entry(b);
+static void apply_overlay(vui_widget *ov, int entry_idx) {
+    DockEntry *e = &g_entries[entry_idx];
+    if (e->icon_path) vui_set_icon_svg_path(ov, e->icon_path);
+    /* Tint the overlay to match the entry colour. */
+    vui_set_color(ov, e->color);
 }
 
 static void dock_on_tick(vui_window *win) {
@@ -66,29 +76,132 @@ static void dock_on_tick(vui_window *win) {
     }
 }
 
-static void launch_app(vui_widget *self) {
-    const char *path = (const char *)vui_get_user(self);
-    if (path) vos_spawn(path);
-}
-
-/* ---- Drag support (window-level callbacks) ----------------------------- */
+/* ---- Drag state -------------------------------------------------------- */
 static int  g_held_idx   = -1;
 static int  g_held_ticks = 0;
 static int  g_drag_on    = 0;
 
+/* g_target_slot[i] = which visual slot entry i should occupy during drag.
+ * The dragged entry's slot tracks the mouse; neighbours shift accordingly. */
+static int   g_target_slot[DOCK_COUNT];
+static float g_cur_x[DOCK_COUNT];      /* animated x for each button */
+static int   g_animating = 0;
+static int   g_drag_src  = -1;         /* entry index being dragged */
+
+static int slot_x(int slot) { return ICON_X0 + slot * ICON_STRIDE; }
+
 static int icon_at(int mx, int my) {
-    if (my < 38 || my > 38 + 58) return -1;
+    if (my < 28 || my > 106) return -1;
     for (int i = 0; i < DOCK_COUNT; i++) {
-        int ix = 50 + i * (58 + 38);
-        if (mx >= ix && mx <= ix + 58) return i;
+        int ix = ICON_X0 + i * ICON_STRIDE;
+        if (mx >= ix && mx < ix + ICON_STRIDE) return i;
     }
     return -1;
 }
 
+/* Rebuild g_target_slot[]: the dragged entry (src_entry) appears at
+ * mouse_slot; entries between src_entry and mouse_slot shift by one. */
+static void recalc_targets(int src_entry, int mouse_slot) {
+    /* Default: identity mapping (entry i → slot i). */
+    for (int i = 0; i < DOCK_COUNT; i++)
+        g_target_slot[i] = i;
+
+    if (mouse_slot < 0 || mouse_slot >= DOCK_COUNT || mouse_slot == g_target_slot[src_entry])
+        return;
+
+    int src_slot = g_target_slot[src_entry];
+
+    if (mouse_slot > src_slot) {
+        for (int e = 0; e < DOCK_COUNT; e++) {
+            int s = g_target_slot[e];
+            if (s > src_slot && s <= mouse_slot)
+                g_target_slot[e] = s - 1;
+        }
+        g_target_slot[src_entry] = mouse_slot;
+    } else {
+        for (int e = 0; e < DOCK_COUNT; e++) {
+            int s = g_target_slot[e];
+            if (s >= mouse_slot && s < src_slot)
+                g_target_slot[e] = s + 1;
+        }
+        g_target_slot[src_entry] = mouse_slot;
+    }
+}
+
+/* Lerp overlays toward their target slots. */
+static void animate_drag(void) {
+    float speed = 8.0f;
+    for (int i = 0; i < DOCK_COUNT; i++) {
+        float target = (float)slot_x(g_target_slot[i]);
+        float dx = target - g_cur_x[i];
+        if (dx < -speed)      g_cur_x[i] -= speed;
+        else if (dx > speed)  g_cur_x[i] += speed;
+        else                  g_cur_x[i] = target;
+
+        vui_set_bounds(sOverlays[i], (int)(g_cur_x[i] + 0.5f),
+                       ICON_Y0, ICON_SIZE, ICON_SIZE);
+    }
+}
+
+/* Apply the final reorder from g_target_slot to g_entries. */
+static void commit_targets(void) {
+    DockEntry old[DOCK_COUNT];
+    for (int i = 0; i < DOCK_COUNT; i++) old[i] = g_entries[i];
+    /* Invert: find which entry goes to each slot. */
+    for (int slot = 0; slot < DOCK_COUNT; slot++) {
+        for (int e = 0; e < DOCK_COUNT; e++) {
+            if (g_target_slot[e] == slot) { g_entries[slot] = old[e]; break; }
+        }
+    }
+}
+
+/* --- Drag lifecycle ----------------------------------------------------- */
+
+static void start_drag(vui_window *win, int idx) {
+    (void)win;
+    if (idx < 0 || idx >= DOCK_COUNT) return;
+    g_drag_on  = 1;
+    g_drag_src = idx;
+    g_animating = 0;
+
+    /* Hide all hbox buttons, show overlay icons instead. */
+    for (int i = 0; i < DOCK_COUNT; i++) {
+        vui_set_visible(sButtons[i], 0);
+        g_cur_x[i] = (float)slot_x(i);
+        g_target_slot[i] = i;
+        apply_overlay(sOverlays[i], i);
+        vui_set_visible(sOverlays[i], 1);
+    }
+
+    vos_log(VOS_LOG_APP, "dock: drag started");
+}
+
+static void end_drag(int x, int y) {
+    int dst = icon_at(x, y);
+
+    /* Apply the final reorder. */
+    recalc_targets(g_drag_src, dst);
+    commit_targets();
+
+    /* Hide overlays, show hbox buttons with updated entries. */
+    for (int i = 0; i < DOCK_COUNT; i++) {
+        vui_set_visible(sOverlays[i], 0);
+        vui_set_visible(sButtons[i], 1);
+        apply_entry(i);
+    }
+
+    g_drag_on    = 0;
+    g_held_idx   = -1;
+    g_held_ticks = 0;
+    g_drag_src   = -1;
+    g_animating  = 0;
+}
+
+/* ---- Window-level callbacks -------------------------------------------- */
+
 static void on_mouse_dn(vui_window *win, int x, int y, vui_u32 btns) {
     (void)win; (void)btns;
     int idx = icon_at(x, y);
-    { char b[64]; snprintf(b, sizeof(b), "dock: dn x=%d y=%d idx=%d", x, y, idx); vos_log(VOS_LOG_APP, b); }
     g_held_idx   = idx;
     g_held_ticks = 0;
     g_drag_on    = 0;
@@ -96,12 +209,13 @@ static void on_mouse_dn(vui_window *win, int x, int y, vui_u32 btns) {
 
 static void on_mouse_up(vui_window *win, int x, int y, vui_u32 btns) {
     (void)win; (void)btns;
-    if (g_drag_on && g_held_idx >= 0) {
-        int dst = icon_at(x, y);
-        if (dst >= 0 && dst != g_held_idx)
-            swap_entries(g_held_idx, dst);
-    } else if (g_held_idx >= 0 && !g_drag_on) {
-        /* Launch only if still over the same icon. */
+
+    if (g_drag_on) {
+        end_drag(x, y);
+        return;
+    }
+
+    if (g_held_idx >= 0) {
         int over = icon_at(x, y);
         if (over == g_held_idx) {
             const char *path = (const char *)vui_get_user(sButtons[g_held_idx]);
@@ -110,28 +224,32 @@ static void on_mouse_up(vui_window *win, int x, int y, vui_u32 btns) {
     }
     g_held_idx   = -1;
     g_held_ticks = 0;
-    g_drag_on    = 0;
 }
 
 static void on_mouse_mv(vui_window *win, int x, int y, vui_u32 btns) {
     (void)win; (void)btns;
-    if (!g_drag_on || g_held_idx < 0) return;
-    int dst = icon_at(x, y);
-    { char b[64]; snprintf(b, sizeof(b), "dock: mv x=%d y=%d dst=%d src=%d", x, y, dst, g_held_idx); vos_log(VOS_LOG_APP, b); }
-    if (dst >= 0 && dst != g_held_idx) {
-        swap_entries(g_held_idx, dst);
-        g_held_idx = dst;
+
+    if (!g_drag_on || g_drag_src < 0) return;
+
+    int mouse_slot = icon_at(x, y);
+    recalc_targets(g_drag_src, mouse_slot);
+    g_animating = 1;
+
+    /* Also move the dragged entry's overlay closer to the mouse so it
+     * feels responsive even before lerp catches up. */
+    if (mouse_slot >= 0) {
+        g_cur_x[g_drag_src] = (float)slot_x(mouse_slot);
     }
 }
 
 static void dock_tick2(vui_window *win) {
     dock_on_tick(win);
+
     if (g_held_idx >= 0 && !g_drag_on) {
-        if (++g_held_ticks > 25) {
-            g_drag_on = 1;
-            vos_log(VOS_LOG_APP, "dock: drag started");
-        }
+        if (++g_held_ticks > 25) start_drag(win, g_held_idx);
     }
+
+    if (g_drag_on && g_animating) animate_drag();
 }
 
 int main() {
@@ -174,6 +292,11 @@ int main() {
         vui_set_size(button, 58, 58);
         apply_entry(i);
         vui_box_add(row, button);
+
+        /* Pre-create overlay icons for drag animation, hidden initially. */
+        vui_widget *ov = vui_image(win, slot_x(i), ICON_Y0, ICON_SIZE);
+        sOverlays[i] = ov;
+        vui_set_visible(ov, 0);
     }
 
     vui_on_tick(win, dock_tick2);
