@@ -1,20 +1,19 @@
 #include "vexui.h"
-#include <sys/syscall.h>
 #include <vibeos.h>
 #include <string.h>
 
-#define PROCESS_STATE_EMPTY 0
+#define PROCESS_STATE_EMPTY  0
 #define PROCESS_STATE_EXITED 5
 
 struct DockEntry {
     const char *label;
-    int icon;            /* line-art icon id: 1=web 2=activity 3=grid 4=code 5=folder */
-    uint32_t color;
+    int         icon;
+    uint32_t    color;
     const char *path;
     const char *icon_path;
 };
 
-static const DockEntry kEntries[] = {
+static DockEntry g_entries[] = {
     {"Terminal", 4, 0x002ea8ffu, "/bin/terminal", "/icons/dock/terminal.svg"},
     {"Files",    5, 0x002ea8ffu, "/bin/filebrowser", "/icons/dock/filebrowser.svg"},
     {"Browser",  1, 0x002ea8ffu, "/bin/browser", "/icons/dock/browser.svg"},
@@ -22,81 +21,106 @@ static const DockEntry kEntries[] = {
     {"Tasks",    2, 0x002ea8ffu, "/bin/taskmgr", "/icons/dock/taskmgr.svg"},
     {"Player",   3, 0x002ea8ffu, "/bin/audioplayer", "/icons/dock/player.svg"},
 };
+#define DOCK_COUNT (int)(sizeof(g_entries) / sizeof(g_entries[0]))
 
 static vui_widget *sButtons[6];
+static int  g_held_idx    = -1;   /* which icon the mouse is down on */
+static int  g_held_ticks  = 0;
+static int  g_drag_active = 0;
+static int  g_mouse_x = 0, g_mouse_y = 0;
 
-static void dock_on_tick(vui_window *win) {
+/* Icon hit-test (relative to dock window). */
+static int icon_at(int mx, int my) {
+    /* y: below the tooltip headroom, within the 58px icon row */
+    if (my < 38 || my > 38 + 58) return -1;
+    for (int i = 0; i < DOCK_COUNT; i++) {
+        int ix = 50 + i * (58 + 38);
+        if (mx >= ix && mx <= ix + 58) return i;
+    }
+    return -1;
+}
+
+static void apply_entry(int idx) {
+    vui_widget *b = sButtons[idx];
+    DockEntry *e = &g_entries[idx];
+    vui_set_color(b, e->color);
+    vui_set_value(b, e->icon);
+    if (e->icon_path) vui_set_icon_svg_path(b, e->icon_path);
+    vui_set_user(b, (void *)e->path);
+    vui_set_tooltip(b, e->label);
+}
+
+static void swap_entries(int a, int b) {
+    if (a == b || a < 0 || b < 0 || a >= DOCK_COUNT || b >= DOCK_COUNT) return;
+    DockEntry tmp = g_entries[a];
+    g_entries[a] = g_entries[b];
+    g_entries[b] = tmp;
+    apply_entry(a);
+    apply_entry(b);
+}
+
+/* ---- Callbacks --------------------------------------------------------- */
+
+static void on_tick(vui_window *win) {
     (void)win;
-    for (unsigned i = 0; i < sizeof(kEntries) / sizeof(kEntries[0]); ++i) {
+    /* Running dots */
+    for (int i = 0; i < DOCK_COUNT; i++) {
         bool running = false;
-        const char *path = kEntries[i].path;
+        const char *path = g_entries[i].path;
         const char *name = path;
-        for (const char *p = path; *p; ++p) {
-            if (*p == '/') {
-                name = p + 1;
-            }
-        }
-        for (unsigned int slot = 0; slot < VUI_PROCESS_MAX; ++slot) {
+        for (const char *p = path; *p; p++)
+            if (*p == '/') name = p + 1;
+        for (unsigned s = 0; s < VUI_PROCESS_MAX; s++) {
             vui_process_info p;
-            if (vui_process_snapshot(slot, &p) > 0 && p.loaded && p.state != PROCESS_STATE_EMPTY && p.state != PROCESS_STATE_EXITED) {
+            if (vui_process_snapshot(s, &p) > 0 && p.loaded
+                && p.state != PROCESS_STATE_EMPTY && p.state != PROCESS_STATE_EXITED) {
                 if (strcmp(p.name, name) == 0 || strcmp(p.name, path) == 0) {
-                    running = true;
-                    break;
+                    running = true; break;
                 }
             }
         }
         vui_set_running(sButtons[i], running ? 1 : 0);
     }
+
+    /* Drag activation timer: ~400ms held still starts drag */
+    if (g_held_idx >= 0 && !g_drag_active) {
+        if (++g_held_ticks > 25) {
+            g_drag_active = 1;
+        }
+    }
 }
 
-static void append_str(char *buf, int *pos, int cap, const char *s) {
-    while (s && *s && *pos + 1 < cap) {
-        buf[(*pos)++] = *s++;
-    }
-    buf[*pos] = '\0';
+static void on_mouse_down(vui_window *win, int x, int y, vui_u32 btns) {
+    (void)win; (void)btns;
+    g_mouse_x = x; g_mouse_y = y;
+    if (g_drag_active) return;
+    g_held_idx   = icon_at(x, y);
+    g_held_ticks = 0;
 }
 
-static void append_int(char *buf, int *pos, int cap, int value) {
-    char tmp[16];
-    unsigned int n;
-    int len = 0;
-    if (value < 0) {
-        append_str(buf, pos, cap, "-");
-        n = (unsigned int)(-value);
-    } else {
-        n = (unsigned int)value;
+static void on_mouse_up(vui_window *win, int x, int y, vui_u32 btns) {
+    (void)win; (void)btns;
+    if (g_drag_active && g_held_idx >= 0) {
+        int dst = icon_at(x, y);
+        if (dst >= 0 && dst != g_held_idx)
+            swap_entries(g_held_idx, dst);
+    } else if (g_held_idx >= 0 && !g_drag_active) {
+        /* Short click → launch */
+        const char *path = (const char *)vui_get_user(sButtons[g_held_idx]);
+        if (path) vos_spawn(path);
     }
-    if (n == 0) {
-        append_str(buf, pos, cap, "0");
-        return;
-    }
-    while (n && len < (int)sizeof(tmp)) {
-        tmp[len++] = (char)('0' + (n % 10u));
-        n /= 10u;
-    }
-    while (len > 0 && *pos + 1 < cap) {
-        buf[(*pos)++] = tmp[--len];
-    }
-    buf[*pos] = '\0';
+    g_held_idx    = -1;
+    g_held_ticks  = 0;
+    g_drag_active = 0;
 }
 
-static void launch_app(vui_widget *self) {
-    const char *path = (const char *)vui_get_user(self);
-    if (path) {
-        char msg[96];
-        int pos = 0;
-        int pid;
-        append_str(msg, &pos, sizeof(msg), "dock launch ");
-        append_str(msg, &pos, sizeof(msg), path);
-        vos_log(VOS_LOG_APP, msg);
-
-        pid = vos_spawn(path);
-        pos = 0;
-        append_str(msg, &pos, sizeof(msg), "dock launch result ");
-        append_str(msg, &pos, sizeof(msg), path);
-        append_str(msg, &pos, sizeof(msg), " pid=");
-        append_int(msg, &pos, sizeof(msg), pid);
-        vos_log(VOS_LOG_APP, msg);
+static void on_mouse_move(vui_window *win, int x, int y, vui_u32 btns) {
+    (void)win; (void)btns;
+    if (!g_drag_active || g_held_idx < 0) return;
+    int dst = icon_at(x, y);
+    if (dst >= 0 && dst != g_held_idx) {
+        swap_entries(g_held_idx, dst);
+        g_held_idx = dst;
     }
 }
 
@@ -105,11 +129,10 @@ int main() {
     int screen_w = (int)((mode >> 16) & 0xffffu);
     int screen_h = (int)(mode & 0xffffu);
     int width;
-    int dock_h     = 78;   /* visible glass shelf; dock.png is a close-up */
-    int tooltip_h  = 28;   /* transparent headroom above the shelf for tooltips */
+    int dock_h     = 78;
+    int tooltip_h  = 28;
     int height     = dock_h + tooltip_h;
-    int x;
-    int y;
+    int x, y;
 
     if (screen_w <= 0) screen_w = 1024;
     if (screen_h <= 0) screen_h = 768;
@@ -122,8 +145,6 @@ int main() {
 
     vos_log(VOS_LOG_APP, "dock ready");
 
-    /* shadow_inset_top = tooltip_h: the upper transparent zone (tooltip
-     * headroom) casts no shadow, but the visible pill below still does. */
     vui_window *win = vui_window_open_inset(
         "Dock", width, height,
         VUI_WINDOW_FRAMELESS | VUI_WINDOW_NO_DOCK |
@@ -132,8 +153,6 @@ int main() {
         x, y, tooltip_h);
     vui_set_clear_color(win, VUI_COLOR_TRANSPARENT);
 
-    /* The pill sits in the lower dock_h pixels; the upper tooltip_h pixels are
-     * fully transparent so the tooltip bubble has room to render above the icons. */
     vui_widget *surface = vui_pill(win, 0, tooltip_h, width, dock_h);
     vui_set_anchor(surface, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
     vui_set_color(surface, 0x000b2342u);
@@ -143,22 +162,18 @@ int main() {
     vui_set_gap(row, 38);
     vui_set_padding(row, 0);
 
-    for (unsigned i = 0; i < sizeof(kEntries) / sizeof(kEntries[0]); ++i) {
+    for (int i = 0; i < DOCK_COUNT; i++) {
         vui_widget *button = vui_tile_button(win, 0, 0, "");
         sButtons[i] = button;
         vui_set_size(button, 58, 58);
-        vui_set_color(button, kEntries[i].color);
-        vui_set_value(button, kEntries[i].icon);
-        if (kEntries[i].icon_path) {
-            vui_set_icon_svg_path(button, kEntries[i].icon_path);
-        }
-        vui_set_user(button, (void *)kEntries[i].path);
-        vui_set_tooltip(button, kEntries[i].label);
-        vui_on_click(button, launch_app);
+        apply_entry(i);
         vui_box_add(row, button);
     }
 
-    vui_on_tick(win, dock_on_tick);
+    vui_on_tick(win, on_tick);
+    vui_on_mouse_click(win, on_mouse_down);
+    vui_on_mouse_release(win, on_mouse_up);
+    vui_on_mouse_move(win, on_mouse_move);
 
     vui_run(win);
 }
