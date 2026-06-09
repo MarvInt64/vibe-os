@@ -56,7 +56,7 @@ void vos_sleep_ticks(unsigned long ticks) { __sc1(SYS_TIMER_SLEEP, (uint64_t)tic
 void vos_sleep_ms(unsigned int ms)          { __sc1(SYS_SLEEP_MS, (uint64_t)ms); }
 int  vos_keymap_set(const char *layout)     { return (int)ck(__sc1(SYS_KEYMAP_SET, (uint64_t)(size_t)layout)); }
 int vos_system_info(struct vos_system_info *out) { return (int)ck(__sc1(SYS_SYSTEM_INFO, (uint64_t)(size_t)out)); }
-int  vos_spawn(const char *path) { return (int)__sc1(SYS_PROCESS_SPAWN, (uint64_t)(size_t)path); }
+int  vos_spawn(const char *path) { return (int)__sc2(SYS_PROCESS_SPAWN, (uint64_t)(size_t)path, 0); }
 int  vos_spawn_arg(const char *path, const char *arg) { return (int)__sc2(SYS_PROCESS_SPAWN, (uint64_t)(size_t)path, (uint64_t)(size_t)arg); }
 /* Wait for a spawned child to exit and return ITS exit code. The kernel
  * delivers the child's pid in rax and the exit code in rdx (both for the

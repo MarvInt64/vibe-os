@@ -228,7 +228,7 @@ static int readdir_entry(const char *path, uint32_t index, char *name, size_t na
 }
 
 static int spawn(const char *name) {
-    return (int)syscall1(SYS_PROCESS_SPAWN, (uint64_t)(size_t)name);
+    return (int)syscall2(SYS_PROCESS_SPAWN, (uint64_t)(size_t)name, 0);
 }
 
 static int spawn_with_arg(const char *path, const char *arg) {
