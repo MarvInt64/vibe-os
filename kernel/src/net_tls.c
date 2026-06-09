@@ -182,21 +182,24 @@ void net_tls_check_guard(void) {
 
 static int tls_low_read(void *ctx, unsigned char *buf, size_t len) {
     (void)ctx;
-    int n = tcp_stream_recv(buf, (int)len, 8000);
-    // serial_write("NET_TLS: low_read n=");
-    // serial_write_hex_u64((uint64_t)(int64_t)n);
-    // serial_write("\n");
+    int n = tcp_stream_recv(buf, (int)len, 30000);
+    if (n <= 0) {
+        serial_write("NET_TLS: low_read failed n=");
+        serial_write_hex_u64((uint64_t)(int64_t)n);
+        serial_write("\n");
+    }
     return (n <= 0) ? -1 : n;
 }
 static int tls_low_write(void *ctx, const unsigned char *buf, size_t len) {
     (void)ctx;
-    // serial_write("NET_TLS: low_write len=");
-    // serial_write_hex_u64((uint64_t)len);
-    // serial_write("\n");
     int n = tcp_stream_send(buf, (int)len);
-    // serial_write("NET_TLS: low_write ret=");
-    // serial_write_hex_u64((uint64_t)(int64_t)n);
-    // serial_write("\n");
+    if (n <= 0) {
+        serial_write("NET_TLS: low_write failed len=");
+        serial_write_hex_u64((uint64_t)len);
+        serial_write(" n=");
+        serial_write_hex_u64((uint64_t)(int64_t)n);
+        serial_write("\n");
+    }
     return (n <= 0) ? -1 : n;
 }
 
@@ -209,6 +212,12 @@ static int      g_tls_open;
 static uint32_t g_tls_ip;
 static uint16_t g_tls_port;
 static char     g_tls_host[256];
+
+static const uint16_t g_modern_tls12_suites[] = {
+    BR_TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+    BR_TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+    BR_TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+};
 
 static int str_eq(const char *a, const char *b) {
     while (*a && *b) { if (*a != *b) return 0; ++a; ++b; }
@@ -235,6 +244,9 @@ static int tls_connect(uint32_t ip, uint16_t port, const char *host, int timeout
     /* init_full wires up all cipher suites + hashes; we then replace the trust
      * validator with our accept-all engine. */
     br_ssl_client_init_full(&g_sc, &g_xc_min, 0, 0);
+    br_ssl_engine_set_versions(&g_sc.eng, BR_TLS12, BR_TLS12);
+    br_ssl_engine_set_suites(&g_sc.eng, g_modern_tls12_suites,
+                             sizeof(g_modern_tls12_suites) / sizeof(g_modern_tls12_suites[0]));
     g_ax.vtable = &AX_VTABLE;
     br_ssl_engine_set_x509(&g_sc.eng, &g_ax.vtable);
     br_ssl_engine_set_buffer(&g_sc.eng, g_iobuf, sizeof g_iobuf, 1);

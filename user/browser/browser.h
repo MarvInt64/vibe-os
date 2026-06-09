@@ -195,6 +195,7 @@ private:
     void navigate(const char *url, bool push_to_history = true);   /* hand off to the worker thread */
     void load_url(const char *url, uint32_t gen, bool push_to_history);   /* inner: resolves scheme, follows redirects */
     void fetch_worker(uint32_t gen, bool push_to_history);              /* runs on the worker thread: load pending_url_ */
+    void set_error_page(const char *title, const char *detail);
     void load_images(uint32_t gen);               /* worker thread: fetch images, re-layout each */
     void poll_fetch();                /* UI thread: react to worker completion */
     void layout_current();

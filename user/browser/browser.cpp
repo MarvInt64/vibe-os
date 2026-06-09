@@ -561,6 +561,31 @@ void Browser::fetch_worker(uint32_t gen, bool push_to_history) {
     blog("browser: fetch_worker done");
 }
 
+void Browser::set_error_page(const char *title, const char *detail) {
+    static char page[1024];
+    __builtin_snprintf(page, sizeof page,
+        "<html><head><title>%s</title></head><body>"
+        "<h1>%s</h1><p>%s</p></body></html>",
+        title ? title : "Load failed",
+        title ? title : "Load failed",
+        detail ? detail : "The request failed.");
+    if (html_buf_) {
+        __builtin_free(html_buf_);
+        html_buf_ = nullptr;
+        html_len_ = 0;
+    }
+    html_len_ = (int)__builtin_strlen(page);
+    html_buf_ = static_cast<char *>(__builtin_malloc((unsigned)html_len_ + 1));
+    if (!html_buf_) {
+        html_len_ = 0;
+        return;
+    }
+    __builtin_memcpy(html_buf_, page, (unsigned)html_len_ + 1);
+    images_clear();
+    layout_current();
+    seed_fields();
+}
+
 /* ---- Audio playback ------------------------------------------------------ *
  *
  * <audio src="..."> support.  The audio runs on its own background thread so
@@ -777,7 +802,11 @@ void Browser::load_url(const char *start_url, uint32_t gen, bool push_to_history
         blogf("browser: load_url host=%s path=%s secure=%d", host, path, secure);
         if (!parse_ipv4(host,&ip)) {
             if (!dns_lookup(host, &ip)) {
-                if (vos_resolve(host,&ip)<0) { blogf("browser: resolve FAILED host=%s", host); return; }
+                if (vos_resolve(host,&ip)<0) {
+                    blogf("browser: resolve FAILED host=%s", host);
+                    set_error_page("DNS lookup failed", host);
+                    return;
+                }
                 dns_insert(host, ip);
             }
         }
@@ -787,11 +816,17 @@ void Browser::load_url(const char *start_url, uint32_t gen, bool push_to_history
         raw = static_cast<char *>(__builtin_malloc(RAW_CAP + 1));
         if (!raw) { blog("browser: malloc RAW_CAP FAILED"); return; }
         req.ip=ip; req.port=secure?443:80; req.host=host; req.path=path;
-        req.out=raw; req.cap=RAW_CAP; req.user_agent=BROWSER_USER_AGENT; req.timeout_ms=0;
+        req.out=raw; req.cap=RAW_CAP; req.user_agent=BROWSER_USER_AGENT; req.timeout_ms=15000;
         n = secure ? vos_https_get(&req) : vos_http_get(&req);
         if (load_gen_.load(std::memory_order_acquire) != gen) { __builtin_free(raw); return; }
         blogf("browser: %s_get returned n=%d", secure?"https":"http", n);
-        if (n <= 0) { __builtin_free(raw); return; }
+        if (n <= 0) {
+            __builtin_free(raw);
+            set_error_page(secure ? "HTTPS request failed" : "HTTP request failed",
+                           secure ? "The TLS stream failed while loading this site." :
+                                    "The HTTP request returned no response.");
+            return;
+        }
         raw[n] = '\0';
         code = http_status(raw, n);
         blogf("browser: http_status=%d", code);

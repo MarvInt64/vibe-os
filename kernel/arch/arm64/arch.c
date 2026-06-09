@@ -128,6 +128,7 @@ extern void arm64_yield_current(void *frame) __attribute__((noreturn));
 extern void arm64_sleep_current(void *frame) __attribute__((noreturn));
 extern struct process g_procs[];
 extern int process_create_thread(struct process *parent, uintptr_t entry, uintptr_t stack_top, uint64_t arg);
+extern int arm64_process_commit_range(struct process *owner, uintptr_t start, uintptr_t end);
 void process_handle_exit(uint64_t code);
 struct desktop_state *desktop_active(void);
 
@@ -495,15 +496,6 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 dh = (int)(a5 & 0xffffu);
             }
             uint32_t pid = (this_cpu() && this_cpu()->current) ? this_cpu()->current->pid : 0;
-            static int pres_dbg = 0;
-            if (pres_dbg < 20) {
-                serial_write("[present] win="); serial_write_hex_u64((uint64_t)win_id);
-                serial_write(" pid="); serial_write_hex_u64(pid);
-                serial_write(" w="); serial_write_hex_u64((uint64_t)w);
-                serial_write(" h="); serial_write_hex_u64((uint64_t)h);
-                serial_write("\r\n");
-                pres_dbg++;
-            }
             int result = desktop_app_present_rect(d, pid, win_id, pixels, w, h,
                                                    dx, dy, dw, dh);
             regs[0] = (uint64_t)(int64_t)result;
@@ -856,6 +848,14 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 serial_write(" old=0x"); serial_write_hex_u64(old_break);
                 serial_write(" start=0x"); serial_write_hex_u64(owner->heap_start);
                 serial_write(" top=0x"); serial_write_hex_u64(owner->user_stack_top);
+                serial_write(" new=0x"); serial_write_hex_u64(new_break);
+                serial_write("\r\n");
+                regs[0] = (uint64_t)-1; return;
+            }
+            if (new_break > old_break &&
+                arm64_process_commit_range(owner, old_break, new_break) < 0) {
+                serial_write("[sbrk] COMMIT FAILED pid="); serial_write_hex_u64((uint64_t)cur->pid);
+                serial_write(" old=0x"); serial_write_hex_u64(old_break);
                 serial_write(" new=0x"); serial_write_hex_u64(new_break);
                 serial_write("\r\n");
                 regs[0] = (uint64_t)-1; return;
@@ -1819,12 +1819,58 @@ static void flush_visible_framebuffer(void) {
 }
 
 void arm64_net_wait_pump(void) {
+    struct cpu *c = this_cpu();
+    struct process *blocked = c ? c->current : 0;
+
+#define ARM64_NET_WAIT_HINT() do {                                             \
+    for (volatile int _i = 0; _i < 2048; ++_i) {                                \
+        __asm__ volatile("yield");                                             \
+    }                                                                           \
+    arm64_timer_poll();                                                         \
+} while (0)
+
     if (!g_desktop || !g_fb.base) {
-        __asm__ volatile("msr daifclr, #2; wfi; msr daifset, #2");
+        if (!blocked) {
+            ARM64_NET_WAIT_HINT();
+            return;
+        }
+        if (blocked && blocked->state == PROCESS_STATE_RUNNING) {
+            blocked->state = PROCESS_STATE_WAITING_IO;
+        }
+        bkl_release();
+        ARM64_NET_WAIT_HINT();
+        bkl_acquire();
+        if (blocked && blocked->state == PROCESS_STATE_WAITING_IO) {
+            blocked->state = PROCESS_STATE_RUNNING;
+        }
         return;
     }
 
-    __asm__ volatile("msr daifclr, #2; wfi; msr daifset, #2");
+    if (!blocked) {
+        ARM64_NET_WAIT_HINT();
+        virtio_input_poll();
+        return;
+    }
+
+    /* Network syscalls are synchronous on arm64, but they must not monopolize
+     * the Big Kernel Lock while waiting for ARP/DNS/TCP progress. We cannot
+     * park an arbitrary arm64 kernel stack yet (unlike x86), so the running
+     * syscall stays on this CPU and is marked WAITING_IO while the BKL is
+     * dropped. Other CPUs can then schedule the dock, topbar, browser UI, and
+     * unrelated apps. process_kill() treats running_on_cpu as a pin and will
+     * not free this address space underneath the active syscall.
+     *
+     * HVF uses the virtual timer in poll mode (IMASK=1, no GIC wakeup). Do not
+     * execute WFI here: there may be no interrupt to resume DNS/TCP progress. */
+    if (blocked && blocked->state == PROCESS_STATE_RUNNING) {
+        blocked->state = PROCESS_STATE_WAITING_IO;
+    }
+    bkl_release();
+    ARM64_NET_WAIT_HINT();
+    bkl_acquire();
+    if (blocked && blocked->state == PROCESS_STATE_WAITING_IO) {
+        blocked->state = PROCESS_STATE_RUNNING;
+    }
 
     virtio_input_poll();
 
@@ -1853,6 +1899,8 @@ void arm64_net_wait_pump(void) {
     fb_blit(&g_fb, &g_bb);
     desktop_draw_cursor_overlay(g_desktop, &g_fb);
     flush_visible_framebuffer();
+
+#undef ARM64_NET_WAIT_HINT
 }
 
 void kernel_main_arm64(void) {
@@ -2108,11 +2156,6 @@ static void gui_run(void) {
             if (c == '\n') keyboard.enter_pressed = 1;
             else if (c == 0x7f || c == '\b') keyboard.backspace_pressed = 1;
             else keyboard.chars[keyboard.count++] = c;
-        }
-        if (keyboard.count || keyboard.enter_pressed) {
-            serial_write("[kbd] count="); serial_write_hex_u64(keyboard.count);
-            serial_write(" enter="); serial_write_hex_u64(keyboard.enter_pressed);
-            serial_write("\r\n");
         }
 
         /* Ctrl+C (0x03) — interrupt the foreground job of any waiting shell.

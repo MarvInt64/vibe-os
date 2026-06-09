@@ -15,17 +15,15 @@ struct DockEntry {
 };
 
 static const DockEntry kEntries[] = {
-    {"Terminal", 4, 0x0064f2ccu, "/bin/terminal", "/icons/dock/terminal.svg"},
-    {"DOOM",    3, 0x00e03030u, "/bin/doom",     0},
-    {"Browser", 1, 0x006eb6ffu, "/bin/browser", "/icons/dock/browser.svg"},
-    {"Files", 5, 0x007ec8ffu, "/bin/filebrowser", "/icons/dock/filebrowser.svg"},
-    {"Tasks", 2, 0x0076e0b5u, "/bin/taskmgr", "/icons/dock/taskmgr.svg"},
-    {"Player", 3, 0x004aa8ffu, "/bin/audioplayer", "/icons/dock/player.svg"},
-    {"Editor", 4, 0x008f7bf0u, "/bin/texteditor", "/icons/dock/terminal.svg"},
-    {"Info", 2, 0x00a8c7ffu, "/bin/sysinfo", 0},
+    {"Terminal", 4, 0x002ea8ffu, "/bin/terminal", "/icons/dock/terminal.svg"},
+    {"Files",    5, 0x002ea8ffu, "/bin/filebrowser", "/icons/dock/filebrowser.svg"},
+    {"Browser",  1, 0x002ea8ffu, "/bin/browser", "/icons/dock/browser.svg"},
+    {"Editor",   4, 0x002ea8ffu, "/bin/texteditor", "/icons/dock/terminal.svg"},
+    {"Tasks",    2, 0x002ea8ffu, "/bin/taskmgr", "/icons/dock/taskmgr.svg"},
+    {"Player",   3, 0x002ea8ffu, "/bin/audioplayer", "/icons/dock/player.svg"},
 };
 
-static vui_widget *sButtons[8];
+static vui_widget *sButtons[6];
 
 static void dock_on_tick(vui_window *win) {
     (void)win;
@@ -106,16 +104,18 @@ int main() {
     uint32_t mode = vos_display_mode_get();
     int screen_w = (int)((mode >> 16) & 0xffffu);
     int screen_h = (int)(mode & 0xffffu);
-    int width      = 560;
-    int dock_h     = 76;   /* height of the visible pill */
-    int tooltip_h  = 32;   /* transparent headroom above the pill for tooltips */
+    int width;
+    int dock_h     = 78;   /* visible glass shelf; dock.png is a close-up */
+    int tooltip_h  = 28;   /* transparent headroom above the shelf for tooltips */
     int height     = dock_h + tooltip_h;
     int x;
     int y;
 
     if (screen_w <= 0) screen_w = 1024;
     if (screen_h <= 0) screen_h = 768;
-    if (width > screen_w - 24) width = screen_w - 24;
+    width = 680;
+    if (screen_w < 900) width = screen_w - 40;
+    if (width > screen_w - 48) width = screen_w - 48;
     x = (screen_w - width) / 2;
     y = screen_h - height - 24;
     if (y < 0) y = 0;
@@ -136,19 +136,17 @@ int main() {
      * fully transparent so the tooltip bubble has room to render above the icons. */
     vui_widget *surface = vui_pill(win, 0, tooltip_h, width, dock_h);
     vui_set_anchor(surface, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
-    /* Glassmorphism dock: deep navy-blue like macOS, with a layered
-     * gradient (lighter top, darker bottom), soft border, and top highlight
-     * — matching the reference dock.png aesthetic. */
-    vui_set_color(surface, 0x00142c4au);
+    vui_set_color(surface, 0x000b2342u);
 
-    vui_widget *row = vui_hbox(win, 32, tooltip_h + 8, width - 64, dock_h - 16);
+    vui_widget *row = vui_hbox(win, 50, tooltip_h + 10, width - 100, dock_h - 18);
     vui_set_anchor(row, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
-    vui_set_gap(row, 18);
+    vui_set_gap(row, 38);
     vui_set_padding(row, 0);
 
     for (unsigned i = 0; i < sizeof(kEntries) / sizeof(kEntries[0]); ++i) {
         vui_widget *button = vui_tile_button(win, 0, 0, "");
         sButtons[i] = button;
+        vui_set_size(button, 58, 58);
         vui_set_color(button, kEntries[i].color);
         vui_set_value(button, kEntries[i].icon);
         if (kEntries[i].icon_path) {

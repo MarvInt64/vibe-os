@@ -97,11 +97,11 @@ static uint64_t block_user(uint64_t pa) {
  * identity EL0 alias (VA 0x80000000+i*2MB → PA 0x40000000+i*2MB) so the
  * framebuffer and any kmalloc'd buffer handed to userspace stay reachable.
  * The entries covering the app's slot (VA 0x90000000 .. +ARM64_ASPACE_SLOT)
- * are overridden to point at the process's private PA region instead, so each
- * process gets distinct physical memory behind the same virtual addresses.
+ * start unmapped and are committed block-by-block by process.c.  That keeps
+ * the virtual layout fixed while physical memory scales with actual use.
  * ------------------------------------------------------------------------- */
 #define ARM64_USER_VA      0x90000000ULL
-#define ARM64_ASPACE_SLOT  (64UL * 1024 * 1024)   /* 64 MB image+stack+heap window */
+#define ARM64_ASPACE_SLOT  ARM64_ASPACE_SLOT_BYTES
 
 /* 2 MB Level-2 block descriptor, EL0 RW+X (same attrs as block_user). */
 static uint64_t block_user_l2(uint64_t pa) {
@@ -127,14 +127,12 @@ static uint64_t *alloc_table_page(void **raw_out) {
     return t;
 }
 
-/* Build a private address space whose user slot is backed by `user_pa`
- * (a 2 MB-aligned PA region of at least ARM64_ASPACE_SLOT bytes, inside the
- * kernel RAM identity range 0x40000000-0x7FFFFFFF).
+/* Build a private address space whose app slot is initially unmapped.
  *
  * Returns the TTBR0 value (PA of the new L1) or 0 on failure.  The two raw
  * kmalloc pointers backing the L1 and L2 pages are returned via *l1_raw /
  * *l2_raw so the caller can free them when the process exits. */
-uint64_t arm64_aspace_create(uint64_t user_pa, void **l1_raw, void **l2_raw) {
+uint64_t arm64_aspace_create(void **l1_raw, void **l2_raw) {
     uint64_t *l1 = alloc_table_page(l1_raw);
     uint64_t *l2 = alloc_table_page(l2_raw);
     if (!l1 || !l2) {
@@ -154,14 +152,28 @@ uint64_t arm64_aspace_create(uint64_t user_pa, void **l1_raw, void **l2_raw) {
     for (int i = 0; i < 512; i++)
         l2[i] = block_user_l2(0x40000000ULL + (uint64_t)i * 0x200000ULL);
 
-    /* Override the app slot to point at the process's private PA. */
+    /* Reserve the app slot by removing the shared identity alias there. */
     int base = (int)((ARM64_USER_VA - 0x80000000ULL) / 0x200000ULL);  /* 128 */
-    int n    = (int)(ARM64_ASPACE_SLOT / 0x200000ULL);                /* 8   */
+    int n    = (int)(ARM64_ASPACE_SLOT / 0x200000ULL);
     for (int i = 0; i < n; i++)
-        l2[base + i] = block_user_l2(user_pa + (uint64_t)i * 0x200000ULL);
+        l2[base + i] = 0;
 
     __asm__ volatile("dsb ish" ::: "memory");
     return (uint64_t)(uintptr_t)l1;
+}
+
+/* Commit one 2 MB block inside the app slot. */
+int arm64_aspace_map_block(void *l2_raw, uint64_t va, uint64_t pa) {
+    if (!l2_raw) return -1;
+    if (va < ARM64_USER_VA || va >= ARM64_USER_VA + ARM64_ASPACE_SLOT) return -1;
+    if ((va & 0x1FFFFFULL) || (pa & 0x1FFFFFULL)) return -1;
+
+    uintptr_t aligned = ((uintptr_t)l2_raw + 4095) & ~(uintptr_t)4095;
+    uint64_t *l2 = (uint64_t *)aligned;
+    int index = (int)((va - 0x80000000ULL) / 0x200000ULL);
+    l2[index] = block_user_l2(pa);
+    __asm__ volatile("dsb ish; tlbi vmalle1is; dsb ish; isb" ::: "memory");
+    return 0;
 }
 
 /* Switch the active address space and flush the TLB. */

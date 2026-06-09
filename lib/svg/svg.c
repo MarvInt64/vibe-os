@@ -167,6 +167,8 @@ static uint32_t *g_svg_target;                     /* current draw layer */
 
 static int   g_svg_size;
 static float g_svg_scale, g_svg_ox, g_svg_oy;      /* user->pixel: p = u*s + o */
+static svg_rgba g_svg_current;
+static int      g_svg_force_color;
 
 static svg_gradient g_grads[SVG_MAX_GRAD];
 static int g_grad_n;
@@ -285,7 +287,10 @@ static void svg_parse_paint(const char *tag, const char *name,
         return;
     }
     if (svg_match_name(v, "currentColor")) { out->kind = SVG_PAINT_SOLID; out->color = current; return; }
-    if (*v == '#') { out->kind = SVG_PAINT_SOLID; out->color = svg_hex_color(v); }
+    if (*v == '#') {
+        out->kind = SVG_PAINT_SOLID;
+        out->color = g_svg_force_color ? g_svg_current : svg_hex_color(v);
+    }
 }
 
 /* Evaluate a paint's color at pixel (px,py). */
@@ -973,6 +978,8 @@ void svg_render_rgba(const char *svg, unsigned int *out, int size,
     current.g = ((current_color >> 8) & 255) / 255.0f;
     current.b = (current_color & 255) / 255.0f;
     current.a = 1.0f;
+    g_svg_current = current;
+    g_svg_force_color = 1;
 
     svg_setup_transform(svg, size);
     svg_parse_defs(svg);

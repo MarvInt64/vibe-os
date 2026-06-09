@@ -412,19 +412,9 @@ static void desktop_refresh_launchers(struct desktop_state *desktop) {
         if (!vfs_stat_path(config_dir, &st)) (void)vfs_mkdir(config_dir);
     }
 
-    /* Seed default Browser.desktop if none exists. */
-    {
-        char def_path[128];
-        copy_text(def_path, sizeof(def_path), desktop_dir);
-        append_text(def_path, sizeof(def_path), "/Browser.desktop");
-        if (!vfs_stat_path(def_path, &st)) {
-            static const char browser_desktop[] =
-                "Name=Browser\n"
-                "Exec=/bin/browser\n"
-                "IconColor=#64f2cc\n";
-            (void)vfs_write_all(def_path, browser_desktop, sizeof(browser_desktop) - 1u);
-        }
-    }
+    /* Seed default launcher icons only if the Desktop directory is empty.
+     * No desktop shortcuts are created by default — the user adds them via
+     * the file browser or terminal. */
 
     while (desktop->launcher_count < DESKTOP_LAUNCHER_MAX) {
         struct vfs_dir_entry entry;

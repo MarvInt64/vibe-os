@@ -110,7 +110,7 @@ $(BEARSSL_LIB): $(BEARSSL_OBJS)
 
 bearssl: $(BEARSSL_LIB)
 
-.PHONY: all kernel iso run run-debug run-serial run-arm64 clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src seed-headers kernel-arm64 arm64-user arm64-tcc
+.PHONY: all kernel iso run run-debug run-serial run-arm64 clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src seed-headers arm64-tcc
 
 # ============================================================
 # arm64 build — targeting QEMU virt machine.
@@ -214,7 +214,9 @@ $(OUT_DIR)/arm64/arch/%.o: kernel/arch/arm64/%.S
 	@mkdir -p $(dir $@)
 	$(CC) $(ARM64_ASFLAGS) -c $< -o $@
 
-kernel-arm64: $(ARM64_OBJECTS) $(ARM64_BEARSSL_LIB)
+kernel-arm64: $(OUT_DIR)/vibeos-arm64.elf
+
+$(OUT_DIR)/vibeos-arm64.elf: $(ARM64_OBJECTS) $(ARM64_BEARSSL_LIB) linker-arm64.ld
 	$(LLVM_LLD) -nostdlib -static -T linker-arm64.ld -o $(OUT_DIR)/vibeos-arm64.elf $(ARM64_OBJECTS) $(ARM64_BEARSSL_LIB)
 	@echo "arm64 kernel built: $(OUT_DIR)/vibeos-arm64.elf"
 	@$(firstword $(wildcard /opt/homebrew/opt/llvm/bin/llvm-size /usr/local/opt/llvm/bin/llvm-size) llvm-size) $(OUT_DIR)/vibeos-arm64.elf 2>/dev/null || true
@@ -227,7 +229,7 @@ else
 QEMU_ARM64_ACCEL ?= -accel tcg
 endif
 
-run-arm64: kernel-arm64
+run-arm64: $(OUT_DIR)/vibeos-arm64.elf arm64-user
 	$(QEMU_ARM64) \
 	  -machine virt,gic-version=2 \
 	  -cpu $(if $(filter arm64,$(UNAME_M)),host,cortex-a72) \
@@ -265,7 +267,19 @@ define arm64app
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/app.elf $(2)
 endef
 
-arm64-user: $(DISK_IMG)
+ARM64_USER_STAMP := $(ARM64_UDIR)/.installed.stamp
+ARM64_USER_DEPS := Makefile user/arm64/link.ld $(shell find user lib/svg lib/mp3 third_party/quickjs third_party/doomgeneric assets/icons assets/wallpapers keymaps -type f 2>/dev/null)
+
+arm64-user: $(ARM64_USER_STAMP)
+
+$(ARM64_USER_STAMP): $(DISK_IMG) $(ARM64_USER_DEPS)
+	@# If the disk is unformatted (ext2 magic absent), format it before
+	@# installing arm64 userspace. This mirrors the x86 apps target and keeps
+	@# the documented `make kernel-arm64 && make disk && make arm64-user`
+	@# path from depending on a first boot side effect.
+	@if [ "$$(python3 -c "import struct; d=open('$(DISK_IMG)','rb'); d.seek(0x438); print(struct.unpack('<H', d.read(2))[0])")" != "61267" ]; then \
+	    python3 scripts/format_disk.py $(DISK_IMG); \
+	fi
 	@mkdir -p $(ARM64_UDIR)
 	# --- shared libc (crt0 + sys/string/stdlib/stdio + umalloc) for aarch64 ---
 	$(CC) $(ARM64_UCFLAGS) -c user/libc/crt0.c -o $(ARM64_UDIR)/crt0.o
@@ -308,8 +322,20 @@ arm64-user: $(DISK_IMG)
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/wallpaper.elf \
 	    $(ARM64_UDIR)/wallpaper.o $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/wallpaper.elf /bin/wallpaper
+	python3 scripts/png_to_vwp.py assets/wallpapers/default.png $(ARM64_UDIR)/default.vwp
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/default.vwp /wallpapers/default.vwp
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/wallpapers/default.png /wallpapers/default.png
 		# --- SVG renderer for arm64 ---
 	$(CC) $(ARM64_UCFLAGS) -Ilib/svg -c lib/svg/svg.c -o $(ARM64_UDIR)/svg.o
+	# --- Desktop shell assets used by dock/topbar ---
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/browser.svg /icons/dock/browser.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/filebrowser.svg /icons/dock/filebrowser.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/taskmgr.svg /icons/dock/taskmgr.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/terminal.svg /icons/dock/terminal.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/dock/player.svg /icons/dock/player.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/search.svg /icons/search.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/vibeos-logo.svg /icons/vibeos-logo.svg
+	python3 scripts/ext2_put.py $(DISK_IMG) assets/icons/power.svg /icons/power.svg
 	# --- Dock (C++ GUI app using VexUI) ---
 	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti -Ilib/svg \
 	    -c user/dock/dock.cpp -o $(ARM64_UDIR)/dock.o
@@ -480,6 +506,7 @@ arm64-user: $(DISK_IMG)
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/doom/doom.elf \
 	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/doom/*.o $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/doom/doom.elf /bin/doom
+	@touch $(ARM64_USER_STAMP)
 
 # ARM64 DOOM flags: same sources as x86, but with arm64 target + doom-specific warnings
 ARM64_DOOM_CFLAGS := $(ARM64_UCFLAGS) -Ithird_party/doomgeneric/doomgeneric -Iuser/doom \

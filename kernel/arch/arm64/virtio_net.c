@@ -81,6 +81,7 @@ static uint16_t g_rx_last_used;
 static uint16_t g_rx_avail_idx;
 static uint16_t g_tx_last_used;
 static uint16_t g_tx_avail_idx;
+static int g_tx_pending;
 
 static inline void vtw(uint32_t reg, uint32_t val) { mmio_write32(g_base + reg, val); }
 static inline uint32_t vtr(uint32_t reg) { return mmio_read32(g_base + reg); }
@@ -168,6 +169,7 @@ int virtio_net_init(void) {
     g_rx_avail_idx = 0;
     g_tx_last_used = 0;
     g_tx_avail_idx = 0;
+    g_tx_pending = 0;
     for (uint16_t i = 0; i < RX_QSZ; i++) rx_repost(i);
 
     vtw(VL_STATUS, VTSTAT_ACK | VTSTAT_DRIVER | VTSTAT_DRIVER_OK);
@@ -189,6 +191,7 @@ static void tx_reclaim(void) {
     __asm__ volatile("dsb sy" ::: "memory");
     if (TX_USED->idx != g_tx_last_used) {
         g_tx_last_used = TX_USED->idx;
+        g_tx_pending = 0;
         vtw(VL_IRQ_ACK, vtr(VL_IRQ_STATUS));
     }
 }
@@ -196,6 +199,12 @@ static void tx_reclaim(void) {
 int virtio_net_transmit(const void *frame, uint16_t length) {
     if (!g_ready || !frame || length == 0 || length > TX_BUF_BYTES) return -1;
     tx_reclaim();
+    for (uint32_t spin = 0; g_tx_pending && spin < 1000000u; spin++) {
+        __asm__ volatile("yield");
+        tx_reclaim();
+    }
+    if (g_tx_pending) return -1;
+
     memset(g_tx_hdr, 0, sizeof(g_tx_hdr));
     memcpy(g_tx_buf, frame, length);
 
@@ -214,6 +223,7 @@ int virtio_net_transmit(const void *frame, uint16_t length) {
     TX_AVAIL->idx = g_tx_avail_idx;
     __asm__ volatile("dsb sy" ::: "memory");
     vtw(VL_QUEUE_NOTIFY, 1);
+    g_tx_pending = 1;
     return 0;
 }
 

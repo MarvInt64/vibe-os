@@ -1641,25 +1641,27 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         text(w, tx, ty, wd->text, (wd->hover || wd->pressed) ? g_theme.text : g_theme.text_dim);
         break; }
     case W_TILE: {
-        /* Dock icon tile with enough raster budget for crisp line-art. The
-         * interior stays mostly transparent so the glass bar remains visible. */
+        /* Dock icon tile: SVG artwork is drawn as white chrome at rest. The
+         * accent is reserved for the small running indicator, matching the
+         * reference dock rather than tinting every app icon. */
         uint32_t accent = wd->color ? wd->color : g_theme.accent;
         int cx = wd->x + wd->w / 2;
         int cy = wd->y + wd->h / 2 - 3;
         int active = (wd->hover || wd->pressed);
-        int pad = 6;
+        int pad = 5;
         int tx = wd->x + pad, ty = wd->y + pad;
         int tw = wd->w - 2 * pad, th = wd->h - 2 * pad;
-        uint32_t bd = active ? mix(g_theme.surface, accent, 1u, 1u)
-                             : mix(g_theme.surface, 0x00cfe2f5u, 1u, 3u);
-        uint32_t fill = active ? mix(g_theme.surface, accent, 1u, 7u)
-                               : argb(mix(g_theme.surface, 0x00ffffffu, 1u, 18u), 150u);
-        uint32_t ic = active ? mix(g_theme.text, accent, 1u, 4u) : mix(g_theme.text_dim, 0x00ffffffu, 1u, 6u);
-        fill_round_rect(w, tx, ty, tw, th, 6, fill, bd);
+        uint32_t bd = active ? argb(0x0088b8e8u, 170u)
+                             : argb(0x00446889u, 150u);
+        uint32_t fill = active ? argb(0x001b3b63u, 158u)
+                               : argb(0x000d2949u, 118u);
+        uint32_t ic = active ? 0x00f4fbffu : 0x00dfeeffu;
+        fill_round_rect(w, tx, ty, tw, th, 8, fill, bd);
+        rect(w, tx + 8, ty + 1, tw - 16, 1, argb(0x00ffffffu, active ? 52u : 28u));
         const char *isvg = widget_icon(wd);
         if (isvg) {
-            int icon_size = 32;   /* renderer keeps a built-in edge margin */
-            draw_svg_icon(w, cx - icon_size / 2, cy - icon_size / 2, icon_size, isvg, accent);
+            int icon_size = 38;   /* renderer keeps a built-in edge margin */
+            draw_svg_icon(w, cx - icon_size / 2, cy - icon_size / 2, icon_size, isvg, ic);
         } else if (wd->value > 0) {
             tile_icon(w, cx, cy, wd->value, ic);
         } else {
@@ -1669,10 +1671,13 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
             if (gx < wd->x + 6) gx = wd->x + 6;
             text(w, gx, gy, wd->text, ic);
         }
-        rect(w, wd->x + wd->w + 10, wd->y + 10, 1, wd->h - 20,
-             argb(mix(g_theme.surface, 0x00cfe2f5u, 1u, 4u), 130u));
-        if (active) fill_round_rect(w, cx - 9, ty + th + 4, 18, 3, 2, accent, accent);
-        else if (wd->running) fill_round_rect(w, cx - 3, ty + th + 4, 6, 3, 1, accent, accent);
+        rect(w, wd->x + wd->w + 18, wd->y + 12, 1, wd->h - 24,
+             argb(0x006d91b9u, 86u));
+        if (active || wd->running) {
+            int rw = active ? 24 : 20;
+            fill_round_rect(w, cx - rw / 2, wd->y + wd->h + 4, rw, 4, 2,
+                            mix(accent, 0x00ffffffu, 1u, 4u), accent);
+        }
         break; }
     case W_ICON: {
         /* Bare SVG icon/logo: no background, no border — just the artwork,
@@ -1780,47 +1785,28 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
         }
         break; }
     case W_PILL: {
-        /* Glassmorphism dock: layered semi-transparent bands create a soft
-         * vertical gradient (lighter top → darker bottom). Each band is a
-         * rectangle drawn inside the rounded area, so corners stay clean. */
+        /* Dock shelf: a dark blue capsule with intentionally stepped horizontal
+         * bands. The reference reads less like a smooth gradient and more like
+         * a hard glass strip with a dark inner border. */
         uint32_t fill = wd->color ? wd->color : g_theme.surface;
 
-        /* Mix lighter top / darker bottom tones from the base colour. */
-        uint32_t top_c = mix(fill, 0x00ffffffu, 2u, 10u);   /* lighter  */
-        uint32_t mid_c = fill;                                /* base     */
-        uint32_t bot_c = mix(fill, 0x00000000u, 3u, 10u);   /* darker   */
-
-        int r = 14;
+        int r = 18;
         if (r > wd->h / 2) r = wd->h / 2;
         int hh = wd->h;  /* total pill height */
 
-        /* Base: darkest tone, fills the rounded shape. */
-        fill_round_rect(w, wd->x, wd->y, wd->w, hh, r, argb(bot_c, 230u),
-                        mix(fill, 0x00aaccffu, 1u, 6u));
+        fill_round_rect(w, wd->x, wd->y, wd->w, hh, r,
+                        argb(0x00071d35u, 238u), argb(0x004f7eacu, 178u));
+        fill_round_rect(w, wd->x + 1, wd->y + 1, wd->w - 2, hh - 2, r - 1,
+                        argb(fill, 226u), argb(0x0005152au, 190u));
 
-        /* Three horizontal bands, each lighter toward the top.  The bands
-         * stay strictly inside the non-rounded rectangle so they never
-         * bleed into corner pixels. */
-        int inner_x = wd->x + r;
-        int inner_w = wd->w - 2 * r;
-
-        int split1 = wd->y + r + 1;                       /* top of flat area   */
-        int split2 = wd->y + hh * 2 / 5;                  /* upper-middle        */
-        int split3 = wd->y + hh * 3 / 5;                  /* lower-middle        */
-        int split4 = wd->y + hh - r - 1;                  /* bottom of flat area */
-
-        /* Band 1 (top): lightest, soft alpha so it reads as a highlight. */
-        rect(w, inner_x, split1, inner_w, split2 - split1, argb(top_c, 90u));
-        /* Band 2 (mid-top): medium-light. */
-        rect(w, inner_x, split2, inner_w, split3 - split2, argb(mid_c, 140u));
-        /* Band 3 (mid-bot): medium-dark. */
-        rect(w, inner_x, split3, inner_w, split4 - split3, argb(bot_c, 75u));
-
-        /* Glass edge: a brighter line at the very top of the rounded shape. */
-        rect(w, wd->x + r - 2, wd->y + 2, wd->w - 2 * (r - 2), 1,
-             argb(0x00ffffffu, 80u));
-        rect(w, wd->x + r + 2, wd->y + 3, wd->w - 2 * (r + 2), 1,
-             argb(0x00ffffffu, 40u));
+        int ix = wd->x + r;
+        int iw = wd->w - 2 * r;
+        rect(w, ix, wd->y + 4, iw, 1, argb(0x00ffffffu, 56u));
+        rect(w, ix, wd->y + 5, iw, hh / 3 - 5, argb(0x00264a73u, 86u));
+        rect(w, ix, wd->y + hh / 3, iw, hh / 3, argb(0x00132e50u, 148u));
+        rect(w, ix, wd->y + hh * 2 / 3, iw, hh - (hh * 2 / 3) - 5,
+             argb(0x0007172du, 122u));
+        rect(w, ix + 1, wd->y + hh - 5, iw - 2, 1, argb(0x006f9dd0u, 58u));
         break; }
     case W_METRIC: {
         /* Self-contained metric card: title + big value + sub-label + a chart

@@ -4,13 +4,12 @@
  * expect.  The arm64 implementation uses a simple process table with
  * one EL0 context per slot.  Virtual address layout per process:
  *
- *   VA 0x90000000 + (slot * 0x04000000)  — ELF image (up to 60 MB)
- *   VA 0x90000000 + (slot * 0x04000000) + 0x03F00000 — user stack (1 MB)
+ *   VA 0x90000000  — ELF image + process heap in a private 32 MB region
+ *   VA 0x91FFFFFF  — user stack top (grows down)
  *
- * Physical backing is VA - 0x40000000 (the EL0 alias mapping in mmu.c).
- * All processes share the same TTBR0_EL1 (cooperative single-address-space
- * model); the scheduler only saves/restores registers.  This is sufficient
- * for the window compositor + GUI apps.
+ * Each top-level process owns a private TTBR0_EL1.  The 32 MB user slot is
+ * reserved virtually, but physical backing is committed lazily in 2 MB L2
+ * blocks for the loaded image, the initial stack, and heap growth.
  *
  * Scheduling: cooperative.  Each process runs until it calls SYS_YIELD or
  * SYS_EXIT.  The compositor (kernel main loop) calls process_run_ready_slice()
@@ -23,6 +22,7 @@
 #include "../../include/ext2_fs.h"
 #include "../../include/process.h"
 #include "../../include/serial.h"
+#include "../../include/syscall.h"
 #include "../../include/string.h"
 #include "../../include/cpu.h"
 #include "../../include/spinlock.h"
@@ -31,10 +31,10 @@ extern uint64_t timer_tick_count(void);
 
 /* ---- Constants -------------------------------------------------------- */
 #define ARM64_MAX_PROCS     16
-#define ARM64_SLOT_SIZE     0x04000000ULL   /* 64 MB per process */
 #define ARM64_USER_BASE     0x90000000ULL   /* first process VA */
 #define ARM64_STACK_SIZE    0x00100000ULL   /* 1 MB stack at top of slot */
-#define ARM64_ALIAS_OFF     0x40000000ULL   /* user VA to kernel PA */
+#define ARM64_ASPACE_BLOCK_SIZE 0x200000ULL /* current MMU uses L2 blocks */
+#define ARM64_ASPACE_BLOCKS (ARM64_ASPACE_SLOT_BYTES / ARM64_ASPACE_BLOCK_SIZE)
 
 /* ---- Saved user context (what we save/restore on switch) -------------- */
 struct arm64_user_context {
@@ -63,24 +63,99 @@ static inline void set_current_slot(int slot) {
 /* Per-slot private address-space bookkeeping (freed on exit/kill).
  * Kept arch-local rather than bloating the shared struct process. */
 struct arm64_aspace {
-    uint64_t ttbr0;    /* PA of the private L1 (0 = none / shared model) */
-    void    *pa_raw;   /* raw kmalloc ptr of the private user PA region   */
-    uint64_t pa_base;  /* 2 MB-aligned PA the user slot is backed by      */
-    void    *l1_raw;   /* raw kmalloc ptr of the L1 page                  */
-    void    *l2_raw;   /* raw kmalloc ptr of the L2 page                  */
+    uint64_t ttbr0;    /* PA of the private L1 */
+    void    *l1_raw;   /* raw kmalloc ptr of the L1 page */
+    void    *l2_raw;   /* raw kmalloc ptr of the L2 page */
+    void    *block_raw[ARM64_ASPACE_BLOCKS]; /* raw kmalloc ptr per 2 MB block */
+    uint64_t block_pa[ARM64_ASPACE_BLOCKS];  /* aligned PA mapped at that block */
     int      has_saved;          /* 1 = resume from saved_frame, 0 = fresh entry */
     uint64_t saved_frame[34];    /* suspended EL0 state (272 B: x0-x30,sp,elr,spsr) */
 };
 static struct arm64_aspace g_aspaces[ARM64_MAX_PROCS];
-static int g_rr_next = 0; /* remove this */
+
+static int aspace_block_index(uintptr_t va) {
+    if (va < ARM64_USER_BASE ||
+        va >= ARM64_USER_BASE + ARM64_ASPACE_SLOT_BYTES)
+        return -1;
+    return (int)((va - ARM64_USER_BASE) / ARM64_ASPACE_BLOCK_SIZE);
+}
+
+static int aspace_commit_block(int slot, int block) {
+    if (slot < 0 || slot >= ARM64_MAX_PROCS) return -1;
+    if (block < 0 || block >= (int)ARM64_ASPACE_BLOCKS) return -1;
+
+    struct arm64_aspace *a = &g_aspaces[slot];
+    if (a->block_raw[block]) return 0;
+
+    void *raw = kmalloc(ARM64_ASPACE_BLOCK_SIZE + ARM64_ASPACE_BLOCK_SIZE);
+    if (!raw) return -1;
+    uint64_t pa = ((uint64_t)(uintptr_t)raw + ARM64_ASPACE_BLOCK_SIZE - 1) &
+                  ~(ARM64_ASPACE_BLOCK_SIZE - 1);
+
+    uint8_t *dst = (uint8_t *)(uintptr_t)pa;
+    for (uint64_t i = 0; i < ARM64_ASPACE_BLOCK_SIZE; i++) dst[i] = 0;
+
+    uint64_t va = ARM64_USER_BASE + (uint64_t)block * ARM64_ASPACE_BLOCK_SIZE;
+    if (arm64_aspace_map_block(a->l2_raw, va, pa) < 0) {
+        kfree(raw);
+        return -1;
+    }
+
+    a->block_raw[block] = raw;
+    a->block_pa[block] = pa;
+    return 0;
+}
+
+static int aspace_commit_range(int slot, uintptr_t start, uintptr_t end) {
+    if (end <= start) return 0;
+    if (start < ARM64_USER_BASE ||
+        end > ARM64_USER_BASE + ARM64_ASPACE_SLOT_BYTES)
+        return -1;
+
+    int first = aspace_block_index(start);
+    int last = aspace_block_index(end - 1);
+    if (first < 0 || last < 0) return -1;
+    for (int b = first; b <= last; b++) {
+        if (aspace_commit_block(slot, b) < 0) return -1;
+    }
+    return 0;
+}
+
+static uint64_t aspace_pa_for_va(int slot, uintptr_t va) {
+    int block = aspace_block_index(va);
+    if (block < 0) return 0;
+
+    struct arm64_aspace *a = &g_aspaces[slot];
+    if (!a->block_raw[block]) return 0;
+    return a->block_pa[block] + ((uint64_t)va & (ARM64_ASPACE_BLOCK_SIZE - 1));
+}
+
+static uint64_t aspace_committed_bytes(int slot) {
+    uint64_t total = 0;
+    for (int i = 0; i < (int)ARM64_ASPACE_BLOCKS; i++) {
+        if (g_aspaces[slot].block_raw[i]) total += ARM64_ASPACE_BLOCK_SIZE;
+    }
+    return total;
+}
+
+int arm64_process_commit_range(struct process *owner, uintptr_t start, uintptr_t end) {
+    if (!owner) return -1;
+    int slot = (int)(owner - g_procs);
+    if (slot < 0 || slot >= ARM64_MAX_PROCS) return -1;
+    return aspace_commit_range(slot, start, end);
+}
 
 /* Release a slot's private address space (page tables + backing RAM). */
 static void aspace_free(int slot) {
     struct arm64_aspace *a = &g_aspaces[slot];
     if (a->l1_raw) kfree(a->l1_raw);
     if (a->l2_raw) kfree(a->l2_raw);
-    if (a->pa_raw) kfree(a->pa_raw);
-    a->ttbr0 = 0; a->pa_raw = 0; a->pa_base = 0; a->l1_raw = 0; a->l2_raw = 0;
+    for (int i = 0; i < (int)ARM64_ASPACE_BLOCKS; i++) {
+        if (a->block_raw[i]) kfree(a->block_raw[i]);
+        a->block_raw[i] = 0;
+        a->block_pa[i] = 0;
+    }
+    a->ttbr0 = 0; a->l1_raw = 0; a->l2_raw = 0;
     a->has_saved = 0;
 }
 
@@ -134,6 +209,9 @@ void arm64_sleep_current(void *frame) {
 /* ---- Init ------------------------------------------------------------- */
 void process_init(void) {
     memset(g_procs, 0, sizeof(g_procs));
+    for (int i = 0; i < ARM64_MAX_PROCS; i++) {
+        g_procs[i].running_on_cpu = -1;
+    }
     g_next_pid = 1;
     
     serial_write("[process] init done\r\n");
@@ -184,6 +262,7 @@ int process_create_thread(struct process *parent, uintptr_t entry,
     proc->heap_break = parent->heap_break;
     proc->heap_chunk_count = 0;
     proc->is_thread  = 1;
+    proc->running_on_cpu = -1;
     /* copy name from parent */
     for (int j = 0; j < 32; j++) { proc->name[j] = parent->name[j]; if (!parent->name[j]) break; }
     proc->uid = parent->uid;
@@ -225,24 +304,28 @@ int process_spawn_path(const char *path,
                        const struct fd_ops *stdio_ops, void *stdio_object,
                        uint32_t uid, uint32_t gid) {
     (void)stdio_ops; (void)stdio_object;
-    if (!path || !*path) return -1;
+    if (!path || !*path) return -SYSCALL_EINVAL;
 
     spin_lock(&g_process_lock);
     int slot = find_free_slot();
     if (slot < 0) {
         spin_unlock(&g_process_lock);
         serial_write("[process] no free slot\r\n");
-        return -1;
+        return -SYSCALL_ENOMEM;
     }
     
     /* Mark as loading to reserve slot */
+    memset(&g_aspaces[slot], 0, sizeof(g_aspaces[slot]));
     g_procs[slot].loaded = 1;
     spin_unlock(&g_process_lock);
 
     /* Look up the ELF in ext2 */
     extern struct ext2_filesystem g_fs;
     extern int g_fs_ready;  /* from arch.c */
-    if (!g_fs_ready) return -1;
+    if (!g_fs_ready) {
+        g_procs[slot].loaded = 0;
+        return -SYSCALL_EIO;
+    }
 
     uint32_t ino = ext2_lookup_inode(&g_fs, path);
     if (!ino) {
@@ -250,7 +333,7 @@ int process_spawn_path(const char *path,
         serial_write(path);
         serial_write("\r\n");
         g_procs[slot].loaded = 0;
-        return -1;
+        return -SYSCALL_ENOENT;
     }
 
     struct ext2_inode *node = &g_fs.inode_table[ino - 1];
@@ -258,18 +341,18 @@ int process_spawn_path(const char *path,
     if (fsize == 0 || fsize > (60u << 20)) {
         serial_write("[process] bad size\r\n");
         g_procs[slot].loaded = 0;
-        return -1;
+        return -SYSCALL_EFBIG;
     }
 
     uint8_t *elf = (uint8_t *)kmalloc(fsize);
-    if (!elf) { serial_write("[process] OOM\r\n"); g_procs[slot].loaded = 0; return -1; }
+    if (!elf) { serial_write("[process] OOM\r\n"); g_procs[slot].loaded = 0; return -SYSCALL_ENOMEM; }
 
     ssize_t got = ext2_read(&g_fs, ino, 0, fsize, elf);
-    if (got <= 0) { serial_write("[process] read error\r\n"); kfree(elf); g_procs[slot].loaded = 0; return -1; }
+    if (got <= 0) { serial_write("[process] read error\r\n"); kfree(elf); g_procs[slot].loaded = 0; return -SYSCALL_EIO; }
 
     if (!elf64_validate(elf, (size_t)got)) {
         serial_write("[process] not valid aarch64 ELF\r\n");
-        kfree(elf); return -1;
+        kfree(elf); g_procs[slot].loaded = 0; return -SYSCALL_EINVAL;
     }
 
     struct elf64_header *eh = (struct elf64_header *)elf;
@@ -277,53 +360,76 @@ int process_spawn_path(const char *path,
         (struct elf64_program_header *)(elf + eh->program_header_offset);
 
     /* All arm64 apps are linked at fixed VA 0x90000000 (non-PIE).  Each
-     * process gets its OWN private physical region behind that VA via a
-     * per-process address space (private L1+L2, see arm64_aspace_create), so
-     * several apps can be resident at once instead of overwriting each other
-     * at a single shared PA. */
-    void    *pa_raw = kmalloc(ARM64_ASPACE_SLOT_BYTES + 0x200000UL);  /* +2 MB align slack */
-    if (!pa_raw) { serial_write("[process] OOM (user region)\r\n"); kfree(elf); return -1; }
-    uint64_t pa_base = ((uint64_t)(uintptr_t)pa_raw + 0x1FFFFFUL) & ~0x1FFFFFULL;
-
+     * process gets its own TTBR0, and its user slot is physically committed
+     * only for ranges that are actually used. */
     void    *l1_raw = 0, *l2_raw = 0;
-    uint64_t ttbr0  = arm64_aspace_create(pa_base, &l1_raw, &l2_raw);
+    uint64_t ttbr0  = arm64_aspace_create(&l1_raw, &l2_raw);
     if (!ttbr0) {
         serial_write("[process] aspace create failed\r\n");
-        kfree(pa_raw); kfree(elf); return -1;
+        kfree(elf); g_procs[slot].loaded = 0; return -SYSCALL_ENOMEM;
     }
+    g_aspaces[slot].ttbr0  = ttbr0;
+    g_aspaces[slot].l1_raw = l1_raw;
+    g_aspaces[slot].l2_raw = l2_raw;
 
-    /* Copy each PT_LOAD segment.  The app's VA 0x90000000 is backed by
-     * pa_base, so a segment at vaddr lands at PA = pa_base + (vaddr - VA_BASE).
-     * The kernel reaches that PA through its identity map. */
+    /* Validate PT_LOAD segments and compute the high-water mark first, so
+     * failure paths can release a clean address space. */
     uint64_t image_end = 0;
     for (int i = 0; i < eh->program_header_count; i++) {
         if (ph[i].type != ELF_PROGRAM_TYPE_LOAD) continue;
         uint64_t vaddr = ph[i].virtual_address;
         uint64_t memsz = ph[i].memory_size;
-        if (vaddr < ARM64_USER_BASE ||
+        uint64_t fsz = ph[i].file_size;
+        if (vaddr < ARM64_USER_BASE || fsz > memsz ||
+            ph[i].offset + fsz > (uint64_t)got ||
             vaddr + memsz > ARM64_USER_BASE + ARM64_ASPACE_SLOT_BYTES) {
             serial_write("[process] segment out of slot range\r\n");
-            kfree(pa_raw); kfree(l1_raw); kfree(l2_raw); kfree(elf); return -1;
+            aspace_free(slot); kfree(elf); g_procs[slot].loaded = 0; return -SYSCALL_EFBIG;
         }
         uint64_t seg_end = (vaddr - ARM64_USER_BASE) + memsz;
         if (seg_end > image_end) image_end = seg_end;
-        uint8_t *dst = (uint8_t *)(uintptr_t)(pa_base + (vaddr - ARM64_USER_BASE));
-        size_t fsz = (size_t)ph[i].file_size;
-        for (size_t b = 0; b < fsz; b++)
-            dst[b] = elf[ph[i].offset + b];
-        for (size_t b = fsz; b < (size_t)memsz; b++)
-            dst[b] = 0;
+    }
+
+    if (image_end == 0) {
+        serial_write("[process] no loadable segments\r\n");
+        aspace_free(slot); kfree(elf); g_procs[slot].loaded = 0; return -SYSCALL_EINVAL;
+    }
+
+    if (aspace_commit_range(slot, ARM64_USER_BASE, ARM64_USER_BASE + image_end) < 0 ||
+        aspace_commit_range(slot,
+                            ARM64_USER_BASE + ARM64_ASPACE_SLOT_BYTES - ARM64_ASPACE_BLOCK_SIZE,
+                            ARM64_USER_BASE + ARM64_ASPACE_SLOT_BYTES) < 0) {
+        serial_write("[process] OOM (commit user blocks)\r\n");
+        aspace_free(slot); kfree(elf); g_procs[slot].loaded = 0; return -SYSCALL_ENOMEM;
+    }
+
+    /* Copy each PT_LOAD segment into its committed physical blocks.  Blocks
+     * are zero-filled on commit, so BSS needs no separate clearing. */
+    for (int i = 0; i < eh->program_header_count; i++) {
+        if (ph[i].type != ELF_PROGRAM_TYPE_LOAD) continue;
+        uintptr_t va = (uintptr_t)ph[i].virtual_address;
+        size_t remaining = (size_t)ph[i].file_size;
+        size_t src_off = (size_t)ph[i].offset;
+        while (remaining > 0) {
+            uint64_t pa = aspace_pa_for_va(slot, va);
+            if (!pa) {
+                serial_write("[process] missing committed image block\r\n");
+                aspace_free(slot); kfree(elf); g_procs[slot].loaded = 0; return -SYSCALL_EIO;
+            }
+            size_t chunk = (size_t)(ARM64_ASPACE_BLOCK_SIZE -
+                           ((uint64_t)va & (ARM64_ASPACE_BLOCK_SIZE - 1)));
+            if (chunk > remaining) chunk = remaining;
+            uint8_t *dst = (uint8_t *)(uintptr_t)pa;
+            for (size_t b = 0; b < chunk; b++)
+                dst[b] = elf[src_off + b];
+            va += chunk;
+            src_off += chunk;
+            remaining -= chunk;
+        }
     }
 
     /* I-cache flush for the newly written code */
     __asm__ volatile("dsb ish; ic ialluis; dsb ish; isb" ::: "memory");
-
-    /* Record the private address space for cleanup on exit/kill. */
-    g_aspaces[slot].ttbr0   = ttbr0;
-    g_aspaces[slot].pa_raw  = pa_raw;
-    g_aspaces[slot].pa_base = pa_base;
-    g_aspaces[slot].l1_raw  = l1_raw;
-    g_aspaces[slot].l2_raw  = l2_raw;
 
     /* Set up process struct */
     struct process *proc = &g_procs[slot];
@@ -344,6 +450,7 @@ int process_spawn_path(const char *path,
     proc->heap_break = proc->heap_start;
     proc->user_image_allocation = elf;  /* freed on kill */
     proc->cr3        = ttbr0;  /* per-process TTBR0 */
+    proc->running_on_cpu = -1;
 
     /* Extract name from path (last component) */
     {
@@ -385,6 +492,16 @@ int process_kill(uint32_t pid) {
       else while(t){b[i++]=(char)('0'+t%10);t/=10;}
       while(i--) serial_write_char(b[i]); }
     serial_write("\r\n");
+
+    /* ARM64 does not yet have per-process kernel stacks. A process may be
+     * inside a long synchronous syscall while its CPU temporarily drops the
+     * BKL to keep the rest of the desktop alive. Do not free that process's
+     * address space underneath the active syscall; the caller can retry once
+     * the process returns to the scheduler or exits cooperatively. */
+    if (proc->running_on_cpu >= 0) {
+        serial_write("[process] kill deferred: process is running in kernel\r\n");
+        return -2;
+    }
 
     if (proc->user_image_allocation)
         kfree(proc->user_image_allocation);
@@ -435,7 +552,7 @@ int process_get_snapshot(uint32_t idx, struct process_snapshot *snap) {
         snap->switch_count  = 0;
         snap->preempt_count = 0;
         snap->wake_tick     = 0;
-        snap->mem_bytes     = p->code_size;
+        snap->mem_bytes     = p->is_thread ? 0 : aspace_committed_bytes(i);
         snap->thread_count  = 1;
         snap->is_thread     = 0;
         /* Copy name */
@@ -504,6 +621,7 @@ int process_run_ready_slice(void) {
 
     struct process *proc = &g_procs[slot];
     proc->state = PROCESS_STATE_RUNNING;
+    proc->running_on_cpu = (int32_t)c->index;
     set_current_slot(slot);
 
     /* Activate the process's private address space (its own memory behind
@@ -536,6 +654,10 @@ int process_run_ready_slice(void) {
     __asm__ volatile("mrs %0, cntvct_el0" : "=r"(t1));
     uint64_t dt = t1 - t0;
     proc->runtime_ticks += dt;
+    proc->running_on_cpu = -1;
+    if (proc->state == PROCESS_STATE_RUNNING) {
+        proc->state = PROCESS_STATE_READY;
+    }
     return 1;  /* ran a process slice */
 }
 
@@ -564,6 +686,7 @@ void process_handle_exit(uint64_t code) {
         uint32_t my_pid = proc->pid;
         proc->exit_code = (int32_t)code;
         proc->state = PROCESS_STATE_EXITED;
+        proc->running_on_cpu = -1;
         if (proc->user_image_allocation)
             kfree(proc->user_image_allocation);
         proc->user_image_allocation = 0;
@@ -616,4 +739,3 @@ uint32_t process_running_count(void) {
     return n;
 }
 uint32_t process_sleeping_count(void) { return 0; }
-
