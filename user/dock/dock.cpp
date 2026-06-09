@@ -1,6 +1,7 @@
 #include "vexui.h"
 #include <vibeos.h>
 #include <string.h>
+#include <stdio.h>
 
 #define PROCESS_STATE_EMPTY  0
 #define PROCESS_STATE_EXITED 5
@@ -86,8 +87,9 @@ static int icon_at(int mx, int my) {
 
 static void on_mouse_dn(vui_window *win, int x, int y, vui_u32 btns) {
     (void)win; (void)btns;
-    vos_log(VOS_LOG_APP, "dock: mouse-down");
-    g_held_idx   = icon_at(x, y);
+    int idx = icon_at(x, y);
+    { char b[64]; snprintf(b, sizeof(b), "dock: dn x=%d y=%d idx=%d", x, y, idx); vos_log(VOS_LOG_APP, b); }
+    g_held_idx   = idx;
     g_held_ticks = 0;
     g_drag_on    = 0;
 }
@@ -99,9 +101,12 @@ static void on_mouse_up(vui_window *win, int x, int y, vui_u32 btns) {
         if (dst >= 0 && dst != g_held_idx)
             swap_entries(g_held_idx, dst);
     } else if (g_held_idx >= 0 && !g_drag_on) {
-        /* Short click — launch the app on release. */
-        const char *path = (const char *)vui_get_user(sButtons[g_held_idx]);
-        if (path) vos_spawn(path);
+        /* Launch only if still over the same icon. */
+        int over = icon_at(x, y);
+        if (over == g_held_idx) {
+            const char *path = (const char *)vui_get_user(sButtons[g_held_idx]);
+            if (path) vos_spawn(path);
+        }
     }
     g_held_idx   = -1;
     g_held_ticks = 0;
@@ -112,6 +117,7 @@ static void on_mouse_mv(vui_window *win, int x, int y, vui_u32 btns) {
     (void)win; (void)btns;
     if (!g_drag_on || g_held_idx < 0) return;
     int dst = icon_at(x, y);
+    { char b[64]; snprintf(b, sizeof(b), "dock: mv x=%d y=%d dst=%d src=%d", x, y, dst, g_held_idx); vos_log(VOS_LOG_APP, b); }
     if (dst >= 0 && dst != g_held_idx) {
         swap_entries(g_held_idx, dst);
         g_held_idx = dst;
