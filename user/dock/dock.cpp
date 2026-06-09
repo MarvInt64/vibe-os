@@ -235,11 +235,11 @@ static void on_mouse_mv(vui_window *win, int x, int y, vui_u32 btns) {
     recalc_targets(g_drag_src, mouse_slot);
     g_animating = 1;
 
-    /* Also move the dragged entry's overlay closer to the mouse so it
-     * feels responsive even before lerp catches up. */
-    if (mouse_slot >= 0) {
-        g_cur_x[g_drag_src] = (float)slot_x(mouse_slot);
-    }
+    /* Dragged icon follows the mouse freely on the horizontal axis,
+     * centred under the cursor (macOS-style). */
+    float gx = (float)(x - ICON_SIZE / 2);
+    if (gx < 0) gx = 0;
+    g_cur_x[g_drag_src] = gx;
 }
 
 static void dock_tick2(vui_window *win) {
