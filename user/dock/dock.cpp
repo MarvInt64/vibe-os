@@ -94,11 +94,14 @@ static void on_mouse_dn(vui_window *win, int x, int y, vui_u32 btns) {
 
 static void on_mouse_up(vui_window *win, int x, int y, vui_u32 btns) {
     (void)win; (void)btns;
-    vos_log(VOS_LOG_APP, "dock: mouse-up");
     if (g_drag_on && g_held_idx >= 0) {
         int dst = icon_at(x, y);
         if (dst >= 0 && dst != g_held_idx)
             swap_entries(g_held_idx, dst);
+    } else if (g_held_idx >= 0 && !g_drag_on) {
+        /* Short click — launch the app on release. */
+        const char *path = (const char *)vui_get_user(sButtons[g_held_idx]);
+        if (path) vos_spawn(path);
     }
     g_held_idx   = -1;
     g_held_ticks = 0;
@@ -164,7 +167,6 @@ int main() {
         sButtons[i] = button;
         vui_set_size(button, 58, 58);
         apply_entry(i);
-        vui_on_click(button, launch_app);
         vui_box_add(row, button);
     }
 
