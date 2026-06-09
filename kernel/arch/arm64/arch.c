@@ -584,6 +584,28 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             }
             return;
         }
+        case SYS_EDID_READ: {   /* 70: return list of supported display modes */
+            /* ARM64/QEMU has no real EDID via DDC.  Return a fixed set of
+             * common resolutions that QEMU's ramfb / virtio-gpu supports.
+             * Format: array of { uint16_t w, h, hz_x100 } at a0, capacity in a1. */
+            static const uint16_t modes[][3] = {
+                {1920,1080,6000},{1680,1050,6000},{1600,900,6000},
+                {1440,900,6000},{1366,768,6000},{1280,1024,6000},
+                {1280,720,6000},{1024,768,6000},{800,600,6000},
+                {640,480,6000},
+            };
+            int nmodes = (int)(sizeof(modes) / sizeof(modes[0]));
+            uint16_t *dst = (uint16_t *)(uintptr_t)a0;
+            uint64_t cap = a1;
+            if (cap > (uint64_t)nmodes) cap = (uint64_t)nmodes;
+            for (uint64_t i = 0; i < cap; i++) {
+                dst[i*3 + 0] = modes[i][0];
+                dst[i*3 + 1] = modes[i][1];
+                dst[i*3 + 2] = modes[i][2];
+            }
+            regs[0] = cap;
+            return;
+        }
         case SYS_SYSTEM_INFO: {     /* 39: fill system info snapshot */
             struct system_info_snapshot *out =
                 (struct system_info_snapshot *)(uintptr_t)a0;
