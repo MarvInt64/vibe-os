@@ -338,6 +338,30 @@ int process_spawn_path(const char *path,
 
     struct ext2_inode *node = &g_fs.inode_table[ino - 1];
     uint32_t fsize = node->size;
+
+    /* Enforce execute permission.  Root bypasses all checks. */
+    if (uid != 0) {
+        uint16_t mode = node->mode;
+        int permit = 0;
+        if (uid == (uint32_t)node->uid) {
+            /* Owner: check the owner-execute bit (0100). */
+            if (mode & 0100u) permit = 1;
+        } else if (gid == (uint32_t)node->gid && gid != 0) {
+            /* Group member: check the group-execute bit (0010). */
+            if (mode & 0010u) permit = 1;
+        } else {
+            /* Other: check the world-execute bit (0001). */
+            if (mode & 0001u) permit = 1;
+        }
+        if (!permit) {
+            serial_write("[process] exec denied: ");
+            serial_write(path);
+            serial_write("\r\n");
+            g_procs[slot].loaded = 0;
+            return -SYSCALL_EACCES;
+        }
+    }
+
     if (fsize == 0 || fsize > (60u << 20)) {
         serial_write("[process] bad size\r\n");
         g_procs[slot].loaded = 0;
