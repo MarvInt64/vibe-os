@@ -693,7 +693,7 @@ enum resize_edge {
 
 static void app_enqueue_event_slot(struct desktop_state *desktop, int slot, uint32_t type, int x, int y, uint32_t buttons, uint32_t key);
 static int ensure_surface_buffer(struct desktop_state *desktop, int slot, int w, int h);
-static int ensure_content_buffer(struct desktop_state *desktop, int slot, int w, int h);
+static int ensure_content_buffer(struct desktop_state *desktop, int slot, int w, int h, uint32_t fill);
 static void reflow_content_buffer(struct desktop_state *desktop, int slot, int old_w, int old_h, int new_w, int new_h, uint32_t fill);
 
 /* ---- Multi-app slot helpers ---- */
@@ -837,11 +837,10 @@ static void update_app_content_size_slot(struct desktop_state *desktop, int slot
         old_w = desktop->user_apps[slot].content_width;
         old_h = desktop->user_apps[slot].content_height;
         /* Grow the backing store first; only adopt the new size if it fit. */
-        if (!ensure_content_buffer(desktop, slot, cw, ch)) return;
+        if (!ensure_content_buffer(desktop, slot, cw, ch, fill)) return;
         reflow_content_buffer(desktop, slot, old_w, old_h, cw, ch, fill);
         desktop->user_apps[slot].content_width = cw;
         desktop->user_apps[slot].content_height = ch;
-        desktop->user_apps[slot].data_width = cw;
         app_enqueue_event_slot(desktop, slot, WINSYS_EVENT_RESIZE, cw, ch, 0, 0);
     }
 }
@@ -1149,24 +1148,30 @@ static int ensure_surface_buffer(struct desktop_state *desktop, int slot, int w,
 /* Grow a user slot's content buffer to at least w*h pixels (grow-only),
  * clearing freshly grown storage to the transparent key so unpresented rows
  * never leak heap garbage. Returns 1 on success. */
-static int ensure_content_buffer(struct desktop_state *desktop, int slot, int w, int h) {
+static int ensure_content_buffer(struct desktop_state *desktop, int slot, int w, int h, uint32_t fill) {
     struct user_app_slot *a = &desktop->user_apps[slot];
     int need = w * h, i;
     uint32_t *old;
-    int old_cap;
+    int old_w, old_h;
     uint32_t *p;
     if (need <= 0) return 1;
     if (a->content_storage && need <= a->content_cap_px) return 1;
     old = a->content_storage;
-    old_cap = a->content_cap_px;
+    old_w = a->content_width;
+    old_h = a->content_height;
     p = (uint32_t *)gfx_alloc((size_t)need * sizeof(uint32_t));
     if (p == 0) return 0;
     a->content_storage = p;
     a->content_cap_px = need;
-    for (i = 0; i < need; ++i) a->content_storage[i] = WINDOW_TRANSPARENT_KEY;
-    if (old) {
-        int copy = old_cap < need ? old_cap : need;
-        for (i = 0; i < copy; ++i) a->content_storage[i] = old[i];
+    for (i = 0; i < need; ++i) a->content_storage[i] = fill;
+    if (old && old_w > 0 && old_h > 0) {
+        int copy_w = old_w < w ? old_w : w;
+        int copy_h = old_h < h ? old_h : h;
+        for (int y = 0; y < copy_h; ++y)
+            for (int x = 0; x < copy_w; ++x)
+                a->content_storage[y * w + x] = old[y * old_w + x];
+        kfree(old);
+    } else if (old) {
         kfree(old);
     }
     return 1;
@@ -3367,9 +3372,13 @@ int desktop_app_create_ex(struct desktop_state *desktop, uint32_t pid, const str
 
     /* Allocate the window's backing stores at its actual size. If memory is
      * exhausted, fail the create cleanly rather than leaving a half-built slot. */
-    if (!ensure_surface_buffer(desktop, slot, w->width, w->height) ||
-        !ensure_content_buffer(desktop, slot, width, height)) {
-        return -1;
+    {
+        uint32_t content_fill = (flags & WINSYS_WINDOW_TRANSLUCENT)
+                              ? WINDOW_TRANSPARENT_KEY : g_chrome_theme.bg;
+        if (!ensure_surface_buffer(desktop, slot, w->width, w->height) ||
+            !ensure_content_buffer(desktop, slot, width, height, content_fill)) {
+            return -1;
+        }
     }
 
     desktop->user_apps[slot].created = 1;
