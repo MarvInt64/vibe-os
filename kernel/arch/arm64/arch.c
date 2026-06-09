@@ -38,6 +38,7 @@
 #include "../../include/audio.h"
 #include "../../include/vfs.h"
 #include "../../include/net.h"
+#include "../../include/tty.h"      /* TTY_IOCTL_SET_RAW / GET_RAW / CLEAR */
 
 /* ---- Timer tick counter (incremented without GIC) --------------------- */
 static volatile uint64_t g_tick = 0;
@@ -98,6 +99,7 @@ struct arm64_pty {
     int    out_head, out_tail, out_count;
     int    master_fd;
     uint32_t child_pid;              /* shell pid attached to slave */
+    int    raw_mode;                  /* 1 = raw (forward all keys), 0 = cooked */
 };
 
 struct arm64_file {
@@ -140,6 +142,28 @@ static void copy_user_str(char *dst, const char *user, size_t cap) {
     dst[i] = '\0';
 }
 
+/* Walk the parent chain of pid to determine if it belongs to the PTY
+ * session rooted at pty->child_pid.  Depth-limited to avoid infinite
+ * loops on corrupted process tables. */
+static int is_pty_session(uint32_t pid, uint32_t session_leader) {
+    if (pid == session_leader) return 1;
+    for (int depth = 0; depth < 8; depth++) {
+        int found_parent = 0;
+        for (int i = 0; i < 16; i++) {
+            if (g_procs[i].loaded && g_procs[i].pid == pid) {
+                uint32_t parent = g_procs[i].parent_pid;
+                if (parent == 0) return 0;
+                if (parent == session_leader) return 1;
+                pid = parent;
+                found_parent = 1;
+                break;
+            }
+        }
+        if (!found_parent) return 0;
+    }
+    return 0;
+}
+
 void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                              void *sp) {
     uint64_t *regs = (uint64_t *)sp;
@@ -167,18 +191,12 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
         case SYS_WRITE: {       /* 1: write(fd, buf, len) */
             const char *buf = (const char *)(uintptr_t)a1;
             if (a0 <= 2) {      /* stdout/stderr */
-                /* Check if this process is a PTY child (shell) → redirect to PTY */
+                /* Any process in the PTY session (shell + children) writes
+                 * to the PTY instead of the UART. */
                 struct arm64_pty *pty = &g_pty;
                 struct process *cur_proc = (this_cpu() && this_cpu()->current) ? this_cpu()->current : 0;
-                static int pty_dbg = 0;
-                if (pty_dbg < 5 && cur_proc && pty->child_pid) {
-                    serial_write("[pty] write pid="); serial_write_hex_u64(cur_proc->pid);
-                    serial_write(" child="); serial_write_hex_u64(pty->child_pid);
-                    serial_write(" match="); serial_write_hex_u64(cur_proc->pid == pty->child_pid ? 1 : 0);
-                    serial_write("\r\n");
-                    pty_dbg++;
-                }
-                if (cur_proc && pty->child_pid && cur_proc->pid == pty->child_pid) {
+                if (cur_proc && pty->child_pid &&
+                    is_pty_session(cur_proc->pid, pty->child_pid)) {
                     /* Write to PTY output buffer (shell → terminal) */
                     uint64_t n = a2;
                     if (n > (uint64_t)(PTY_BUF_SIZE - pty->out_count))
@@ -229,9 +247,52 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             } else regs[0] = (uint64_t)-1;
             return;
         }
-        case SYS_IOCTL:         /* 2: no-op stub */
-            regs[0] = 0;
+        case SYS_IOCTL: {       /* 2: ioctl(fd, request, arg) */
+            /* fd 0–2 (stdin/stdout/stderr): forward to PTY if in a session */
+            if (a0 <= 2) {
+                struct arm64_pty *pty = &g_pty;
+                struct process *cur_proc = (this_cpu() && this_cpu()->current) ? this_cpu()->current : 0;
+                if (cur_proc && pty->child_pid &&
+                    is_pty_session(cur_proc->pid, pty->child_pid)) {
+                    switch ((uint32_t)a1) {
+                    case TTY_IOCTL_SET_RAW:
+                        pty->raw_mode = (a2 != 0) ? 1 : 0;
+                        regs[0] = 0; return;
+                    case TTY_IOCTL_GET_RAW:
+                        if (a2 != 0) { *(uint32_t *)(uintptr_t)a2 = pty->raw_mode ? 1 : 0; regs[0] = 0; }
+                        else regs[0] = (uint64_t)-1;
+                        return;
+                    case TTY_IOCTL_CLEAR:
+                        regs[0] = 0; return;
+                    default:
+                        regs[0] = (uint64_t)-1; return;
+                    }
+                }
+                /* Not in a PTY session: succeed silently for compatibility */
+                regs[0] = 0;
+                return;
+            }
+            /* PTY master fd: the terminal queries/sets raw mode here */
+            if (a0 < ARM64_MAX_FD && g_files[a0].used &&
+                g_files[a0].type == ARM64_FD_TYPE_PTY && g_files[a0].pty) {
+                struct arm64_pty *pty = g_files[a0].pty;
+                switch ((uint32_t)a1) {
+                case TTY_IOCTL_SET_RAW:
+                    pty->raw_mode = (a2 != 0) ? 1 : 0;
+                    regs[0] = 0; return;
+                case TTY_IOCTL_GET_RAW:
+                    if (a2 != 0) { *(uint32_t *)(uintptr_t)a2 = pty->raw_mode ? 1 : 0; regs[0] = 0; }
+                    else regs[0] = (uint64_t)-1;
+                    return;
+                case TTY_IOCTL_CLEAR:
+                    regs[0] = 0; return;
+                default:
+                    regs[0] = (uint64_t)-1; return;
+                }
+            }
+            regs[0] = (uint64_t)-1;
             return;
+        }
         case SYS_CHDIR: {       /* 11: change directory */
             char path[256];
             copy_user_str(path, (const char *)(uintptr_t)a0, sizeof(path));
@@ -264,10 +325,12 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
             if (a0 == 0) {
                 char *dst = (char *)(uintptr_t)a1;
                 if (a2 == 0 || !dst) { regs[0] = 0; return; }
-                /* Check if this process is a PTY child (shell) — redirect to PTY */
+                /* Any process in the PTY session reads from the PTY
+                 * input buffer instead of the UART. */
                 struct arm64_pty *pty = &g_pty;
                 struct process *cur_proc = (this_cpu() && this_cpu()->current) ? this_cpu()->current : 0;
-                if (cur_proc && pty->child_pid && cur_proc->pid == pty->child_pid) {
+                if (cur_proc && pty->child_pid &&
+                    is_pty_session(cur_proc->pid, pty->child_pid)) {
                     /* Read from PTY input buffer (terminal → shell).
                      * Return as many bytes as available up to a2. */
                     uint64_t n = a2;
@@ -298,21 +361,22 @@ void arm64_sync_handler_el0(uint64_t esr, uint64_t elr, uint64_t far,
                 regs[0] = (uint64_t)-1; return;
             }
             struct arm64_file *f = &g_files[a0];
-            /* PTY master: read from shell output buffer */
+            /* PTY master: drain shell output buffer (up to a2 bytes). */
             if (f->type == ARM64_FD_TYPE_PTY) {
                 char *dst = (char *)(uintptr_t)a1;
                 if (a2 == 0 || !dst) { regs[0] = 0; return; }
                 struct arm64_pty *pty = f->pty;
                 if (!pty) { regs[0] = (uint64_t)-1; return; }
-                if (pty->out_count == 0) {
-                    regs[0] = 0;   /* no data — return 0, caller will poll again */
-                    return;
+                uint64_t n = a2;
+                if (n > (uint64_t)pty->out_count)
+                    n = (uint64_t)pty->out_count;
+                if (n == 0) { regs[0] = 0; return; }
+                for (uint64_t i = 0; i < n; i++) {
+                    dst[i] = pty->out_buf[pty->out_tail];
+                    pty->out_tail = (pty->out_tail + 1) % PTY_BUF_SIZE;
                 }
-                char c = pty->out_buf[pty->out_tail];
-                pty->out_tail = (pty->out_tail + 1) % PTY_BUF_SIZE;
-                pty->out_count--;
-                dst[0] = c;
-                regs[0] = 1;
+                pty->out_count -= (int)n;
+                regs[0] = n;
                 return;
             }
             uint32_t remain = (f->offset < f->size) ? (f->size - f->offset) : 0;
