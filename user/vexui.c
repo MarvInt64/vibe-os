@@ -463,10 +463,15 @@ static void rrect_fill(struct vui_window *w,int x,int y,int wid,int hgt,int r,vu
 /* Alpha-blend a colour over the existing canvas pixel (a = 0..255). */
 static void blend_put(struct vui_window *w,int x,int y,vui_u32 c,int a){
     long i;
+    uint32_t ca, eff;
     if (a<=0) return;
     i = canvas_index(w, x, y);
     if (i < 0) return;
-    if (a>=255){ g_canvas[i]=c; return; }
+    ca = (c >> 24) & 0xffu;
+    if (ca == 0u) ca = 255u;
+    eff = ((uint32_t)a * ca + 127u) / 255u;
+    if (eff == 0u) return;
+    if (eff >= 255u){ g_canvas[i]=c; return; }
     {
         vui_u32 *d=&g_canvas[i];
         /* Only keep the per-pixel alpha (so the compositor can blend the window
@@ -477,16 +482,16 @@ static void blend_put(struct vui_window *w,int x,int y,vui_u32 c,int a){
          * icon/shape edges jagged on the solid background. There we must bake
          * the AA in by blending the colour over the solid background. */
         if (*d == w->clear_color && w->clear_color == VUI_COLOR_TRANSPARENT) {
-            *d = argb(c, (unsigned)a);
+            *d = argb(c, eff);
             return;
         }
         vui_u32 src_rb = c & 0x00ff00ffu;
         vui_u32 dest_rb = *d & 0x00ff00ffu;
-        vui_u32 rb = ((src_rb * (vui_u32)a + dest_rb * (256u - (vui_u32)a)) >> 8) & 0x00ff00ffu;
+        vui_u32 rb = ((src_rb * eff + dest_rb * (256u - eff)) >> 8) & 0x00ff00ffu;
 
         vui_u32 src_g = c & 0x0000ff00u;
         vui_u32 dest_g = *d & 0x0000ff00u;
-        vui_u32 g = ((src_g * (vui_u32)a + dest_g * (256u - (vui_u32)a)) >> 8) & 0x0000ff00u;
+        vui_u32 g = ((src_g * eff + dest_g * (256u - eff)) >> 8) & 0x0000ff00u;
 
         *d = rb | g;
     }
@@ -512,11 +517,11 @@ static int rr_in4(int px4,int py4,int x,int y,int wid,int hgt,int r){
     rr4 = (long)(r * 4) * (long)(r * 4);
     return dist2 <= rr4;
 }
-/* Coverage 0..4 of a pixel, via 2x2 supersampling (corner anti-aliasing). */
+/* Coverage 0..16 of a pixel, via 4x4 supersampling (corner anti-aliasing). */
 static int rr_cov(int px,int py,int x,int y,int wid,int hgt,int r){
-    static const int o[2]={1,3};
+    static const int o[4]={0,1,2,3};
     int i,j,c=0;
-    for(i=0;i<2;++i) for(j=0;j<2;++j)
+    for(i=0;i<4;++i) for(j=0;j<4;++j)
         c += rr_in4(px * 4 + o[j], py * 4 + o[i], x, y, wid, hgt, r);
     return c;
 }
@@ -533,8 +538,8 @@ static void rrect_fill_aa(struct vui_window *w,int x,int y,int wid,int hgt,int r
         if (!corner){ rect(w, x, py, wid, 1, c); continue; }   /* straight rows: solid */
         for (ix=0; ix<wid; ++ix){
             int cov=rr_cov(x+ix,py,x,y,wid,hgt,r);
-            if (cov==4) put(w, x+ix, py, c);
-            else if (cov>0) blend_put(w, x+ix, py, c, cov*255/4);
+            if (cov==16) put(w, x+ix, py, c);
+            else if (cov>0) blend_put(w, x+ix, py, c, cov*255/16);
         }
     }
 }
@@ -570,8 +575,8 @@ static void fill_round_rect_vgradient(struct vui_window *w,int x,int y,int wid,i
         if (!corner){ rect(w, x, py, wid, 1, c); continue; }
         for (ix=0; ix<wid; ++ix){
             int cov=rr_cov(x+ix,py,x,y,wid,hgt,r);
-            if (cov==4) put(w, x+ix, py, c);
-            else if (cov>0) blend_put(w, x+ix, py, c, cov*255/4);
+            if (cov==16) put(w, x+ix, py, c);
+            else if (cov>0) blend_put(w, x+ix, py, c, cov*255/16);
         }
     }
 }
@@ -1689,7 +1694,6 @@ static void draw_widget(struct vui_window *w, struct vui_widget *wd) {
                                : argb(0x000d2949u, 118u);
         uint32_t ic = active ? 0x00f4fbffu : 0x00dfeeffu;
         fill_round_rect(w, tx, ty, tw, th, 8, fill, bd);
-        rect(w, tx + 8, ty + 1, tw - 16, 1, argb(0x00ffffffu, active ? 52u : 28u));
         const char *isvg = widget_icon(wd);
         if (isvg) {
             int icon_size = 38;   /* renderer keeps a built-in edge margin */

@@ -24,12 +24,14 @@ static DockEntry g_entries[] = {
 };
 #define DOCK_COUNT (int)(sizeof(g_entries) / sizeof(g_entries[0]))
 
-/* Icon geometry: 58px buttons, 38px gap, starting x=50. */
-#define ICON_SIZE   58
-#define ICON_GAP    38
+/* Compact dock geometry. The x/y origin is computed at runtime so the normal
+ * HBox tiles and drag overlays stay exactly aligned at every dock width. */
+#define ICON_SIZE   52
+#define ICON_GAP    46
 #define ICON_STRIDE (ICON_SIZE + ICON_GAP)
-#define ICON_X0     50
-#define ICON_Y0     38
+
+static int g_icon_x0 = 50;
+static int g_icon_y0 = 32;
 
 static vui_widget *sButtons[6];
 
@@ -88,12 +90,12 @@ static float g_cur_x[DOCK_COUNT];      /* animated x for each button */
 static int   g_animating = 0;
 static int   g_drag_src  = -1;         /* entry index being dragged */
 
-static int slot_x(int slot) { return ICON_X0 + slot * ICON_STRIDE; }
+static int slot_x(int slot) { return g_icon_x0 + slot * ICON_STRIDE; }
 
 static int icon_at(int mx, int my) {
-    if (my < 28 || my > 106) return -1;
+    if (my < g_icon_y0 - 8 || my > g_icon_y0 + ICON_SIZE + 10) return -1;
     for (int i = 0; i < DOCK_COUNT; i++) {
-        int ix = ICON_X0 + i * ICON_STRIDE;
+        int ix = slot_x(i);
         if (mx >= ix && mx < ix + ICON_STRIDE) return i;
     }
     return -1;
@@ -139,7 +141,7 @@ static void animate_drag(void) {
         else                  g_cur_x[i] = target;
 
         vui_set_bounds(sOverlays[i], (int)(g_cur_x[i] + 0.5f),
-                       ICON_Y0, ICON_SIZE, ICON_SIZE);
+                       g_icon_y0, ICON_SIZE, ICON_SIZE);
     }
 }
 
@@ -256,16 +258,21 @@ int main() {
     uint32_t mode = vos_display_mode_get();
     int screen_w = (int)((mode >> 16) & 0xffffu);
     int screen_h = (int)(mode & 0xffffu);
-    int width, dock_h = 78, tooltip_h = 28, height = dock_h + tooltip_h, x, y;
+    int width, dock_h = 70, tooltip_h = 24, height = dock_h + tooltip_h, x, y;
 
     if (screen_w <= 0) screen_w = 1024;
     if (screen_h <= 0) screen_h = 768;
-    width = 680;
+    width = 760;
     if (screen_w < 900) width = screen_w - 40;
     if (width > screen_w - 48) width = screen_w - 48;
     x = (screen_w - width) / 2;
     y = screen_h - height - 24;
     if (y < 0) y = 0;
+
+    int content_w = DOCK_COUNT * ICON_SIZE + (DOCK_COUNT - 1) * ICON_GAP;
+    g_icon_x0 = (width - content_w) / 2;
+    if (g_icon_x0 < 8) g_icon_x0 = 8;
+    g_icon_y0 = tooltip_h + 8;
 
     vos_log(VOS_LOG_APP, "dock ready");
 
@@ -281,22 +288,22 @@ int main() {
     vui_set_anchor(surface, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
     vui_set_color(surface, 0x000b2342u);
 
-    vui_widget *row = vui_hbox(win, 50, tooltip_h + 10, width - 100, dock_h - 18);
+    vui_widget *row = vui_hbox(win, g_icon_x0, g_icon_y0, width - 2 * g_icon_x0, dock_h - 16);
     vui_set_anchor(row, VUI_ANCHOR_LEFT | VUI_ANCHOR_TOP | VUI_ANCHOR_RIGHT);
-    vui_set_gap(row, 38);
+    vui_set_gap(row, ICON_GAP);
     vui_set_padding(row, 0);
 
     for (int i = 0; i < DOCK_COUNT; i++) {
         vui_widget *button = vui_tile_button(win, 0, 0, "");
         sButtons[i] = button;
-        vui_set_size(button, 58, 58);
+        vui_set_size(button, ICON_SIZE, ICON_SIZE);
         apply_entry(i);
         vui_box_add(row, button);
 
         /* Pre-create overlay tiles for drag animation, hidden initially.
          * Using vui_tile_button (W_TILE) so they render identically to the
          * normal dock buttons: dark rounded-rect pill + SVG icon. */
-        vui_widget *ov = vui_tile_button(win, slot_x(i), ICON_Y0, "");
+        vui_widget *ov = vui_tile_button(win, slot_x(i), g_icon_y0, "");
         sOverlays[i] = ov;
         vui_set_size(ov, ICON_SIZE, ICON_SIZE);
         vui_set_visible(ov, 0);

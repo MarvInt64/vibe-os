@@ -712,6 +712,49 @@ python3 scripts/ext2_put.py vibeos-disk.img build/user/myapp.elf /bin/myapp
 
 This reuses the already-built `build/user/vexui.o` and `build/user/libc.a`; if you changed the toolkit or libc, run `make libc` (and `make apps` once) first. For a CLI C app drop `build/user/vexui.o` and use `clang`/`-std=c11`. 
 
+### Compiling a GUI app inside VibeOS with TCC
+
+VibeOS can also build a small VexUI app from source inside the guest. Seed the
+native compiler and VexUI development objects into the disk image.
+
+For x86_64:
+
+```bash
+make tcc
+make tcc-vexui
+make run
+```
+
+For arm64:
+
+```bash
+make arm64-tcc
+make run-arm64
+```
+
+Then compile it inside VibeOS. On arm64 this works directly at the `arm64:/$`
+raw console because plain program commands now go through the userspace process
+manager. It also works from a VibeOS Terminal window.
+
+```sh
+tcc /examples/mygui.c /lib/vexui.o /lib/svg.o /lib/libc.a -o /tmp/mygui
+chmod 755 /tmp/mygui
+```
+
+To display the GUI, start the desktop with `gui`, open Terminal, then run:
+
+```sh
+/tmp/mygui
+```
+
+Use plain `tcc ...` at the raw console. The explicit `exec <path>` command is
+kept only as a legacy low-level loader and does not create the private userspace
+heap that TCC needs.
+
+The example source lives at [`user/examples/mygui.c`](user/examples/mygui.c) on
+the host and is installed as `/examples/mygui.c` in the guest. It opens a real
+VexUI window with buttons, an input field, a slider and a progress bar.
+
 #### Writing Assets & Binaries with `ext2_put.py`
 
 To copy binaries or assets onto the persistent ext2 disk image (`vibeos-disk.img`) without rebuilding the entire system, run the Python helper script `scripts/ext2_put.py`:

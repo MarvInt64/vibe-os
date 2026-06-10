@@ -110,7 +110,7 @@ $(BEARSSL_LIB): $(BEARSSL_OBJS)
 
 bearssl: $(BEARSSL_LIB)
 
-.PHONY: all kernel iso run run-debug run-serial run-arm64 clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src seed-headers arm64-tcc
+.PHONY: all kernel iso run run-debug run-serial run-arm64 clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src tcc-vexui seed-headers arm64-tcc
 
 # ============================================================
 # arm64 build — targeting QEMU virt machine.
@@ -172,7 +172,8 @@ ARM64_CFLAGS := \
     -fno-builtin-memmove \
     -fno-builtin-memset \
      \
-    -fno-slp-vectorize
+    -fno-slp-vectorize \
+    -MMD -MP
 
 ARM64_ASFLAGS := \
     -target aarch64-none-elf \
@@ -896,6 +897,13 @@ arm64-tcc: arm64-user
 	# Libc.a + crt0.o → /lib/ (tcc links against these)
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/libc.a /lib/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/crt0.o /lib/crt0.o
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/crt0.o /lib/crt1.o
+	# VexUI objects/header/examples for TCC-built GUI apps inside arm64 VibeOS.
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/vexui.o /lib/vexui.o
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/svg.o /lib/svg.o
+	python3 scripts/ext2_put.py $(DISK_IMG) user/vexui.h /usr/include/vexui.h
+	python3 scripts/ext2_put.py $(DISK_IMG) user/tests/test_vexui.c /tests/test_vexui.c
+	python3 scripts/ext2_put.py $(DISK_IMG) user/examples/mygui.c /examples/mygui.c
 	# cc: friendly front-end (tcc wrapper with default output naming)
 	$(CC) $(ARM64_UCFLAGS) -c user/cc.c -o $(ARM64_UDIR)/cc.o
 	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/cc.elf \
@@ -905,6 +913,10 @@ arm64-tcc: arm64-user
 	printf '#include <stdio.h>\nint main(void){ printf("self-hosted arm64 tcc works\\n"); return 0; }\n' > /tmp/_shtest.c
 	python3 scripts/ext2_put.py $(DISK_IMG) /tmp/_shtest.c /src/shtest.c
 	@echo "arm64 TCC + self-hosting toolchain installed to $(DISK_IMG)."
+	@echo "TCC-built VexUI demo inside arm64 VibeOS:"
+	@echo "  tcc /examples/mygui.c /lib/vexui.o /lib/svg.o /lib/libc.a -o /tmp/mygui"
+	@echo "  chmod 755 /tmp/mygui"
+	@echo "  /tmp/mygui"
 
 # Create a blank persistent disk image if it does not exist yet. No external
 # tools needed — the kernel formats it as ext2 on first boot.
@@ -989,6 +1001,10 @@ $(OUT_DIR)/kernel/%.o: kernel/src/%.S
 # Without this, changing a struct in a header left stale objects with a
 # mismatched layout — a memory-corruption heisenbug (e.g. a frozen cursor).
 -include $(KERNEL_OBJECTS:.o=.d)
+# Same header-dependency tracking for the arm64 kernel objects. Without this,
+# editing e.g. arch.h (ARM64_ASPACE_SLOT_BYTES) left mmu.o stale with the old
+# slot size, so every app spawn failed to map its high stack block (OOM).
+-include $(ARM64_OBJECTS:.o=.d)
 
 $(KERNEL_OBJECTS): kernel/include/version.h
 
@@ -1135,21 +1151,30 @@ tcc-test-all: $(DISK_IMG) $(LIBC_A)
 	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/user/test_all.elf /bin/test_all
 	@echo "test_all installed to /bin/test_all"
 
-# ---- tcc-vexui: build vexui.o + test_vexui for TCC-based VexUI programs -----
-# Seeds vexui.o onto the disk so TCC can link against it inside VibeOS.
+# ---- tcc-vexui: seed VexUI objects/examples for TCC-built GUI programs -----
+# Seeds vexui.o/svg.o and example sources onto the disk so TCC can link GUI
+# apps inside VibeOS.
 UXCFLAGS := $(UCFLAGS) $(LIBC_INC) -Ilib/svg -Wno-unused-parameter -Wno-sign-compare
-tcc-vexui: $(DISK_IMG)
+tcc-vexui: $(DISK_IMG) $(LIBC_A)
 	@mkdir -p $(OUT_DIR)/user
 	$(UCC) $(UXCFLAGS) -c user/vexui.c -o $(OUT_DIR)/user/vexui.o
 	# Also build svg.o (needed by vexui for icons)
 	$(UCC) $(UXCFLAGS) -c lib/svg/svg.c -o $(OUT_DIR)/user/svg.o
+	# Seed the libc runtime pieces TCC links against by default.
+	python3 scripts/ext2_put.py $(DISK_IMG) $(LIBC_CRT0) /lib/crt0.o
+	python3 scripts/ext2_put.py $(DISK_IMG) $(LIBC_CRT0) /lib/crt1.o
+	python3 scripts/ext2_put.py $(DISK_IMG) $(LIBC_A) /lib/libc.a
 	# Seed vexui.o + svg.o so TCC can link: tcc prog.c vexui.o svg.o libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/user/vexui.o /lib/vexui.o
 	python3 scripts/ext2_put.py $(DISK_IMG) $(OUT_DIR)/user/svg.o /lib/svg.o
 	# Seed vexui.h so programs can #include <vexui.h>
 	python3 scripts/ext2_put.py $(DISK_IMG) user/vexui.h /usr/include/vexui.h
-	# Seed test_vexui.c
+	# Seed TCC GUI examples.
 	python3 scripts/ext2_put.py $(DISK_IMG) user/tests/test_vexui.c /tests/test_vexui.c
+	python3 scripts/ext2_put.py $(DISK_IMG) user/examples/mygui.c /examples/mygui.c
 	@echo "VexUI .o + header seeded. Compile inside VibeOS:"
 	@echo "  tcc /tests/test_vexui.c /lib/vexui.o /lib/svg.o /lib/libc.a -o /tmp/tv"
 	@echo "  /tmp/tv"
+	@echo "  tcc /examples/mygui.c /lib/vexui.o /lib/svg.o /lib/libc.a -o /tmp/mygui"
+	@echo "  chmod 755 /tmp/mygui"
+	@echo "  /tmp/mygui"

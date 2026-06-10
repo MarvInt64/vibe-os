@@ -115,7 +115,7 @@ uint64_t arm64_aspace_create(void **l1_raw, void **l2_raw);
 int      arm64_aspace_map_block(void *l2_raw, uint64_t va, uint64_t pa);
 void     arm64_aspace_switch(uint64_t ttbr0);
 void     arm64_aspace_switch_boot(void);
-#define  ARM64_ASPACE_SLOT_BYTES (32UL * 1024 * 1024)
+#define  ARM64_ASPACE_SLOT_BYTES (256UL * 1024 * 1024)
 
 void arm64_gic_init(void);
 void arm64_gic_enable_irq(unsigned irq);

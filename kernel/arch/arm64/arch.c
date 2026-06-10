@@ -114,6 +114,7 @@ struct arm64_file {
 
 static struct arm64_file g_files[ARM64_MAX_FD];
 static struct arm64_pty  g_pty;     /* single global PTY for now */
+#define ARM64_CONSOLE_PROC_LIMIT 16
 
 /* Deferred resolution change — like x86's g_resolution_change_requested. */
 static uint32_t g_res_w = 0, g_res_h = 0;
@@ -1289,7 +1290,8 @@ static void cmd_help(void) {
     serial_write("  uptime        — seconds since boot\r\n");
     serial_write("  cpuinfo       — CPU registers\r\n");
     serial_write("  run           — run the built-in EL0 demo (SVC syscalls)\r\n");
-    serial_write("  exec <path>   — load+run an aarch64 ELF from disk at EL0\r\n");
+    serial_write("  <program>     — run /bin/<program> through the process manager\r\n");
+    serial_write("  exec <path>   — legacy direct ELF loader for low-level debugging\r\n");
     serial_write("  ls [path]     — list directory\r\n");
     serial_write("  cat <path>    — print file\r\n");
     serial_write("  cd <path>     — change directory\r\n");
@@ -1498,6 +1500,12 @@ static void cmd_exec(const char *cmdline) {
     path[pi] = '\0';
     if (path[0] == '\0') { serial_write("  usage: exec <path> [args]\r\n"); return; }
 
+    if (str_eq(path, "/bin/tcc") || str_eq(path, "tcc")) {
+        serial_write("  tcc needs the userspace process manager heap.\r\n");
+        serial_write("  Run it as 'tcc ...' instead of 'exec tcc ...'.\r\n");
+        return;
+    }
+
     /* Everything after the path becomes the argument string that SYS_GETARG
      * returns; the common crt0.c splits it into argv (argv[0]="app"). */
     while (*p == ' ') p++;
@@ -1653,6 +1661,60 @@ static void cmd_spawn(const char *path) {
     serial_write("  back in kernel\r\n");
 }
 
+static struct process *find_process_by_pid(uint32_t pid) {
+    for (int i = 0; i < ARM64_CONSOLE_PROC_LIMIT; i++) {
+        if (g_procs[i].loaded && g_procs[i].pid == pid)
+            return &g_procs[i];
+    }
+    return 0;
+}
+
+static void set_console_spawn_arg(const char *args) {
+    size_t i = 0;
+    if (!args) args = "";
+    while (*args == ' ') args++;
+    for (; i + 1 < sizeof(g_spawn_arg) && args[i]; i++)
+        g_spawn_arg[i] = args[i];
+    g_spawn_arg[i] = '\0';
+}
+
+/* Run a disk ELF through the real process manager, not the legacy cmd_exec
+ * alias loader. This gives raw-console programs the same private heap and
+ * argv path as programs launched by /bin/sh. */
+static void cmd_run_foreground(const char *cmdline) {
+    char path[256];
+    size_t pi = 0;
+    const char *p = cmdline;
+
+    while (*p == ' ') p++;
+    while (*p && *p != ' ' && pi + 1 < sizeof(path))
+        path[pi++] = *p++;
+    path[pi] = '\0';
+    if (!path[0]) return;
+
+    while (*p == ' ') p++;
+    set_console_spawn_arg(p);
+
+    int pid = process_spawn_path(path, 0, 0, 0, 0);
+    if (pid <= 0) {
+        g_spawn_arg[0] = '\0';
+        serial_write("  not found: ");
+        serial_write(path);
+        serial_write("\r\n");
+        return;
+    }
+
+    while (1) {
+        struct process *proc = find_process_by_pid((uint32_t)pid);
+        if (!proc || proc->state == PROCESS_STATE_EXITED)
+            break;
+        if (!process_run_ready_slice())
+            poll_timer();
+    }
+
+    g_spawn_arg[0] = '\0';
+}
+
 /* Shell command: show or fake mouse state for testing virtio-input. */
 static void cmd_mouse(void) {
     serial_write("  mouse: x="); print_dec(g_mouse_x);
@@ -1704,10 +1766,10 @@ static void run_command(const char *line) {
         /* Unknown builtin — try as an ELF binary.
          * If the command contains '/', use it as-is (absolute or relative path).
          * Otherwise look in /bin/<command>.  This mirrors /bin/sh behaviour:
-         *   desktop          → exec /bin/desktop
-         *   ./bin/desktop    → exec ./bin/desktop
-         *   /bin/desktop     → exec /bin/desktop
-         *   desktop --help   → exec /bin/desktop --help
+         *   desktop          -> run /bin/desktop
+         *   ./bin/desktop    -> run ./bin/desktop
+         *   /bin/desktop     -> run /bin/desktop
+         *   desktop --help   -> run /bin/desktop --help
          */
         char exec_line[256];
         int has_slash = 0;
@@ -1733,7 +1795,7 @@ static void run_command(const char *line) {
                 exec_line[out++] = *s++;
             exec_line[out] = '\0';
         }
-        cmd_exec(exec_line);
+        cmd_run_foreground(exec_line);
     }
 }
 

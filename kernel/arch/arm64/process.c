@@ -4,10 +4,10 @@
  * expect.  The arm64 implementation uses a simple process table with
  * one EL0 context per slot.  Virtual address layout per process:
  *
- *   VA 0x90000000  — ELF image + process heap in a private 32 MB region
- *   VA 0x91FFFFFF  — user stack top (grows down)
+ *   VA 0x90000000  — ELF image + process heap in a private 256 MB region
+ *   VA 0x9FFFFFFF  — user stack top (grows down)
  *
- * Each top-level process owns a private TTBR0_EL1.  The 32 MB user slot is
+ * Each top-level process owns a private TTBR0_EL1.  The 256 MB user slot is
  * reserved virtually, but physical backing is committed lazily in 2 MB L2
  * blocks for the loaded image, the initial stack, and heap growth.
  *
@@ -466,7 +466,7 @@ int process_spawn_path(const char *path,
     proc->gid        = gid;
     proc->entry      = eh->entry;  /* at 0x90000000 in the process's own aspace */
     proc->code_size  = image_end;
-    /* Stack at the top of the 32 MB private slot (grows down). */
+    /* Stack at the top of the private slot (grows down). */
     proc->user_stack_top = ARM64_USER_BASE + ARM64_ASPACE_SLOT_BYTES - 16;
     proc->user_virtual_base = ARM64_USER_BASE;
     /* Heap: starts just after the loaded image (rounded up to page). */
