@@ -1,0 +1,256 @@
+#ifndef VIBEOS_VECTOR
+#define VIBEOS_VECTOR
+
+/* Freestanding std::vector subset for VibeOS userspace.  Heap-backed dynamic
+ * array with the common API (push_back/emplace_back, indexing, iterators,
+ * insert/erase, resize/reserve, range construction).  No exceptions: at() and
+ * a failed allocation trap via __builtin_trap() rather than throwing. */
+
+#include <cstddef>
+#include <new>
+#include <type_traits>
+#include <utility>
+#include <initializer_list>
+
+namespace std {
+
+template <typename T>
+class vector {
+public:
+    using value_type      = T;
+    using size_type       = size_t;
+    using difference_type = ptrdiff_t;
+    using reference       = T &;
+    using const_reference = const T &;
+    using pointer         = T *;
+    using const_pointer   = const T *;
+    using iterator        = T *;
+    using const_iterator  = const T *;
+
+    /* --- ctors / dtor ---------------------------------------------------- */
+    vector() noexcept : data_(nullptr), size_(0), cap_(0) {}
+
+    explicit vector(size_type n) : vector() {
+        reserve(n);
+        for (size_type i = 0; i < n; ++i) ::new (data_ + i) T();
+        size_ = n;
+    }
+
+    vector(size_type n, const T &val) : vector() {
+        reserve(n);
+        for (size_type i = 0; i < n; ++i) ::new (data_ + i) T(val);
+        size_ = n;
+    }
+
+    template <typename InputIt,
+              typename = enable_if_t<!is_integral<InputIt>::value>>
+    vector(InputIt first, InputIt last) : vector() {
+        for (; first != last; ++first) push_back(*first);
+    }
+
+    vector(initializer_list<T> il) : vector() {
+        reserve(il.size());
+        for (const T &v : il) push_back(v);
+    }
+
+    vector(const vector &o) : vector() {
+        reserve(o.size_);
+        for (size_type i = 0; i < o.size_; ++i) ::new (data_ + i) T(o.data_[i]);
+        size_ = o.size_;
+    }
+
+    vector(vector &&o) noexcept
+        : data_(o.data_), size_(o.size_), cap_(o.cap_) {
+        o.data_ = nullptr; o.size_ = 0; o.cap_ = 0;
+    }
+
+    ~vector() { destroy_all(); ::operator delete(data_); }
+
+    /* --- assignment ------------------------------------------------------ */
+    vector &operator=(const vector &o) {
+        if (this != &o) {
+            clear();
+            reserve(o.size_);
+            for (size_type i = 0; i < o.size_; ++i) ::new (data_ + i) T(o.data_[i]);
+            size_ = o.size_;
+        }
+        return *this;
+    }
+
+    vector &operator=(vector &&o) noexcept {
+        if (this != &o) {
+            destroy_all();
+            ::operator delete(data_);
+            data_ = o.data_; size_ = o.size_; cap_ = o.cap_;
+            o.data_ = nullptr; o.size_ = 0; o.cap_ = 0;
+        }
+        return *this;
+    }
+
+    vector &operator=(initializer_list<T> il) {
+        clear();
+        reserve(il.size());
+        for (const T &v : il) push_back(v);
+        return *this;
+    }
+
+    void assign(size_type n, const T &val) {
+        clear();
+        reserve(n);
+        for (size_type i = 0; i < n; ++i) ::new (data_ + i) T(val);
+        size_ = n;
+    }
+
+    /* --- element access -------------------------------------------------- */
+    reference       operator[](size_type i)       { return data_[i]; }
+    const_reference operator[](size_type i) const { return data_[i]; }
+    reference       at(size_type i)       { if (i >= size_) __builtin_trap(); return data_[i]; }
+    const_reference at(size_type i) const { if (i >= size_) __builtin_trap(); return data_[i]; }
+    reference       front()       { return data_[0]; }
+    const_reference front() const { return data_[0]; }
+    reference       back()        { return data_[size_ - 1]; }
+    const_reference back() const  { return data_[size_ - 1]; }
+    pointer         data() noexcept       { return data_; }
+    const_pointer   data() const noexcept { return data_; }
+
+    /* --- iterators ------------------------------------------------------- */
+    iterator       begin() noexcept       { return data_; }
+    const_iterator begin() const noexcept { return data_; }
+    const_iterator cbegin() const noexcept { return data_; }
+    iterator       end() noexcept         { return data_ + size_; }
+    const_iterator end() const noexcept   { return data_ + size_; }
+    const_iterator cend() const noexcept  { return data_ + size_; }
+
+    /* --- capacity -------------------------------------------------------- */
+    bool      empty() const noexcept    { return size_ == 0; }
+    size_type size() const noexcept     { return size_; }
+    size_type capacity() const noexcept { return cap_; }
+
+    void reserve(size_type n) {
+        if (n <= cap_) return;
+        grow_to(n);
+    }
+
+    void shrink_to_fit() {
+        if (size_ == cap_) return;
+        reallocate(size_);
+    }
+
+    /* --- modifiers ------------------------------------------------------- */
+    void clear() noexcept { destroy_all(); size_ = 0; }
+
+    void push_back(const T &v) {
+        if (size_ == cap_) grow_to(size_ + 1);
+        ::new (data_ + size_) T(v);
+        ++size_;
+    }
+
+    void push_back(T &&v) {
+        if (size_ == cap_) grow_to(size_ + 1);
+        ::new (data_ + size_) T(move(v));
+        ++size_;
+    }
+
+    template <typename... Args>
+    reference emplace_back(Args &&...args) {
+        if (size_ == cap_) grow_to(size_ + 1);
+        ::new (data_ + size_) T(forward<Args>(args)...);
+        return data_[size_++];
+    }
+
+    void pop_back() { --size_; data_[size_].~T(); }
+
+    void resize(size_type n) {
+        if (n < size_) {
+            for (size_type i = n; i < size_; ++i) data_[i].~T();
+        } else if (n > size_) {
+            reserve(n);
+            for (size_type i = size_; i < n; ++i) ::new (data_ + i) T();
+        }
+        size_ = n;
+    }
+
+    void resize(size_type n, const T &val) {
+        if (n < size_) {
+            for (size_type i = n; i < size_; ++i) data_[i].~T();
+        } else if (n > size_) {
+            reserve(n);
+            for (size_type i = size_; i < n; ++i) ::new (data_ + i) T(val);
+        }
+        size_ = n;
+    }
+
+    iterator insert(const_iterator pos, const T &v) {
+        size_type idx = (size_type)(pos - data_);
+        if (size_ == cap_) grow_to(size_ + 1);
+        shift_right(idx, 1);
+        ::new (data_ + idx) T(v);
+        ++size_;
+        return data_ + idx;
+    }
+
+    iterator erase(const_iterator pos) {
+        size_type idx = (size_type)(pos - data_);
+        data_[idx].~T();
+        for (size_type i = idx; i + 1 < size_; ++i) {
+            ::new (data_ + i) T(move(data_[i + 1]));
+            data_[i + 1].~T();
+        }
+        --size_;
+        return data_ + idx;
+    }
+
+    void swap(vector &o) noexcept {
+        std::swap(data_, o.data_);
+        std::swap(size_, o.size_);
+        std::swap(cap_,  o.cap_);
+    }
+
+private:
+    void destroy_all() noexcept {
+        for (size_type i = 0; i < size_; ++i) data_[i].~T();
+    }
+
+    void grow_to(size_type need) {
+        size_type ncap = cap_ ? cap_ * 2 : 4;
+        if (ncap < need) ncap = need;
+        reallocate(ncap);
+    }
+
+    void reallocate(size_type ncap) {
+        T *nd = ncap ? static_cast<T *>(::operator new(ncap * sizeof(T))) : nullptr;
+        if (ncap && !nd) __builtin_trap();
+        for (size_type i = 0; i < size_; ++i) {
+            ::new (nd + i) T(move(data_[i]));
+            data_[i].~T();
+        }
+        ::operator delete(data_);
+        data_ = nd;
+        cap_  = ncap;
+    }
+
+    /* Open a gap of `count` at index `idx` (caller has reserved capacity). */
+    void shift_right(size_type idx, size_type count) {
+        for (size_type i = size_; i > idx; --i) {
+            ::new (data_ + i + count - 1) T(move(data_[i - 1]));
+            data_[i - 1].~T();
+        }
+    }
+
+    T        *data_;
+    size_type size_;
+    size_type cap_;
+};
+
+template <typename T>
+bool operator==(const vector<T> &a, const vector<T> &b) {
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i) if (!(a[i] == b[i])) return false;
+    return true;
+}
+template <typename T>
+bool operator!=(const vector<T> &a, const vector<T> &b) { return !(a == b); }
+
+} /* namespace std */
+
+#endif

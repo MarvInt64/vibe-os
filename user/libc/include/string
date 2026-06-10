@@ -1,0 +1,227 @@
+#ifndef VIBEOS_STRING_CXX
+#define VIBEOS_STRING_CXX
+
+/* Freestanding std::string subset for VibeOS userspace.  Heap-backed, always
+ * NUL-terminated, no exceptions (at()/substr trap on out-of-range).  This is
+ * the C++ <string> — the C <string.h> lives under that name and is pulled in
+ * here for memcpy/strlen.  Enough for real C++ programs and a stepping stone
+ * toward larger C++ tooling on VibeOS. */
+
+#include <cstddef>
+#include <new>
+#include <string.h>   /* memcpy, memmove, memcmp, strlen */
+
+namespace std {
+
+class string {
+public:
+    using size_type      = size_t;
+    using value_type     = char;
+    using reference      = char &;
+    using const_reference = const char &;
+    using iterator       = char *;
+    using const_iterator = const char *;
+
+    static const size_type npos = (size_type)-1;
+
+    /* --- ctors / dtor ---------------------------------------------------- */
+    string() noexcept : data_(nullptr), size_(0), cap_(0) {}
+
+    string(const char *s) : string() {
+        if (s) { size_type n = strlen(s); assign_raw(s, n); }
+    }
+
+    string(const char *s, size_type n) : string() { assign_raw(s, n); }
+
+    string(size_type n, char c) : string() {
+        ensure(n);
+        for (size_type i = 0; i < n; ++i) data_[i] = c;
+        size_ = n;
+        if (data_) data_[size_] = '\0';
+    }
+
+    string(const string &o) : string() { assign_raw(o.c_str(), o.size_); }
+
+    string(string &&o) noexcept
+        : data_(o.data_), size_(o.size_), cap_(o.cap_) {
+        o.data_ = nullptr; o.size_ = 0; o.cap_ = 0;
+    }
+
+    ~string() { ::operator delete(data_); }
+
+    /* --- assignment ------------------------------------------------------ */
+    string &operator=(const string &o) {
+        if (this != &o) assign_raw(o.c_str(), o.size_);
+        return *this;
+    }
+    string &operator=(string &&o) noexcept {
+        if (this != &o) {
+            ::operator delete(data_);
+            data_ = o.data_; size_ = o.size_; cap_ = o.cap_;
+            o.data_ = nullptr; o.size_ = 0; o.cap_ = 0;
+        }
+        return *this;
+    }
+    string &operator=(const char *s) { assign_raw(s, s ? strlen(s) : 0); return *this; }
+    string &operator=(char c) { assign_raw(&c, 1); return *this; }
+
+    /* --- element access -------------------------------------------------- */
+    reference       operator[](size_type i)       { return data_[i]; }
+    const_reference operator[](size_type i) const { return c_str()[i]; }
+    reference       at(size_type i)       { if (i >= size_) __builtin_trap(); return data_[i]; }
+    const_reference at(size_type i) const { if (i >= size_) __builtin_trap(); return c_str()[i]; }
+    char  front() const { return c_str()[0]; }
+    char  back()  const { return c_str()[size_ - 1]; }
+
+    const char *c_str() const noexcept { return data_ ? data_ : ""; }
+    const char *data()  const noexcept { return c_str(); }
+    char       *data()  noexcept       { return data_ ? data_ : empty_writable(); }
+
+    /* --- iterators ------------------------------------------------------- */
+    iterator       begin() noexcept       { return data_; }
+    const_iterator begin() const noexcept { return c_str(); }
+    iterator       end() noexcept         { return data_ + size_; }
+    const_iterator end() const noexcept   { return c_str() + size_; }
+
+    /* --- capacity -------------------------------------------------------- */
+    bool      empty() const noexcept    { return size_ == 0; }
+    size_type size() const noexcept     { return size_; }
+    size_type length() const noexcept   { return size_; }
+    size_type capacity() const noexcept { return cap_; }
+    void      reserve(size_type n)      { if (n > cap_) reallocate(n); }
+    void      clear() noexcept          { size_ = 0; if (data_) data_[0] = '\0'; }
+
+    void resize(size_type n, char c = '\0') {
+        if (n > size_) { ensure(n); for (size_type i = size_; i < n; ++i) data_[i] = c; }
+        size_ = n;
+        if (data_) data_[size_] = '\0';
+    }
+
+    /* --- modifiers ------------------------------------------------------- */
+    string &append(const char *s, size_type n) {
+        ensure(size_ + n);
+        memcpy(data_ + size_, s, n);
+        size_ += n;
+        data_[size_] = '\0';
+        return *this;
+    }
+    string &append(const char *s) { return append(s, s ? strlen(s) : 0); }
+    string &append(const string &o) { return append(o.c_str(), o.size_); }
+    string &append(size_type n, char c) {
+        ensure(size_ + n);
+        for (size_type i = 0; i < n; ++i) data_[size_ + i] = c;
+        size_ += n; data_[size_] = '\0';
+        return *this;
+    }
+
+    void push_back(char c) {
+        ensure(size_ + 1);
+        data_[size_++] = c;
+        data_[size_] = '\0';
+    }
+    void pop_back() { if (size_) { --size_; data_[size_] = '\0'; } }
+
+    string &operator+=(const string &o) { return append(o); }
+    string &operator+=(const char *s)   { return append(s); }
+    string &operator+=(char c)          { push_back(c); return *this; }
+
+    string &assign(const char *s, size_type n) { assign_raw(s, n); return *this; }
+    string &assign(const string &o) { assign_raw(o.c_str(), o.size_); return *this; }
+
+    /* --- operations ------------------------------------------------------ */
+    string substr(size_type pos = 0, size_type n = npos) const {
+        if (pos > size_) __builtin_trap();
+        size_type avail = size_ - pos;
+        if (n > avail) n = avail;
+        return string(c_str() + pos, n);
+    }
+
+    int compare(const string &o) const noexcept {
+        size_type m = size_ < o.size_ ? size_ : o.size_;
+        int r = memcmp(c_str(), o.c_str(), m);
+        if (r) return r;
+        return (size_ < o.size_) ? -1 : (size_ > o.size_ ? 1 : 0);
+    }
+
+    size_type find(char c, size_type pos = 0) const noexcept {
+        for (size_type i = pos; i < size_; ++i) if (data_[i] == c) return i;
+        return npos;
+    }
+
+    size_type find(const char *s, size_type pos = 0) const noexcept {
+        size_type n = strlen(s);
+        if (n == 0) return pos <= size_ ? pos : npos;
+        if (n > size_) return npos;
+        for (size_type i = pos; i + n <= size_; ++i)
+            if (memcmp(data_ + i, s, n) == 0) return i;
+        return npos;
+    }
+
+    void swap(string &o) noexcept {
+        char *d = data_; data_ = o.data_; o.data_ = d;
+        size_type s = size_; size_ = o.size_; o.size_ = s;
+        size_type c = cap_;  cap_  = o.cap_;  o.cap_  = c;
+    }
+
+private:
+    /* Ensure room for `need` chars plus the NUL terminator. */
+    void ensure(size_type need) {
+        if (need <= cap_) return;
+        size_type ncap = cap_ ? cap_ * 2 : 16;
+        if (ncap < need) ncap = need;
+        reallocate(ncap);
+    }
+
+    void reallocate(size_type ncap) {
+        char *nd = static_cast<char *>(::operator new(ncap + 1));
+        if (!nd) __builtin_trap();
+        if (size_) memcpy(nd, data_, size_);
+        nd[size_] = '\0';
+        ::operator delete(data_);
+        data_ = nd;
+        cap_  = ncap;
+    }
+
+    void assign_raw(const char *s, size_type n) {
+        ensure(n);
+        if (n) memcpy(data_, s, n);
+        size_ = n;
+        if (data_) data_[size_] = '\0';
+    }
+
+    char *empty_writable() { ensure(0); return data_; }
+
+    char     *data_;
+    size_type size_;
+    size_type cap_;
+};
+
+/* --- non-member operators ------------------------------------------------ */
+inline string operator+(const string &a, const string &b) {
+    string r(a); r.append(b); return r;
+}
+inline string operator+(const string &a, const char *b) {
+    string r(a); r.append(b); return r;
+}
+inline string operator+(const char *a, const string &b) {
+    string r(a); r.append(b); return r;
+}
+inline string operator+(const string &a, char b) {
+    string r(a); r.push_back(b); return r;
+}
+
+inline bool operator==(const string &a, const string &b) noexcept { return a.compare(b) == 0; }
+inline bool operator!=(const string &a, const string &b) noexcept { return a.compare(b) != 0; }
+inline bool operator< (const string &a, const string &b) noexcept { return a.compare(b) <  0; }
+inline bool operator> (const string &a, const string &b) noexcept { return a.compare(b) >  0; }
+inline bool operator<=(const string &a, const string &b) noexcept { return a.compare(b) <= 0; }
+inline bool operator>=(const string &a, const string &b) noexcept { return a.compare(b) >= 0; }
+
+inline bool operator==(const string &a, const char *b) noexcept { return strcmp(a.c_str(), b) == 0; }
+inline bool operator==(const char *a, const string &b) noexcept { return strcmp(a, b.c_str()) == 0; }
+inline bool operator!=(const string &a, const char *b) noexcept { return strcmp(a.c_str(), b) != 0; }
+inline bool operator!=(const char *a, const string &b) noexcept { return strcmp(a, b.c_str()) != 0; }
+
+} /* namespace std */
+
+#endif
