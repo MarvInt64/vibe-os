@@ -11,6 +11,10 @@ constexpr remove_reference_t<T> &&move(T &&t) noexcept {
     return static_cast<remove_reference_t<T> &&>(t);
 }
 
+/* --- declval (unevaluated contexts only — intentionally undefined) -------- */
+template <typename T>
+typename add_rvalue_reference<T>::type declval() noexcept;
+
 /* --- forward ------------------------------------------------------------- */
 template <typename T>
 constexpr T &&forward(remove_reference_t<T> &t) noexcept {

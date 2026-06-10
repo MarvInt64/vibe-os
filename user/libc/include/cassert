@@ -1,0 +1,7 @@
+#ifndef VIBEOS_CASSERT
+#define VIBEOS_CASSERT
+
+/* C++ <cassert> — just pulls in the C assert macro. */
+#include <assert.h>
+
+#endif

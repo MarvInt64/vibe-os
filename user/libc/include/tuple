@@ -1,0 +1,134 @@
+#ifndef VIBEOS_TUPLE
+#define VIBEOS_TUPLE
+
+/* Freestanding std::tuple subset for VibeOS userspace: variadic tuple via
+ * recursive composition, get<I>/get<T>, make_tuple/tie/forward_as_tuple,
+ * tuple_size/tuple_element, and == / < comparisons.  Enough for the STL subset
+ * and real LLVM ADT code. */
+
+#include <cstddef>
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+template <typename...> class tuple;
+
+template <> class tuple<> {
+public:
+    constexpr tuple() noexcept = default;
+    void swap(tuple &) noexcept {}
+};
+
+template <typename Head, typename... Tail>
+class tuple<Head, Tail...> {
+public:
+    Head           head_;
+    tuple<Tail...> tail_;
+
+    constexpr tuple() : head_(), tail_() {}
+
+    constexpr explicit tuple(const Head &h, const Tail &...t)
+        : head_(h), tail_(t...) {}
+
+    template <typename UH, typename... UT,
+              typename = enable_if_t<sizeof...(UT) == sizeof...(Tail)>>
+    constexpr explicit tuple(UH &&h, UT &&...t)
+        : head_(forward<UH>(h)), tail_(forward<UT>(t)...) {}
+
+    tuple(const tuple &) = default;
+    tuple(tuple &&)      = default;
+    tuple &operator=(const tuple &) = default;
+    tuple &operator=(tuple &&)      = default;
+
+    void swap(tuple &o) noexcept {
+        std::swap(head_, o.head_);
+        tail_.swap(o.tail_);
+    }
+};
+
+/* --- tuple_size ---------------------------------------------------------- */
+template <typename T> struct tuple_size;
+template <typename... Ts>
+struct tuple_size<tuple<Ts...>> : integral_constant<size_t, sizeof...(Ts)> {};
+template <typename T> struct tuple_size<const T> : tuple_size<T> {};
+template <typename T> inline constexpr size_t tuple_size_v = tuple_size<T>::value;
+
+/* --- tuple_element ------------------------------------------------------- */
+template <size_t I, typename T> struct tuple_element;
+template <size_t I, typename Head, typename... Tail>
+struct tuple_element<I, tuple<Head, Tail...>>
+    : tuple_element<I - 1, tuple<Tail...>> {};
+template <typename Head, typename... Tail>
+struct tuple_element<0, tuple<Head, Tail...>> { using type = Head; };
+template <size_t I, typename T>
+using tuple_element_t = typename tuple_element<I, T>::type;
+
+/* --- get<I> -------------------------------------------------------------- */
+namespace detail {
+template <size_t I>
+struct tuple_getter {
+    template <typename Tup>
+    static constexpr auto &get(Tup &t) { return tuple_getter<I - 1>::get(t.tail_); }
+    template <typename Tup>
+    static constexpr auto &&get_rv(Tup &&t) { return tuple_getter<I - 1>::get_rv(static_cast<Tup &&>(t).tail_); }
+};
+template <>
+struct tuple_getter<0> {
+    template <typename Tup>
+    static constexpr auto &get(Tup &t) { return t.head_; }
+    template <typename Tup>
+    static constexpr auto &&get_rv(Tup &&t) { return static_cast<decltype(t.head_) &&>(t.head_); }
+};
+}
+
+template <size_t I, typename... Ts>
+constexpr tuple_element_t<I, tuple<Ts...>> &get(tuple<Ts...> &t) {
+    return detail::tuple_getter<I>::get(t);
+}
+template <size_t I, typename... Ts>
+constexpr const tuple_element_t<I, tuple<Ts...>> &get(const tuple<Ts...> &t) {
+    return detail::tuple_getter<I>::get(t);
+}
+template <size_t I, typename... Ts>
+constexpr tuple_element_t<I, tuple<Ts...>> &&get(tuple<Ts...> &&t) {
+    return detail::tuple_getter<I>::get_rv(static_cast<tuple<Ts...> &&>(t));
+}
+
+/* --- make_tuple / tie / forward_as_tuple --------------------------------- */
+template <typename... Ts>
+constexpr tuple<decay_t<Ts>...> make_tuple(Ts &&...args) {
+    return tuple<decay_t<Ts>...>(forward<Ts>(args)...);
+}
+
+template <typename... Ts>
+constexpr tuple<Ts &...> tie(Ts &...args) noexcept {
+    return tuple<Ts &...>(args...);
+}
+
+template <typename... Ts>
+constexpr tuple<Ts &&...> forward_as_tuple(Ts &&...args) noexcept {
+    return tuple<Ts &&...>(forward<Ts>(args)...);
+}
+
+/* --- comparisons --------------------------------------------------------- */
+inline constexpr bool operator==(const tuple<> &, const tuple<> &) { return true; }
+
+template <typename H1, typename... T1, typename H2, typename... T2>
+constexpr bool operator==(const tuple<H1, T1...> &a, const tuple<H2, T2...> &b) {
+    return a.head_ == b.head_ && a.tail_ == b.tail_;
+}
+template <typename... A, typename... B>
+constexpr bool operator!=(const tuple<A...> &a, const tuple<B...> &b) { return !(a == b); }
+
+inline constexpr bool operator<(const tuple<> &, const tuple<> &) { return false; }
+template <typename H1, typename... T1, typename H2, typename... T2>
+constexpr bool operator<(const tuple<H1, T1...> &a, const tuple<H2, T2...> &b) {
+    if (a.head_ < b.head_) return true;
+    if (b.head_ < a.head_) return false;
+    return a.tail_ < b.tail_;
+}
+
+} /* namespace std */
+
+#endif
