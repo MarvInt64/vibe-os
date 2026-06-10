@@ -6,6 +6,9 @@
 #include <string>
 #include <memory>
 #include <utility>
+#include <optional>
+#include <functional>
+#include <map>
 #include <stdio.h>
 
 static int g_fail = 0;
@@ -101,6 +104,58 @@ int main(void) {
     auto pr = std::make_pair(1, std::string("one"));
     CHECK(pr.first == 1);
     CHECK(pr.second == "one");
+
+    /* ---- optional ---- */
+    std::optional<int> oi;
+    CHECK(!oi.has_value());
+    CHECK(oi.value_or(-1) == -1);
+    oi = 7;
+    CHECK(oi.has_value());
+    CHECK(*oi == 7);
+    oi.reset();
+    CHECK(!oi);
+    {
+        std::optional<Counted> oc(std::in_place, 5);
+        CHECK(oc->v == 5);
+        CHECK(Counted::live == 1);
+    }
+    CHECK(Counted::live == 0);
+
+    /* ---- function ---- */
+    std::function<int(int, int)> add = [](int a, int b) { return a + b; };
+    CHECK(add(3, 4) == 7);
+    int base = 100;
+    std::function<int(int)> addbase = [base](int x) { return x + base; };
+    CHECK(addbase(5) == 105);
+    std::function<int(int)> copy = addbase;   /* clone */
+    CHECK(copy(1) == 101);
+    add = nullptr;
+    CHECK(!add);
+
+    /* ---- map ---- */
+    std::map<std::string, int> ages;
+    ages["alice"] = 30;
+    ages["bob"]   = 25;
+    ages["carol"] = 40;
+    CHECK(ages.size() == 3);
+    CHECK(ages["bob"] == 25);
+    CHECK(ages.at("carol") == 40);
+    CHECK(ages.count("dave") == 0);
+    CHECK(ages.contains("alice"));
+    ages["bob"] += 1;
+    CHECK(ages["bob"] == 26);
+    /* iteration is in sorted key order */
+    std::string order;
+    for (auto &kv : ages) { order += kv.first; order += ' '; }
+    CHECK(order == "alice bob carol ");
+    CHECK(ages.erase("alice") == 1);
+    CHECK(ages.size() == 2);
+    CHECK(ages.find("alice") == ages.end());
+
+    std::map<int, std::string> im = { {3, "three"}, {1, "one"}, {2, "two"} };
+    CHECK(im.size() == 3);
+    CHECK(im.begin()->first == 1);     /* sorted */
+    CHECK(im[2] == "two");
 
     printf(g_fail == 0 ? "ALL OK\n" : "FAILURES: %d\n", g_fail);
     return g_fail;

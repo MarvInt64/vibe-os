@@ -1,0 +1,135 @@
+#ifndef VIBEOS_OPTIONAL
+#define VIBEOS_OPTIONAL
+
+/* Freestanding std::optional subset for VibeOS userspace.  No exceptions:
+ * value() on an empty optional traps via __builtin_trap() instead of throwing
+ * bad_optional_access. */
+
+#include <cstddef>
+#include <new>
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+struct nullopt_t { explicit constexpr nullopt_t(int) {} };
+inline constexpr nullopt_t nullopt{0};
+
+struct in_place_t { explicit in_place_t() = default; };
+inline constexpr in_place_t in_place{};
+
+template <typename T>
+class optional {
+public:
+    using value_type = T;
+
+    constexpr optional() noexcept : has_(false) {}
+    constexpr optional(nullopt_t) noexcept : has_(false) {}
+
+    optional(const T &v) : has_(true) { ::new (storage()) T(v); }
+    optional(T &&v) : has_(true) { ::new (storage()) T(move(v)); }
+
+    template <typename... Args>
+    explicit optional(in_place_t, Args &&...args) : has_(true) {
+        ::new (storage()) T(forward<Args>(args)...);
+    }
+
+    optional(const optional &o) : has_(o.has_) {
+        if (has_) ::new (storage()) T(*o.storage());
+    }
+    optional(optional &&o) noexcept : has_(o.has_) {
+        if (has_) ::new (storage()) T(move(*o.storage()));
+    }
+
+    ~optional() { reset(); }
+
+    optional &operator=(nullopt_t) noexcept { reset(); return *this; }
+
+    optional &operator=(const optional &o) {
+        if (this != &o) {
+            if (o.has_) emplace_copy(*o.storage());
+            else reset();
+        }
+        return *this;
+    }
+    optional &operator=(optional &&o) noexcept {
+        if (this != &o) {
+            if (o.has_) emplace_move(move(*o.storage()));
+            else reset();
+        }
+        return *this;
+    }
+    template <typename U = T>
+    optional &operator=(U &&v) { emplace_move(forward<U>(v)); return *this; }
+
+    template <typename... Args>
+    T &emplace(Args &&...args) {
+        reset();
+        ::new (storage()) T(forward<Args>(args)...);
+        has_ = true;
+        return *storage();
+    }
+
+    void reset() noexcept {
+        if (has_) { storage()->~T(); has_ = false; }
+    }
+
+    constexpr bool has_value() const noexcept { return has_; }
+    constexpr explicit operator bool() const noexcept { return has_; }
+
+    T       &value()       { if (!has_) __builtin_trap(); return *storage(); }
+    const T &value() const { if (!has_) __builtin_trap(); return *storage(); }
+
+    T       &operator*()        { return *storage(); }
+    const T &operator*() const  { return *storage(); }
+    T       *operator->()       { return storage(); }
+    const T *operator->() const { return storage(); }
+
+    template <typename U>
+    T value_or(U &&dflt) const {
+        return has_ ? *storage() : static_cast<T>(forward<U>(dflt));
+    }
+
+    void swap(optional &o) noexcept {
+        if (has_ && o.has_)       std::swap(*storage(), *o.storage());
+        else if (has_)            { o.emplace_move(move(*storage())); reset(); }
+        else if (o.has_)          { emplace_move(move(*o.storage())); o.reset(); }
+    }
+
+private:
+    T       *storage()       { return reinterpret_cast<T *>(&buf_); }
+    const T *storage() const { return reinterpret_cast<const T *>(&buf_); }
+
+    template <typename U> void emplace_copy(const U &v) {
+        if (has_) *storage() = v;
+        else { ::new (storage()) T(v); has_ = true; }
+    }
+    template <typename U> void emplace_move(U &&v) {
+        if (has_) *storage() = forward<U>(v);
+        else { ::new (storage()) T(forward<U>(v)); has_ = true; }
+    }
+
+    alignas(T) unsigned char buf_[sizeof(T)];
+    bool has_;
+};
+
+template <typename T>
+optional<decay_t<T>> make_optional(T &&v) {
+    return optional<decay_t<T>>(forward<T>(v));
+}
+
+template <typename T>
+bool operator==(const optional<T> &a, const optional<T> &b) {
+    if (a.has_value() != b.has_value()) return false;
+    return !a.has_value() || (*a == *b);
+}
+template <typename T>
+bool operator!=(const optional<T> &a, const optional<T> &b) { return !(a == b); }
+template <typename T>
+bool operator==(const optional<T> &a, nullopt_t) noexcept { return !a.has_value(); }
+template <typename T>
+bool operator==(nullopt_t, const optional<T> &a) noexcept { return !a.has_value(); }
+
+} /* namespace std */
+
+#endif

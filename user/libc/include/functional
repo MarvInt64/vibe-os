@@ -1,0 +1,117 @@
+#ifndef VIBEOS_FUNCTIONAL
+#define VIBEOS_FUNCTIONAL
+
+/* Freestanding <functional> subset for VibeOS userspace: the standard function
+ * objects (less, greater, equal_to, plus, …), a minimal std::hash, and a
+ * type-erased std::function.  std::function always heap-allocates its target
+ * (no small-buffer optimisation) — simple and robust; calling an empty
+ * function traps via __builtin_trap() instead of throwing bad_function_call. */
+
+#include <cstddef>
+#include <stdint.h>
+#include <new>
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+/* --- function objects ---------------------------------------------------- */
+template <typename T = void> struct less {
+    constexpr bool operator()(const T &a, const T &b) const { return a < b; }
+};
+template <typename T = void> struct greater {
+    constexpr bool operator()(const T &a, const T &b) const { return a > b; }
+};
+template <typename T = void> struct equal_to {
+    constexpr bool operator()(const T &a, const T &b) const { return a == b; }
+};
+template <typename T = void> struct plus {
+    constexpr T operator()(const T &a, const T &b) const { return a + b; }
+};
+template <typename T = void> struct minus {
+    constexpr T operator()(const T &a, const T &b) const { return a - b; }
+};
+
+/* --- hash (primitive types + pointers) ----------------------------------- */
+template <typename T> struct hash;
+
+template <typename T> struct hash {
+    size_t operator()(const T &v) const noexcept {
+        /* default: treat integral/enum-ish values by widening to size_t */
+        return (size_t)v;
+    }
+};
+template <typename T> struct hash<T *> {
+    size_t operator()(T *p) const noexcept { return (size_t)(uintptr_t)p; }
+};
+
+/* --- function<R(Args...)> ------------------------------------------------ */
+template <typename> class function;
+
+template <typename R, typename... Args>
+class function<R(Args...)> {
+    struct callable_base {
+        virtual R invoke(Args...) = 0;
+        virtual callable_base *clone() const = 0;
+        virtual ~callable_base() {}
+    };
+    template <typename F>
+    struct callable : callable_base {
+        F f;
+        explicit callable(const F &x) : f(x) {}
+        explicit callable(F &&x) : f(move(x)) {}
+        R invoke(Args... a) override { return f(static_cast<Args>(a)...); }
+        callable_base *clone() const override { return new callable(f); }
+    };
+
+    callable_base *c_;
+
+public:
+    function() noexcept : c_(nullptr) {}
+    function(nullptr_t) noexcept : c_(nullptr) {}
+
+    template <typename F,
+              typename = enable_if_t<!is_same<decay_t<F>, function>::value>>
+    function(F f) : c_(new callable<decay_t<F>>(move(f))) {}
+
+    function(const function &o) : c_(o.c_ ? o.c_->clone() : nullptr) {}
+    function(function &&o) noexcept : c_(o.c_) { o.c_ = nullptr; }
+
+    ~function() { delete c_; }
+
+    function &operator=(const function &o) {
+        if (this != &o) { delete c_; c_ = o.c_ ? o.c_->clone() : nullptr; }
+        return *this;
+    }
+    function &operator=(function &&o) noexcept {
+        if (this != &o) { delete c_; c_ = o.c_; o.c_ = nullptr; }
+        return *this;
+    }
+    function &operator=(nullptr_t) noexcept { delete c_; c_ = nullptr; return *this; }
+
+    template <typename F,
+              typename = enable_if_t<!is_same<decay_t<F>, function>::value>>
+    function &operator=(F f) {
+        delete c_;
+        c_ = new callable<decay_t<F>>(move(f));
+        return *this;
+    }
+
+    void swap(function &o) noexcept { std::swap(c_, o.c_); }
+
+    explicit operator bool() const noexcept { return c_ != nullptr; }
+
+    R operator()(Args... a) const {
+        if (!c_) __builtin_trap();
+        return c_->invoke(static_cast<Args>(a)...);
+    }
+};
+
+template <typename R, typename... Args>
+bool operator==(const function<R(Args...)> &f, nullptr_t) noexcept { return !f; }
+template <typename R, typename... Args>
+bool operator!=(const function<R(Args...)> &f, nullptr_t) noexcept { return (bool)f; }
+
+} /* namespace std */
+
+#endif
