@@ -180,6 +180,59 @@ typename detail::unique_if<T>::unbounded make_unique(size_t n) {
     return unique_ptr<T>(new typename detail::unique_if<T>::elem[n]());
 }
 
+/* --- uninitialized memory algorithms ------------------------------------- */
+template <typename T, typename... Args>
+T *construct_at(T *p, Args &&...args) {
+    return ::new (static_cast<void *>(p)) T(forward<Args>(args)...);
+}
+
+template <typename T>
+void destroy_at(T *p) { p->~T(); }
+
+template <typename It>
+void destroy(It first, It last) { for (; first != last; ++first) destroy_at(addressof(*first)); }
+
+template <typename It, typename Size>
+It destroy_n(It first, Size n) { for (; n > 0; --n, ++first) destroy_at(addressof(*first)); return first; }
+
+template <typename In, typename Out>
+Out uninitialized_copy(In first, In last, Out d) {
+    using T = remove_reference_t<decltype(*d)>;
+    for (; first != last; ++first, ++d) ::new (static_cast<void *>(addressof(*d))) T(*first);
+    return d;
+}
+template <typename In, typename Size, typename Out>
+Out uninitialized_copy_n(In first, Size n, Out d) {
+    using T = remove_reference_t<decltype(*d)>;
+    for (; n > 0; --n, ++first, ++d) ::new (static_cast<void *>(addressof(*d))) T(*first);
+    return d;
+}
+
+template <typename In, typename Out>
+Out uninitialized_move(In first, In last, Out d) {
+    using T = remove_reference_t<decltype(*d)>;
+    for (; first != last; ++first, ++d) ::new (static_cast<void *>(addressof(*d))) T(move(*first));
+    return d;
+}
+template <typename In, typename Size, typename Out>
+Out uninitialized_move_n(In first, Size n, Out d) {
+    using T = remove_reference_t<decltype(*d)>;
+    for (; n > 0; --n, ++first, ++d) ::new (static_cast<void *>(addressof(*d))) T(move(*first));
+    return d;
+}
+
+template <typename Out, typename T>
+void uninitialized_fill(Out first, Out last, const T &val) {
+    using E = remove_reference_t<decltype(*first)>;
+    for (; first != last; ++first) ::new (static_cast<void *>(addressof(*first))) E(val);
+}
+template <typename Out, typename Size, typename T>
+Out uninitialized_fill_n(Out first, Size n, const T &val) {
+    using E = remove_reference_t<decltype(*first)>;
+    for (; n > 0; --n, ++first) ::new (static_cast<void *>(addressof(*first))) E(val);
+    return first;
+}
+
 } /* namespace std */
 
 #endif

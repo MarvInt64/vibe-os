@@ -32,6 +32,33 @@ template <typename T = void> struct minus {
     constexpr T operator()(const T &a, const T &b) const { return a - b; }
 };
 
+/* transparent (void) specialisations — heterogeneous, deduce argument types */
+template <> struct less<void> {
+    using is_transparent = void;
+    template <typename A, typename B>
+    constexpr auto operator()(A &&a, B &&b) const -> decltype((A &&)a < (B &&)b) { return (A &&)a < (B &&)b; }
+};
+template <> struct greater<void> {
+    using is_transparent = void;
+    template <typename A, typename B>
+    constexpr auto operator()(A &&a, B &&b) const -> decltype((A &&)a > (B &&)b) { return (A &&)a > (B &&)b; }
+};
+template <> struct equal_to<void> {
+    using is_transparent = void;
+    template <typename A, typename B>
+    constexpr auto operator()(A &&a, B &&b) const -> decltype((A &&)a == (B &&)b) { return (A &&)a == (B &&)b; }
+};
+template <> struct plus<void> {
+    using is_transparent = void;
+    template <typename A, typename B>
+    constexpr auto operator()(A &&a, B &&b) const -> decltype((A &&)a + (B &&)b) { return (A &&)a + (B &&)b; }
+};
+template <> struct minus<void> {
+    using is_transparent = void;
+    template <typename A, typename B>
+    constexpr auto operator()(A &&a, B &&b) const -> decltype((A &&)a - (B &&)b) { return (A &&)a - (B &&)b; }
+};
+
 /* --- hash (primitive types + pointers) ----------------------------------- */
 template <typename T> struct hash;
 

@@ -111,6 +111,20 @@ constexpr tuple<Ts &&...> forward_as_tuple(Ts &&...args) noexcept {
     return tuple<Ts &&...>(forward<Ts>(args)...);
 }
 
+/* --- apply --------------------------------------------------------------- */
+namespace detail {
+template <typename F, typename Tup, size_t... I>
+constexpr decltype(auto) apply_impl(F &&f, Tup &&t, index_sequence<I...>) {
+    return forward<F>(f)(get<I>(forward<Tup>(t))...);
+}
+}
+template <typename F, typename Tup>
+constexpr decltype(auto) apply(F &&f, Tup &&t) {
+    return detail::apply_impl(
+        forward<F>(f), forward<Tup>(t),
+        make_index_sequence<tuple_size<remove_reference_t<Tup>>::value>{});
+}
+
 /* --- comparisons --------------------------------------------------------- */
 inline constexpr bool operator==(const tuple<> &, const tuple<> &) { return true; }
 

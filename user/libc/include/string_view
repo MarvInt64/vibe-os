@@ -1,0 +1,111 @@
+#ifndef VIBEOS_STRING_VIEW
+#define VIBEOS_STRING_VIEW
+
+/* Freestanding std::string_view subset for VibeOS userspace: a non-owning view
+ * over a char range, plus a minimal char_traits<char>.  No exceptions:
+ * at()/substr trap on out-of-range. */
+
+#include <cstddef>
+#include <string.h>   /* strlen, memcmp, memchr */
+
+namespace std {
+
+template <typename CharT>
+struct char_traits;
+
+template <>
+struct char_traits<char> {
+    using char_type = char;
+    using int_type  = int;
+
+    static size_t length(const char *s) { return strlen(s); }
+    static int    compare(const char *a, const char *b, size_t n) { return memcmp(a, b, n); }
+    static const char *find(const char *s, size_t n, char c) {
+        return (const char *)memchr(s, (unsigned char)c, n);
+    }
+    static bool eq(char a, char b) { return a == b; }
+    static bool lt(char a, char b) { return (unsigned char)a < (unsigned char)b; }
+    static void assign(char &a, char b) { a = b; }
+    static char *assign(char *s, size_t n, char c) {
+        for (size_t i = 0; i < n; ++i) s[i] = c; return s;
+    }
+    static char to_char_type(int_type c) { return (char)c; }
+    static int_type to_int_type(char c) { return (unsigned char)c; }
+    static int_type eof() { return -1; }
+};
+
+template <typename CharT, typename Traits = char_traits<CharT>>
+class basic_string_view {
+public:
+    using value_type     = CharT;
+    using size_type      = size_t;
+    using const_pointer  = const CharT *;
+    using const_reference= const CharT &;
+    using const_iterator = const CharT *;
+    using iterator       = const CharT *;
+
+    static constexpr size_type npos = (size_type)-1;
+
+    constexpr basic_string_view() noexcept : data_(nullptr), size_(0) {}
+    constexpr basic_string_view(const CharT *s, size_type n) : data_(s), size_(n) {}
+    basic_string_view(const CharT *s) : data_(s), size_(Traits::length(s)) {}
+
+    basic_string_view(const basic_string_view &) noexcept = default;
+    basic_string_view &operator=(const basic_string_view &) noexcept = default;
+
+    constexpr const_iterator begin() const noexcept { return data_; }
+    constexpr const_iterator end()   const noexcept { return data_ + size_; }
+    constexpr const_iterator cbegin() const noexcept { return data_; }
+    constexpr const_iterator cend()   const noexcept { return data_ + size_; }
+
+    constexpr size_type size()   const noexcept { return size_; }
+    constexpr size_type length() const noexcept { return size_; }
+    constexpr bool      empty()  const noexcept { return size_ == 0; }
+
+    constexpr const CharT *data() const noexcept { return data_; }
+    constexpr const_reference operator[](size_type i) const { return data_[i]; }
+    const_reference at(size_type i) const { if (i >= size_) __builtin_trap(); return data_[i]; }
+    constexpr const_reference front() const { return data_[0]; }
+    constexpr const_reference back()  const { return data_[size_ - 1]; }
+
+    void remove_prefix(size_type n) { data_ += n; size_ -= n; }
+    void remove_suffix(size_type n) { size_ -= n; }
+
+    basic_string_view substr(size_type pos = 0, size_type n = npos) const {
+        if (pos > size_) __builtin_trap();
+        size_type avail = size_ - pos;
+        if (n > avail) n = avail;
+        return basic_string_view(data_ + pos, n);
+    }
+
+    int compare(basic_string_view o) const {
+        size_type m = size_ < o.size_ ? size_ : o.size_;
+        int r = Traits::compare(data_, o.data_, m);
+        if (r) return r;
+        return size_ < o.size_ ? -1 : (size_ > o.size_ ? 1 : 0);
+    }
+
+    size_type find(CharT c, size_type pos = 0) const {
+        for (size_type i = pos; i < size_; ++i) if (data_[i] == c) return i;
+        return npos;
+    }
+
+private:
+    const CharT *data_;
+    size_type    size_;
+};
+
+template <typename C, typename T>
+bool operator==(basic_string_view<C, T> a, basic_string_view<C, T> b) {
+    return a.size() == b.size() && a.compare(b) == 0;
+}
+template <typename C, typename T>
+bool operator!=(basic_string_view<C, T> a, basic_string_view<C, T> b) { return !(a == b); }
+template <typename C, typename T>
+bool operator<(basic_string_view<C, T> a, basic_string_view<C, T> b) { return a.compare(b) < 0; }
+
+using string_view = basic_string_view<char>;
+
+} /* namespace std */
+
+#endif

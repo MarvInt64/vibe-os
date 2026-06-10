@@ -1,0 +1,5 @@
+#ifndef VIBEOS_CLIMITS
+#define VIBEOS_CLIMITS
+/* C++ <climits> — the integer limit macros. */
+#include <limits.h>
+#endif

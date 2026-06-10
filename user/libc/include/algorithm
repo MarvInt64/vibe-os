@@ -245,6 +245,59 @@ Out transform(In first, In last, Out d, F f) {
     return d;
 }
 
+/* --- move_backward / copy_backward --------------------------------------- */
+template <typename Bi1, typename Bi2>
+Bi2 move_backward(Bi1 first, Bi1 last, Bi2 d_last) {
+    while (first != last) *--d_last = std::move(*--last);
+    return d_last;
+}
+template <typename Bi1, typename Bi2>
+Bi2 copy_backward(Bi1 first, Bi1 last, Bi2 d_last) {
+    while (first != last) *--d_last = *--last;
+    return d_last;
+}
+
+/* --- swap_ranges --------------------------------------------------------- */
+template <typename It1, typename It2>
+It2 swap_ranges(It1 first, It1 last, It2 d) {
+    for (; first != last; ++first, ++d) { auto t = std::move(*first); *first = std::move(*d); *d = std::move(t); }
+    return d;
+}
+
+/* --- min_element / max_element ------------------------------------------- */
+template <typename It>
+It min_element(It first, It last) {
+    if (first == last) return last;
+    It best = first;
+    for (++first; first != last; ++first) if (*first < *best) best = first;
+    return best;
+}
+template <typename It>
+It max_element(It first, It last) {
+    if (first == last) return last;
+    It best = first;
+    for (++first; first != last; ++first) if (*best < *first) best = first;
+    return best;
+}
+
+/* --- lexicographical_compare --------------------------------------------- */
+template <typename It1, typename It2>
+bool lexicographical_compare(It1 f1, It1 l1, It2 f2, It2 l2) {
+    for (; f1 != l1 && f2 != l2; ++f1, ++f2) {
+        if (*f1 < *f2) return true;
+        if (*f2 < *f1) return false;
+    }
+    return (f1 == l1) && (f2 != l2);
+}
+template <typename It1, typename It2, typename Comp>
+bool lexicographical_compare(It1 f1, It1 l1, It2 f2, It2 l2, Comp comp) {
+    for (; f1 != l1 && f2 != l2; ++f1, ++f2) {
+        if (comp(*f1, *f2)) return true;
+        if (comp(*f2, *f1)) return false;
+    }
+    return (f1 == l1) && (f2 != l2);
+}
+
 } /* namespace std */
 
 #endif
