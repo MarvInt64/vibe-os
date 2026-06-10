@@ -11,6 +11,14 @@ It boots bare-metal on **x86_64** (GRUB/Multiboot2) and **arm64** (QEMU virt, HV
 
 **Prerequisites:** `llvm` + `qemu` (macOS: `brew install llvm qemu`)
 
+### arm64 (Apple Silicon — default)
+
+```sh
+make kernel-arm64 && make disk && make arm64-user && make run-arm64
+```
+
+At the `arm64:/$` prompt type `gui` to start the desktop, then click **Browser** on the dock.
+
 ### x86_64
 
 ```sh
@@ -18,14 +26,6 @@ make all && make disk && make apps && make run
 ```
 
 The desktop starts automatically. Click **TERM** on the dock, type `browser` and enter `spiegel.de`.
-
-### arm64 (Apple Silicon)
-
-```sh
-make kernel-arm64 && make disk && make arm64-user && make run-arm64
-```
-
-At the `arm64:/$` prompt type `gui` to start the desktop, then click **Browser** on the dock.
 
 ---
 
@@ -104,6 +104,49 @@ sudo pacman -S clang lld llvm qemu grub xorriso python
 
 ## Building
 
+### arm64 (Apple Silicon / macOS with HVF — default)
+
+```sh
+# 1. Build the arm64 kernel
+make kernel-arm64
+
+# 2. Create the persistent disk image (shared with x86)
+make disk
+
+# 3. Build and install arm64 userspace apps
+make arm64-user
+
+# 4. Boot in QEMU with HVF acceleration
+make run-arm64
+```
+
+**All-in-one first build:**
+
+```sh
+make kernel-arm64 && make disk && make arm64-user && make run-arm64
+```
+
+Or start QEMU directly:
+
+```sh
+qemu-system-aarch64 \
+  -machine virt,gic-version=2 -cpu host -accel hvf \
+  -m 512M -smp 4 \
+  -kernel build/vibeos-arm64.elf \
+  -drive file=vibeos-disk.img,if=none,id=hd0,format=raw \
+  -device virtio-blk-device,drive=hd0 \
+  -netdev user,id=net0 -device virtio-net-device,netdev=net0 \
+  -device ramfb -device virtio-tablet-device -device virtio-keyboard-device \
+  -serial stdio -no-reboot
+```
+
+> **Note:** On arm64 the desktop does NOT start automatically. Type `gui` at the
+> `arm64:/$` prompt to launch the compositor. The scheduler is purely cooperative
+> under HVF (no timer interrupts) — apps yield cooperatively via `SYS_YIELD` and
+> `SYS_TIMER_SLEEP`.
+
+On subsequent builds, `make run-arm64` is enough — it rebuilds whatever changed.
+
 ### x86_64
 
 ```sh
@@ -126,43 +169,6 @@ make run
 make all && make disk && make apps && make run
 ```
 
-### arm64 (Apple Silicon / macOS with HVF)
-
-```sh
-# 1. Build the arm64 kernel
-make kernel-arm64
-
-# 2. Create the persistent disk image (shared with x86)
-make disk
-
-# 3. Build and install arm64 userspace apps
-make arm64-user
-
-# 4. Boot in QEMU with HVF acceleration
-make run-arm64
-```
-
-Or start QEMU directly:
-
-```sh
-qemu-system-aarch64 \
-  -machine virt,gic-version=2 -cpu host -accel hvf \
-  -m 512M -smp 4 \
-  -kernel build/vibeos-arm64.elf \
-  -drive file=vibeos-disk.img,if=none,id=hd0,format=raw \
-  -device virtio-blk-device,drive=hd0 \
-  -netdev user,id=net0 -device virtio-net-device,netdev=net0 \
-  -device ramfb -device virtio-tablet-device -device virtio-keyboard-device \
-  -serial stdio -no-reboot
-```
-
-> **Note:** On arm64 the desktop does NOT start automatically. Type `gui` at the
-> `arm64:/$` prompt to launch the compositor. The scheduler is purely cooperative
-> under HVF (no timer interrupts) — apps yield cooperatively via `SYS_YIELD` and
-> `SYS_TIMER_SLEEP`.
-
-On subsequent builds, `make run` is enough — it rebuilds whatever changed.
-
 ### Individual targets
 
 | Command | Description |
@@ -183,19 +189,7 @@ On subsequent builds, `make run` is enough — it rebuilds whatever changed.
 
 ## Running
 
-### x86_64
-
-QEMU launches with:
-- **512 MB RAM**, `vga std` framebuffer
-- **4 CPU cores** by default (`-smp 4`); override per run, e.g. `make run-serial QEMU_SMP="-smp 2"` or `QEMU_SMP=` for a single core
-- **TCG** on macOS, **KVM → TCG** on Linux; `-cpu max` (exposes RDRAND for the TLS entropy source)
-- **Intel e1000** NIC with SLIRP user networking (guest IP `10.0.2.15`, DNS at `10.0.2.3`)
-- **AC97** audio device
-- Persistent **IDE disk** backed by `vibeos-disk.img`
-
-The desktop starts automatically. Click the **TERM** icon on the taskbar to open a terminal.
-
-### arm64 (macOS / Apple Silicon)
+### arm64 (macOS / Apple Silicon — default)
 
 QEMU launches with:
 - **512 MB RAM**, `ramfb` framebuffer
@@ -209,6 +203,18 @@ Type `gui` at the `arm64:/$` prompt to start the graphical desktop.
 The scheduler is **purely cooperative** under HVF (no GIC timer interrupts).
 Network operations use an inline compositor pump to keep the desktop responsive
 during DNS/TCP/TLS waits.
+
+### x86_64
+
+QEMU launches with:
+- **512 MB RAM**, `vga std` framebuffer
+- **4 CPU cores** by default (`-smp 4`); override per run, e.g. `make run-serial QEMU_SMP="-smp 2"` or `QEMU_SMP=` for a single core
+- **TCG** on macOS, **KVM → TCG** on Linux; `-cpu max` (exposes RDRAND for the TLS entropy source)
+- **Intel e1000** NIC with SLIRP user networking (guest IP `10.0.2.15`, DNS at `10.0.2.3`)
+- **AC97** audio device
+- Persistent **IDE disk** backed by `vibeos-disk.img`
+
+The desktop starts automatically. Click the **TERM** icon on the taskbar to open a terminal.
 
 ### Shell commands
 
