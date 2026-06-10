@@ -189,6 +189,15 @@ public:
         return data_ + idx;
     }
 
+    iterator insert(const_iterator pos, T &&v) {
+        size_type idx = (size_type)(pos - data_);
+        if (size_ == cap_) grow_to(size_ + 1);
+        shift_right(idx, 1);
+        ::new (data_ + idx) T(move(v));
+        ++size_;
+        return data_ + idx;
+    }
+
     iterator erase(const_iterator pos) {
         size_type idx = (size_type)(pos - data_);
         data_[idx].~T();

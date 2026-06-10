@@ -110,7 +110,7 @@ $(BEARSSL_LIB): $(BEARSSL_OBJS)
 
 bearssl: $(BEARSSL_LIB)
 
-.PHONY: all kernel iso run run-debug run-serial run-arm64 clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src tcc-vexui seed-headers arm64-tcc test-stl-arm64
+.PHONY: all kernel iso run run-debug run-serial run-arm64 clean user disk newdisk verify-disk fsck-disk apps libc bearssl bump-version tcc tcc-src tcc-vexui seed-headers arm64-tcc test-stl-arm64 test-json-arm64
 
 # ============================================================
 # arm64 build — targeting QEMU virt machine.
@@ -929,6 +929,18 @@ test-stl-arm64: arm64-user
 	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/test_stl.o $(ARM64_UDIR)/libc.a
 	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/test_stl.elf /bin/test_stl
 	@echo "Installed /bin/test_stl — run it at the arm64:/\$$ prompt."
+
+# ---- test-json-arm64: STL scaling test (recursive JSON parser/serializer) ---
+# Stresses <vector>/<string>/<map>/<memory>/<functional> under real load: deep
+# recursion, many allocations, move-only values in containers. Run
+# `/bin/test_json` at the arm64:/$ prompt.
+test-json-arm64: arm64-user
+	clang++ $(ARM64_UCFLAGS) -std=c++20 -fno-exceptions -fno-rtti \
+	    -c user/tests/test_json.cpp -o $(ARM64_UDIR)/test_json.o
+	$(LLVM_LLD) -nostdlib -static -T user/arm64/link.ld -o $(ARM64_UDIR)/test_json.elf \
+	    $(ARM64_UDIR)/crt0.o $(ARM64_UDIR)/test_json.o $(ARM64_UDIR)/libc.a
+	python3 scripts/ext2_put.py $(DISK_IMG) $(ARM64_UDIR)/test_json.elf /bin/test_json
+	@echo "Installed /bin/test_json — run it at the arm64:/\$$ prompt."
 
 # Create a blank persistent disk image if it does not exist yet. No external
 # tools needed — the kernel formats it as ext2 on first boot.
