@@ -1,0 +1,18 @@
+#ifndef VIBEOS_UNORDERED_MAP
+#define VIBEOS_UNORDERED_MAP
+
+#include <functional>
+#include <map>
+
+namespace std {
+
+template <typename Key, typename T, typename Hash = hash<Key>, typename KeyEqual = equal_to<Key>>
+class unordered_map : public map<Key, T> {
+public:
+    using map<Key, T>::map;
+    void reserve(size_t) {}
+};
+
+} /* namespace std */
+
+#endif

@@ -20,6 +20,11 @@ T *addressof(T &arg) noexcept {
 template <typename T>
 const T *addressof(const T &&) = delete;
 
+template <typename T>
+constexpr T *launder(T *p) noexcept {
+    return __builtin_launder(p);
+}
+
 /* --- shared_ptr (small reference-counted subset) ------------------------- */
 template <typename T>
 class shared_ptr {

@@ -1,0 +1,29 @@
+#ifndef VIBEOS_STACK
+#define VIBEOS_STACK
+
+#include <deque>
+
+namespace std {
+
+template <typename T, typename Container = deque<T>>
+class stack {
+public:
+    using value_type = T;
+    using size_type = typename Container::size_type;
+
+    bool empty() const { return c.empty(); }
+    size_type size() const { return c.size(); }
+    value_type &top() { return c.back(); }
+    const value_type &top() const { return c.back(); }
+    void push(const value_type &v) { c.push_back(v); }
+    void push(value_type &&v) { c.push_back(move(v)); }
+    template <typename... Args> void emplace(Args &&...args) { c.emplace_back(forward<Args>(args)...); }
+    void pop() { c.pop_back(); }
+
+private:
+    Container c;
+};
+
+} /* namespace std */
+
+#endif

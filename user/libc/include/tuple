@@ -33,11 +33,17 @@ public:
 
     template <typename UH, typename... UT,
               typename = enable_if_t<sizeof...(UT) == sizeof...(Tail)>>
-    constexpr explicit tuple(UH &&h, UT &&...t)
+    constexpr tuple(UH &&h, UT &&...t)
         : head_(forward<UH>(h)), tail_(forward<UT>(t)...) {}
 
     tuple(const tuple &) = default;
     tuple(tuple &&)      = default;
+    template <typename UH, typename... UT>
+    constexpr tuple(const tuple<UH, UT...> &o)
+        : head_(o.head_), tail_(o.tail_) {}
+    template <typename UH, typename... UT>
+    constexpr tuple(tuple<UH, UT...> &&o)
+        : head_(forward<UH>(o.head_)), tail_(forward<tuple<UT...>>(o.tail_)) {}
     tuple &operator=(const tuple &) = default;
     tuple &operator=(tuple &&)      = default;
 

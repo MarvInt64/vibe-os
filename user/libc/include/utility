@@ -5,6 +5,31 @@
 
 namespace std {
 
+template <typename...> class tuple;
+
+struct piecewise_construct_t { explicit piecewise_construct_t() = default; };
+inline constexpr piecewise_construct_t piecewise_construct{};
+
+/* --- integer_sequence ---------------------------------------------------- */
+template <typename T, T... Is>
+struct integer_sequence {
+    using value_type = T;
+    static constexpr size_t size() noexcept { return sizeof...(Is); }
+};
+
+template <size_t... Is>
+using index_sequence = integer_sequence<size_t, Is...>;
+
+/* clang built-in — avoids recursive partial specialisation issues */
+template <typename T, T N>
+using make_integer_sequence = __make_integer_seq<integer_sequence, T, N>;
+
+template <size_t N>
+using make_index_sequence = make_integer_sequence<size_t, N>;
+
+template <typename... Ts>
+using index_sequence_for = make_index_sequence<sizeof...(Ts)>;
+
 /* --- move ---------------------------------------------------------------- */
 template <typename T>
 constexpr remove_reference_t<T> &&move(T &&t) noexcept {
@@ -70,6 +95,11 @@ struct pair {
     constexpr pair(pair<U1, U2> &&o)
         : first(forward<U1>(o.first)), second(forward<U2>(o.second)) {}
 
+    template <typename... A1, typename... A2>
+    constexpr pair(piecewise_construct_t, tuple<A1...> first_args, tuple<A2...> second_args)
+        : pair(piecewise_construct, move(first_args), move(second_args),
+               index_sequence_for<A1...>{}, index_sequence_for<A2...>{}) {}
+
     pair &operator=(const pair &) = default;
     pair &operator=(pair &&)      = default;
 
@@ -77,6 +107,13 @@ struct pair {
         std::swap(first,  o.first);
         std::swap(second, o.second);
     }
+
+private:
+    template <typename... A1, typename... A2, size_t... I1, size_t... I2>
+    constexpr pair(piecewise_construct_t, tuple<A1...> first_args, tuple<A2...> second_args,
+                   index_sequence<I1...>, index_sequence<I2...>)
+        : first(get<I1>(first_args)...),
+          second(get<I2>(second_args)...) {}
 };
 
 template <typename T1, typename T2>
@@ -92,26 +129,6 @@ template <typename T1, typename T2>
 constexpr bool operator!=(const pair<T1,T2> &a, const pair<T1,T2> &b) {
     return !(a == b);
 }
-
-/* --- integer_sequence ---------------------------------------------------- */
-template <typename T, T... Is>
-struct integer_sequence {
-    using value_type = T;
-    static constexpr size_t size() noexcept { return sizeof...(Is); }
-};
-
-template <size_t... Is>
-using index_sequence = integer_sequence<size_t, Is...>;
-
-/* clang built-in — avoids recursive partial specialisation issues */
-template <typename T, T N>
-using make_integer_sequence = __make_integer_seq<integer_sequence, T, N>;
-
-template <size_t N>
-using make_index_sequence = make_integer_sequence<size_t, N>;
-
-template <typename... Ts>
-using index_sequence_for = make_index_sequence<sizeof...(Ts)>;
 
 } /* namespace std */
 

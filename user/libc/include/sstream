@@ -1,0 +1,43 @@
+#ifndef VIBEOS_SSTREAM
+#define VIBEOS_SSTREAM
+
+#include <ostream>
+#include <string>
+
+namespace std {
+
+struct _fixed {};
+inline _fixed fixed;
+
+struct _setprecision { int n; };
+inline _setprecision setprecision(int n) { return {n}; }
+
+class stringstream : public ostream {
+public:
+    stringstream() = default;
+
+    stringstream &operator<<(const char *s) { buf_ += s; return *this; }
+    stringstream &operator<<(char c) { buf_ += c; return *this; }
+    stringstream &operator<<(const string &s) { buf_ += s; return *this; }
+    stringstream &operator<<(int v) { buf_ += to_string(v); return *this; }
+    stringstream &operator<<(unsigned v) { buf_ += to_string(v); return *this; }
+    stringstream &operator<<(long v) { buf_ += to_string(v); return *this; }
+    stringstream &operator<<(unsigned long v) { buf_ += to_string(v); return *this; }
+    stringstream &operator<<(long long v) { buf_ += to_string(v); return *this; }
+    stringstream &operator<<(unsigned long long v) { buf_ += to_string(v); return *this; }
+    stringstream &operator<<(float) { buf_ += "0"; return *this; }
+    stringstream &operator<<(double) { buf_ += "0"; return *this; }
+    stringstream &operator<<(_fixed) { return *this; }
+    stringstream &operator<<(_setprecision) { return *this; }
+
+    string str() const { return buf_; }
+
+private:
+    string buf_;
+};
+
+using ostringstream = stringstream;
+
+} /* namespace std */
+
+#endif

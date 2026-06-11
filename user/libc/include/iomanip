@@ -1,0 +1,9 @@
+#ifndef VIBEOS_IOMANIP
+#define VIBEOS_IOMANIP
+
+namespace std {
+struct _setw { int n; };
+inline _setw setw(int n) { return {n}; }
+} /* namespace std */
+
+#endif

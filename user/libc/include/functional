@@ -41,6 +41,18 @@ reference_wrapper<T> ref(T &t) noexcept { return reference_wrapper<T>(t); }
 template <typename T>
 reference_wrapper<const T> cref(const T &t) noexcept { return reference_wrapper<const T>(t); }
 
+template <typename F, typename... Args>
+decltype(auto) invoke(F &&f, Args &&...args) {
+    return forward<F>(f)(forward<Args>(args)...);
+}
+
+template <typename F, typename... Bound>
+auto bind(F &&f, Bound &&...bound) {
+    return [fn = forward<F>(f), ... args = forward<Bound>(bound)]() mutable -> decltype(auto) {
+        return fn(args...);
+    };
+}
+
 /* --- function objects ---------------------------------------------------- */
 template <typename T = void> struct less {
     constexpr bool operator()(const T &a, const T &b) const { return a < b; }

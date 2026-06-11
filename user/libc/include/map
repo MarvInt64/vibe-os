@@ -97,6 +97,16 @@ public:
         return { data_.begin() + lo, true };
     }
 
+    template <typename K, typename... Args>
+    pair<iterator, bool> try_emplace(K &&k, Args &&...args) {
+        size_type lo = lower(k);
+        if (lo < data_.size() && key_eq(data_[lo].first, k))
+            return { data_.begin() + lo, false };
+        data_.insert(data_.begin() + lo,
+                     value_type(forward<K>(k), T(forward<Args>(args)...)));
+        return { data_.begin() + lo, true };
+    }
+
     size_type erase(const Key &k) {
         size_type lo = lower(k);
         if (lo < data_.size() && key_eq(data_[lo].first, k)) {
@@ -130,6 +140,12 @@ private:
 
     vector<value_type> data_;
     Compare            comp_{};
+};
+
+template <typename Key, typename T, typename Compare = less<Key>>
+class multimap : public map<Key, T, Compare> {
+public:
+    using map<Key, T, Compare>::map;
 };
 
 } /* namespace std */

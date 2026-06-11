@@ -1,0 +1,23 @@
+#ifndef VIBEOS_OSTREAM
+#define VIBEOS_OSTREAM
+
+#include <string>
+
+namespace std {
+
+class ostream {
+public:
+    ostream &operator<<(const char *) { return *this; }
+    ostream &operator<<(char) { return *this; }
+    ostream &operator<<(int) { return *this; }
+    ostream &operator<<(unsigned) { return *this; }
+    ostream &operator<<(long) { return *this; }
+    ostream &operator<<(unsigned long) { return *this; }
+    ostream &operator<<(long long) { return *this; }
+    ostream &operator<<(unsigned long long) { return *this; }
+    ostream &operator<<(double) { return *this; }
+};
+
+} /* namespace std */
+
+#endif

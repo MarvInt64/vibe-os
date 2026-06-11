@@ -15,11 +15,17 @@
 
 #include <utility>
 
+typedef long pthread_t;
+
 extern "C" int  vos_thread_create(void (*fn)(void *), void *arg, int stack_size);
 extern "C" int  vos_thread_join(int tid);
 extern "C" void vos_yield(void);
 
 namespace std {
+
+[[noreturn]] inline void terminate() noexcept {
+    __builtin_trap();
+}
 
 class thread {
 public:
@@ -55,6 +61,7 @@ public:
 
     bool joinable() const noexcept { return tid_ > 0; }
     id   get_id()   const noexcept { return tid_; }
+    static unsigned hardware_concurrency() noexcept { return 1; }
 
     void join() {
         if (tid_ > 0) { vos_thread_join(tid_); tid_ = 0; }
@@ -73,6 +80,7 @@ private:
 };
 
 namespace this_thread {
+    inline thread::id get_id() noexcept { return 0; }
     inline void yield() noexcept { vos_yield(); }
 }
 

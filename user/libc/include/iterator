@@ -52,7 +52,7 @@ struct iterator_traits<T *> {
 template <typename It>
 typename iterator_traits<It>::difference_type distance(It first, It last) {
     using cat = typename iterator_traits<It>::iterator_category;
-    if (is_base_of<random_access_iterator_tag, cat>::value) {
+    if constexpr (is_base_of<random_access_iterator_tag, cat>::value) {
         return last - first;
     } else {
         typename iterator_traits<It>::difference_type n = 0;
@@ -64,12 +64,13 @@ typename iterator_traits<It>::difference_type distance(It first, It last) {
 template <typename It, typename Distance>
 void advance(It &it, Distance n) {
     using cat = typename iterator_traits<It>::iterator_category;
-    if (is_base_of<random_access_iterator_tag, cat>::value) {
+    if constexpr (is_base_of<random_access_iterator_tag, cat>::value) {
         it += (typename iterator_traits<It>::difference_type)n;
-    } else if (n >= 0) {
-        while (n--) ++it;
+    } else if constexpr (is_base_of<bidirectional_iterator_tag, cat>::value) {
+        if (n >= 0) while (n--) ++it;
+        else while (n++) --it;
     } else {
-        while (n++) --it;
+        while (n-- > 0) ++it;
     }
 }
 
@@ -160,6 +161,8 @@ template <typename It1, typename It2>
 constexpr bool operator==(const move_iterator<It1> &a, const move_iterator<It2> &b) { return a.base() == b.base(); }
 template <typename It1, typename It2>
 constexpr bool operator!=(const move_iterator<It1> &a, const move_iterator<It2> &b) { return a.base() != b.base(); }
+template <typename It1, typename It2>
+constexpr auto operator-(const move_iterator<It1> &a, const move_iterator<It2> &b) -> decltype(a.base() - b.base()) { return a.base() - b.base(); }
 
 template <typename It>
 constexpr move_iterator<It> make_move_iterator(It i) { return move_iterator<It>(i); }

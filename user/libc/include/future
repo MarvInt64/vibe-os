@@ -1,0 +1,73 @@
+#ifndef VIBEOS_FUTURE
+#define VIBEOS_FUTURE
+
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+enum class launch { async = 1, deferred = 2 };
+
+template <typename T> class shared_future;
+
+template <typename T>
+class future {
+public:
+    future() : ready_(false), value_() {}
+    explicit future(T v) : ready_(true), value_(move(v)) {}
+    void wait() const {}
+    T get() { return value_; }
+    shared_future<T> share() { return shared_future<T>(value_); }
+private:
+    bool ready_;
+    T value_;
+};
+
+template <>
+class future<void> {
+public:
+    future() = default;
+    void wait() const {}
+    void get() {}
+    shared_future<void> share();
+};
+
+template <typename T>
+class shared_future {
+public:
+    shared_future() : value_() {}
+    explicit shared_future(T v) : value_(move(v)) {}
+    void wait() const {}
+    T get() const { return value_; }
+private:
+    T value_;
+};
+
+template <>
+class shared_future<void> {
+public:
+    void wait() const {}
+    void get() const {}
+};
+
+inline shared_future<void> future<void>::share() { return shared_future<void>(); }
+
+template <typename F>
+auto async(launch, F &&f) -> future<decltype(f())> {
+    using R = decltype(f());
+    if constexpr (is_void<R>::value) {
+        f();
+        return future<void>();
+    } else {
+        return future<R>(f());
+    }
+}
+
+template <typename F>
+auto async(F &&f) -> future<decltype(f())> {
+    return async(launch::deferred, forward<F>(f));
+}
+
+} /* namespace std */
+
+#endif

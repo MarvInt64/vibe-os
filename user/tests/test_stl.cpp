@@ -18,6 +18,14 @@
 #include <chrono>
 #include <system_error>
 #include <variant>
+#include <bitset>
+#include <unordered_map>
+#include <unordered_set>
+#include <mutex>
+#include <deque>
+#include <stack>
+#include <future>
+#include <sstream>
 #include <stdio.h>
 
 static int g_fail = 0;
@@ -268,6 +276,45 @@ int main(void) {
         else return 0;
     }, vv);
     CHECK(vlen == 7);
+
+    std::vector<int> ev = { 1, 2, 3, 4 };
+    ev.erase(ev.begin() + 1, ev.begin() + 3);
+    CHECK(ev.size() == 2 && ev[0] == 1 && ev[1] == 4);
+    ev.assign(seq.begin(), seq.begin() + 2);
+    CHECK(ev.size() == 2 && ev[0] == 10 && ev[1] == 11);
+
+    std::bitset<10> bits;
+    bits.set(3).set(9);
+    CHECK(bits.count() == 2 && bits.test(9));
+
+    std::unordered_map<std::string, int> um;
+    um["x"] = 9;
+    CHECK(um["x"] == 9);
+    std::unordered_set<int> us = { 3, 1, 3 };
+    CHECK(us.count(3) == 1 && us.size() == 2);
+
+    std::once_flag once;
+    int once_value = 0;
+    std::call_once(once, [&] { once_value = 5; });
+    std::call_once(once, [&] { once_value = 7; });
+    CHECK(once_value == 5);
+
+    std::deque<int> dq;
+    dq.push_back(2);
+    dq.push_front(1);
+    CHECK(dq.front() == 1 && dq.back() == 2);
+    std::stack<int> st;
+    st.push(4);
+    st.push(8);
+    CHECK(st.top() == 8);
+    st.pop();
+    CHECK(st.top() == 4);
+
+    auto fut = std::async(std::launch::deferred, [] { return 12; });
+    CHECK(fut.share().get() == 12);
+    std::stringstream ss2;
+    ss2 << "n=" << 3;
+    CHECK(ss2.str() == "n=3");
 
     printf(g_fail == 0 ? "ALL OK\n" : "FAILURES: %d\n", g_fail);
     return g_fail;

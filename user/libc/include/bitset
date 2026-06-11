@@ -1,0 +1,98 @@
+#ifndef VIBEOS_BITSET
+#define VIBEOS_BITSET
+
+#include <cstddef>
+
+namespace std {
+
+template <size_t N>
+class bitset {
+public:
+    class reference {
+    public:
+        reference(bitset &b, size_t pos) : b_(b), pos_(pos) {}
+        reference &operator=(bool v) { b_.set(pos_, v); return *this; }
+        reference &operator=(const reference &r) { return *this = (bool)r; }
+        operator bool() const { return b_.test(pos_); }
+        bool operator~() const { return !b_.test(pos_); }
+    private:
+        bitset &b_;
+        size_t pos_;
+    };
+
+    constexpr bitset() : words_{} {}
+    constexpr bitset(unsigned long long v) : words_{} {
+        for (size_t i = 0; i < N && i < 64; ++i)
+            if (v & (1ull << i)) set(i);
+    }
+
+    bitset &set() {
+        for (size_t i = 0; i < words_count; ++i) words_[i] = ~0ull;
+        trim();
+        return *this;
+    }
+    bitset &set(size_t pos, bool value = true) {
+        if (value) words_[pos / 64] |= (1ull << (pos % 64));
+        else reset(pos);
+        return *this;
+    }
+    bitset &reset() {
+        for (size_t i = 0; i < words_count; ++i) words_[i] = 0;
+        return *this;
+    }
+    bitset &reset(size_t pos) {
+        words_[pos / 64] &= ~(1ull << (pos % 64));
+        return *this;
+    }
+    bitset &flip(size_t pos) {
+        words_[pos / 64] ^= (1ull << (pos % 64));
+        return *this;
+    }
+
+    bool test(size_t pos) const { return (words_[pos / 64] & (1ull << (pos % 64))) != 0; }
+    reference operator[](size_t pos) { return reference(*this, pos); }
+    bool operator[](size_t pos) const { return test(pos); }
+    bool any() const {
+        for (size_t i = 0; i < words_count; ++i) if (words_[i]) return true;
+        return false;
+    }
+    bool none() const { return !any(); }
+    size_t count() const {
+        size_t n = 0;
+        for (size_t i = 0; i < words_count; ++i) n += (size_t)__builtin_popcountll(words_[i]);
+        return n;
+    }
+    constexpr size_t size() const noexcept { return N; }
+
+    bitset &operator|=(const bitset &o) { for (size_t i = 0; i < words_count; ++i) words_[i] |= o.words_[i]; return *this; }
+    bitset &operator&=(const bitset &o) { for (size_t i = 0; i < words_count; ++i) words_[i] &= o.words_[i]; return *this; }
+    bitset &operator^=(const bitset &o) { for (size_t i = 0; i < words_count; ++i) words_[i] ^= o.words_[i]; return *this; }
+
+private:
+    static constexpr size_t words_count = N ? ((N + 63) / 64) : 1;
+    void trim() {
+        if constexpr (N % 64) words_[words_count - 1] &= ((1ull << (N % 64)) - 1);
+    }
+    unsigned long long words_[words_count];
+};
+
+template <size_t N>
+bool operator==(const bitset<N> &a, const bitset<N> &b) {
+    for (size_t i = 0; i < N; ++i) if (a[i] != b[i]) return false;
+    return true;
+}
+template <size_t N>
+bool operator!=(const bitset<N> &a, const bitset<N> &b) { return !(a == b); }
+template <size_t N>
+bitset<N> operator|(bitset<N> a, const bitset<N> &b) { a |= b; return a; }
+template <size_t N>
+bitset<N> operator&(bitset<N> a, const bitset<N> &b) { a &= b; return a; }
+template <size_t N>
+bitset<N> operator~(bitset<N> a) {
+    for (size_t i = 0; i < N; ++i) a.flip(i);
+    return a;
+}
+
+} /* namespace std */
+
+#endif

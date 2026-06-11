@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <utility>
 #include <functional>
+#include <iterator>
 #include <vector>
 #include <initializer_list>
 
@@ -20,8 +21,30 @@ public:
     using key_type       = Key;
     using value_type     = Key;
     using size_type      = size_t;
-    using iterator       = typename vector<Key>::const_iterator;
-    using const_iterator = typename vector<Key>::const_iterator;
+    class const_iterator {
+    public:
+        using difference_type = ptrdiff_t;
+        using value_type = Key;
+        using pointer = const Key *;
+        using reference = const Key &;
+        using iterator_category = random_access_iterator_tag;
+
+        const_iterator() : p_(nullptr) {}
+        explicit const_iterator(const Key *p) : p_(p) {}
+        reference operator*() const { return *p_; }
+        pointer operator->() const { return p_; }
+        const_iterator &operator++() { ++p_; return *this; }
+        const_iterator operator++(int) { const_iterator t = *this; ++p_; return t; }
+        const_iterator &operator--() { --p_; return *this; }
+        const_iterator operator+(difference_type n) const { return const_iterator(p_ + n); }
+        const_iterator operator-(difference_type n) const { return const_iterator(p_ - n); }
+        difference_type operator-(const const_iterator &o) const { return p_ - o.p_; }
+        bool operator==(const const_iterator &o) const { return p_ == o.p_; }
+        bool operator!=(const const_iterator &o) const { return p_ != o.p_; }
+    private:
+        const Key *p_;
+    };
+    using iterator = const_iterator;
 
     set() = default;
     set(const set &) = default;
@@ -33,10 +56,10 @@ public:
     template <typename It>
     set(It first, It last) { for (; first != last; ++first) insert(*first); }
 
-    const_iterator begin() const noexcept { return data_.begin(); }
-    const_iterator end()   const noexcept { return data_.end(); }
-    const_iterator cbegin() const noexcept { return data_.begin(); }
-    const_iterator cend()   const noexcept { return data_.end(); }
+    const_iterator begin() const noexcept { return const_iterator(data_.begin()); }
+    const_iterator end()   const noexcept { return const_iterator(data_.end()); }
+    const_iterator cbegin() const noexcept { return begin(); }
+    const_iterator cend()   const noexcept { return end(); }
 
     bool      empty() const noexcept { return data_.empty(); }
     size_type size() const noexcept  { return data_.size(); }
@@ -44,33 +67,41 @@ public:
 
     const_iterator find(const Key &k) const {
         size_type lo = lower(k);
-        if (lo < data_.size() && eq(data_[lo], k)) return data_.begin() + lo;
-        return data_.end();
+        if (lo < data_.size() && eq(data_[lo], k)) return const_iterator(data_.begin() + lo);
+        return end();
     }
     size_type count(const Key &k) const { return find(k) == end() ? 0 : 1; }
     bool contains(const Key &k) const { return find(k) != end(); }
 
-    const_iterator lower_bound(const Key &k) const { return data_.begin() + lower(k); }
+    const_iterator lower_bound(const Key &k) const { return const_iterator(data_.begin() + lower(k)); }
     const_iterator upper_bound(const Key &k) const {
         size_type lo = lower(k);
         if (lo < data_.size() && eq(data_[lo], k)) ++lo;
-        return data_.begin() + lo;
+        return const_iterator(data_.begin() + lo);
     }
 
     pair<const_iterator, bool> insert(const Key &k) {
         size_type lo = lower(k);
         if (lo < data_.size() && eq(data_[lo], k))
-            return { data_.begin() + lo, false };
+            return { const_iterator(data_.begin() + lo), false };
         data_.insert(data_.begin() + lo, k);
-        return { data_.begin() + lo, true };
+        return { const_iterator(data_.begin() + lo), true };
     }
     pair<const_iterator, bool> insert(Key &&k) {
         size_type lo = lower(k);
         if (lo < data_.size() && eq(data_[lo], k))
-            return { data_.begin() + lo, false };
+            return { const_iterator(data_.begin() + lo), false };
         data_.insert(data_.begin() + lo, move(k));
-        return { data_.begin() + lo, true };
+        return { const_iterator(data_.begin() + lo), true };
     }
+
+    template <typename It>
+    void insert(It first, It last) {
+        for (; first != last; ++first) insert(*first);
+    }
+
+    const_iterator insert(const_iterator, const Key &k) { return insert(k).first; }
+    const_iterator insert(const_iterator, Key &&k) { return insert(move(k)).first; }
 
     template <typename... Args>
     pair<const_iterator, bool> emplace(Args &&...args) {
@@ -102,6 +133,12 @@ private:
 
     vector<Key> data_;
     Compare     comp_{};
+};
+
+template <typename Key, typename Compare = less<Key>>
+class multiset : public set<Key, Compare> {
+public:
+    using set<Key, Compare>::set;
 };
 
 } /* namespace std */

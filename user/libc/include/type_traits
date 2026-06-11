@@ -234,6 +234,7 @@ template <typename T> struct is_trivial          : integral_constant<bool, __is_
 template <typename T> struct is_standard_layout  : integral_constant<bool, __is_standard_layout(T)> {};
 template <typename T> struct is_polymorphic      : integral_constant<bool, __is_polymorphic(T)> {};
 template <typename T> struct is_abstract         : integral_constant<bool, __is_abstract(T)> {};
+template <typename T> struct is_final            : integral_constant<bool, __is_final(T)> {};
 template <typename T, typename... A> struct is_constructible
     : integral_constant<bool, __is_constructible(T, A...)> {};
 template <typename T, typename... A> struct is_trivially_constructible
@@ -290,8 +291,14 @@ template <typename T> struct is_trivially_copy_constructible
     : integral_constant<bool, __is_trivially_constructible(T, add_lvalue_reference_t<const T>)> {};
 template <typename T> struct is_trivially_move_constructible
     : integral_constant<bool, __is_trivially_constructible(T, add_rvalue_reference_t<T>)> {};
+template <typename T> struct is_copy_constructible
+    : integral_constant<bool, __is_constructible(T, add_lvalue_reference_t<const T>)> {};
+template <typename T> struct is_move_constructible
+    : integral_constant<bool, __is_constructible(T, add_rvalue_reference_t<T>)> {};
 template <typename T> inline constexpr bool is_trivially_copy_constructible_v = is_trivially_copy_constructible<T>::value;
 template <typename T> inline constexpr bool is_trivially_move_constructible_v = is_trivially_move_constructible<T>::value;
+template <typename T> inline constexpr bool is_copy_constructible_v = is_copy_constructible<T>::value;
+template <typename T> inline constexpr bool is_move_constructible_v = is_move_constructible<T>::value;
 
 /* --- make_signed / make_unsigned ----------------------------------------- */
 namespace detail {
@@ -338,6 +345,10 @@ template <typename T> inline constexpr bool is_array_v          = is_array<T>::v
 template <typename T> inline constexpr bool is_signed_v         = is_signed<T>::value;
 template <typename T> inline constexpr bool is_unsigned_v       = is_unsigned<T>::value;
 template <typename T> inline constexpr bool is_enum_v           = is_enum<T>::value;
+template <typename T> struct is_fundamental
+    : integral_constant<bool, is_arithmetic<T>::value || is_void<T>::value ||
+                               is_null_pointer<T>::value> {};
+template <typename T> inline constexpr bool is_fundamental_v    = is_fundamental<T>::value;
 template <typename T> inline constexpr bool is_function_v       = is_function<T>::value;
 template <typename T> inline constexpr bool is_class_v          = is_class<T>::value;
 template <typename T> inline constexpr bool is_union_v          = is_union<T>::value;
@@ -345,6 +356,7 @@ template <typename T> inline constexpr bool is_empty_v          = is_empty<T>::v
 template <typename T> inline constexpr bool is_trivial_v        = is_trivial<T>::value;
 template <typename T> inline constexpr bool is_standard_layout_v = is_standard_layout<T>::value;
 template <typename T> inline constexpr bool is_polymorphic_v    = is_polymorphic<T>::value;
+template <typename T> inline constexpr bool is_final_v          = is_final<T>::value;
 template <typename T> inline constexpr bool is_trivially_copyable_v = is_trivially_copyable<T>::value;
 template <typename T> inline constexpr bool is_trivially_destructible_v = is_trivially_destructible<T>::value;
 template <typename From, typename To> inline constexpr bool is_convertible_v = is_convertible<From, To>::value;

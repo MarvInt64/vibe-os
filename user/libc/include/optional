@@ -28,6 +28,9 @@ public:
 
     constexpr optional(const T &v) : has_(true) { ::new (storage()) T(v); }
     constexpr optional(T &&v) : has_(true) { ::new (storage()) T(move(v)); }
+    template <typename U, typename = enable_if_t<!is_same<decay_t<U>, optional>::value &&
+                                                 is_constructible<T, U &&>::value>>
+    constexpr optional(U &&v) : has_(true) { ::new (storage()) T(forward<U>(v)); }
 
     template <typename... Args>
     constexpr explicit optional(in_place_t, Args &&...args) : has_(true) {
@@ -41,7 +44,7 @@ public:
         if (has_) ::new (storage()) T(move(*o.storage()));
     }
 
-    ~optional() { reset(); }
+    constexpr ~optional() { reset(); }
 
     optional &operator=(nullopt_t) noexcept { reset(); return *this; }
 
@@ -59,8 +62,9 @@ public:
         }
         return *this;
     }
-    template <typename U = T>
-    optional &operator=(U &&v) { emplace_move(forward<U>(v)); return *this; }
+    template <typename U = T,
+              typename = enable_if_t<!is_same<decay_t<U>, optional>::value>>
+    optional &operator=(U &&v) { emplace(forward<U>(v)); return *this; }
 
     template <typename... Args>
     constexpr T &emplace(Args &&...args) {
@@ -70,7 +74,7 @@ public:
         return *storage();
     }
 
-    void reset() noexcept {
+    constexpr void reset() noexcept {
         if (has_) { storage()->~T(); has_ = false; }
     }
 
@@ -129,6 +133,14 @@ template <typename T>
 bool operator==(const optional<T> &a, nullopt_t) noexcept { return !a.has_value(); }
 template <typename T>
 bool operator==(nullopt_t, const optional<T> &a) noexcept { return !a.has_value(); }
+template <typename T, typename U>
+bool operator==(const optional<T> &a, const U &b) { return a.has_value() && *a == b; }
+template <typename T, typename U>
+bool operator==(const U &b, const optional<T> &a) { return a == b; }
+template <typename T, typename U>
+bool operator!=(const optional<T> &a, const U &b) { return !(a == b); }
+template <typename T, typename U>
+bool operator!=(const U &b, const optional<T> &a) { return !(a == b); }
 
 } /* namespace std */
 

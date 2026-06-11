@@ -24,8 +24,13 @@ namespace detail {
 
 template <typename T, typename... Ts> struct _variant_index;
 template <typename T, typename U, typename... Ts>
-struct _variant_index<T, U, Ts...>
-    : integral_constant<size_t, is_same<T, U>::value ? 0 : 1 + _variant_index<T, Ts...>::value> {};
+struct _variant_index<T, U, Ts...> {
+private:
+    static constexpr size_t next = _variant_index<T, Ts...>::value;
+public:
+    static constexpr size_t value =
+        is_same<T, U>::value ? 0 : (next == (size_t)-1 ? (size_t)-1 : 1 + next);
+};
 template <typename T> struct _variant_index<T> : integral_constant<size_t, (size_t)-1> {};
 
 template <size_t I, typename... Ts> struct _variant_type;

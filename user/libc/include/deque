@@ -1,0 +1,25 @@
+#ifndef VIBEOS_DEQUE
+#define VIBEOS_DEQUE
+
+#include <vector>
+
+namespace std {
+
+template <typename T>
+class deque : public vector<T> {
+public:
+    using vector<T>::vector;
+    using typename vector<T>::value_type;
+    using typename vector<T>::reference;
+    using typename vector<T>::const_reference;
+
+    void push_front(const T &v) { this->insert(this->begin(), v); }
+    void push_front(T &&v) { this->insert(this->begin(), move(v)); }
+    template <typename... Args>
+    reference emplace_front(Args &&...args) { return *this->emplace(this->begin(), forward<Args>(args)...); }
+    void pop_front() { this->erase(this->begin()); }
+};
+
+} /* namespace std */
+
+#endif

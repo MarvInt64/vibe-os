@@ -1,0 +1,18 @@
+#ifndef VIBEOS_UNORDERED_SET
+#define VIBEOS_UNORDERED_SET
+
+#include <functional>
+#include <set>
+
+namespace std {
+
+template <typename Key, typename Hash = hash<Key>, typename KeyEqual = equal_to<Key>>
+class unordered_set : public set<Key> {
+public:
+    using set<Key>::set;
+    void reserve(size_t) {}
+};
+
+} /* namespace std */
+
+#endif

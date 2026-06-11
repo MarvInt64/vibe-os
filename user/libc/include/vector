@@ -101,6 +101,13 @@ public:
         size_ = n;
     }
 
+    template <typename InputIt,
+              typename = enable_if_t<!is_integral<InputIt>::value>>
+    void assign(InputIt first, InputIt last) {
+        clear();
+        for (; first != last; ++first) push_back(*first);
+    }
+
     /* --- element access -------------------------------------------------- */
     reference       operator[](size_type i)       { return data_[i]; }
     const_reference operator[](size_type i) const { return data_[i]; }
@@ -158,6 +165,16 @@ public:
         return data_[size_++];
     }
 
+    template <typename... Args>
+    iterator emplace(const_iterator pos, Args &&...args) {
+        size_type idx = (size_type)(pos - data_);
+        if (size_ == cap_) grow_to(size_ + 1);
+        shift_right(idx, 1);
+        ::new (data_ + idx) T(forward<Args>(args)...);
+        ++size_;
+        return data_ + idx;
+    }
+
     void pop_back() { --size_; data_[size_].~T(); }
 
     void resize(size_type n) {
@@ -198,6 +215,21 @@ public:
         return data_ + idx;
     }
 
+    template <typename InputIt,
+              typename = enable_if_t<!is_integral<InputIt>::value>>
+    iterator insert(const_iterator pos, InputIt first, InputIt last) {
+        size_type idx = (size_type)(pos - data_);
+        size_type n = 0;
+        for (InputIt it = first; it != last; ++it) ++n;
+        if (n == 0) return data_ + idx;
+        reserve(size_ + n);
+        shift_right(idx, n);
+        size_type off = 0;
+        for (; first != last; ++first, ++off) ::new (data_ + idx + off) T(*first);
+        size_ += n;
+        return data_ + idx;
+    }
+
     iterator erase(const_iterator pos) {
         size_type idx = (size_type)(pos - data_);
         data_[idx].~T();
@@ -206,6 +238,19 @@ public:
             data_[i + 1].~T();
         }
         --size_;
+        return data_ + idx;
+    }
+
+    iterator erase(const_iterator first, const_iterator last) {
+        size_type idx = (size_type)(first - data_);
+        size_type count = (size_type)(last - first);
+        if (count == 0) return data_ + idx;
+        for (size_type i = idx; i < idx + count; ++i) data_[i].~T();
+        for (size_type i = idx; i + count < size_; ++i) {
+            ::new (data_ + i) T(move(data_[i + count]));
+            data_[i + count].~T();
+        }
+        size_ -= count;
         return data_ + idx;
     }
 
