@@ -1,89 +1,113 @@
 #ifndef VIBEOS_STRING_CXX
 #define VIBEOS_STRING_CXX
 
-/* Freestanding std::string subset for VibeOS userspace.  Heap-backed, always
- * NUL-terminated, no exceptions (at()/substr trap on out-of-range).  This is
- * the C++ <string> — the C <string.h> lives under that name and is pulled in
- * here for memcpy/strlen.  Enough for real C++ programs and a stepping stone
- * toward larger C++ tooling on VibeOS. */
+/* Freestanding std::basic_string subset for VibeOS userspace.  Heap-backed,
+ * always NUL-terminated, no exceptions (at()/substr trap on out-of-range).
+ * The C <string.h> lives under that name and is pulled in for raw storage
+ * helpers used by char_traits through <string_view>. */
 
 #include <cstddef>
 #include <new>
-#include <string.h>   /* memcpy, memmove, memcmp, strlen */
+#include <string_view>
+#include <utility>
 
 namespace std {
 
-template <typename CharT> class basic_string;
-
-class string {
+template <typename CharT, typename Traits = char_traits<CharT>>
+class basic_string {
 public:
-    using size_type      = size_t;
-    using value_type     = char;
-    using reference      = char &;
-    using const_reference = const char &;
-    using iterator       = char *;
-    using const_iterator = const char *;
+    using traits_type     = Traits;
+    using value_type      = CharT;
+    using size_type       = size_t;
+    using reference       = CharT &;
+    using const_reference = const CharT &;
+    using pointer         = CharT *;
+    using const_pointer   = const CharT *;
+    using iterator        = CharT *;
+    using const_iterator  = const CharT *;
 
     static const size_type npos = (size_type)-1;
 
     /* --- ctors / dtor ---------------------------------------------------- */
-    string() noexcept : data_(nullptr), size_(0), cap_(0) {}
+    basic_string() noexcept : data_(nullptr), size_(0), cap_(0) {}
 
-    string(const char *s) : string() {
-        if (s) { size_type n = strlen(s); assign_raw(s, n); }
+    basic_string(const CharT *s) : basic_string() {
+        if (s) assign_raw(s, Traits::length(s));
     }
 
-    string(const char *s, size_type n) : string() { assign_raw(s, n); }
+    basic_string(const CharT *s, size_type n) : basic_string() {
+        assign_raw(s, n);
+    }
 
-    string(size_type n, char c) : string() {
+    basic_string(size_type n, CharT c) : basic_string() {
         ensure(n);
-        for (size_type i = 0; i < n; ++i) data_[i] = c;
+        for (size_type i = 0; i < n; ++i) Traits::assign(data_[i], c);
         size_ = n;
-        if (data_) data_[size_] = '\0';
+        terminate();
     }
 
-    string(const string &o) : string() { assign_raw(o.c_str(), o.size_); }
+    basic_string(const basic_string &o) : basic_string() {
+        assign_raw(o.c_str(), o.size_);
+    }
 
-    string(string &&o) noexcept
+    basic_string(basic_string &&o) noexcept
         : data_(o.data_), size_(o.size_), cap_(o.cap_) {
-        o.data_ = nullptr; o.size_ = 0; o.cap_ = 0;
+        o.data_ = nullptr;
+        o.size_ = 0;
+        o.cap_ = 0;
     }
 
-    ~string() { ::operator delete(data_); }
+    ~basic_string() { ::operator delete(data_); }
 
     /* --- assignment ------------------------------------------------------ */
-    string &operator=(const string &o) {
+    basic_string &operator=(const basic_string &o) {
         if (this != &o) assign_raw(o.c_str(), o.size_);
         return *this;
     }
-    string &operator=(string &&o) noexcept {
+
+    basic_string &operator=(basic_string &&o) noexcept {
         if (this != &o) {
             ::operator delete(data_);
-            data_ = o.data_; size_ = o.size_; cap_ = o.cap_;
-            o.data_ = nullptr; o.size_ = 0; o.cap_ = 0;
+            data_ = o.data_;
+            size_ = o.size_;
+            cap_ = o.cap_;
+            o.data_ = nullptr;
+            o.size_ = 0;
+            o.cap_ = 0;
         }
         return *this;
     }
-    string &operator=(const char *s) { assign_raw(s, s ? strlen(s) : 0); return *this; }
-    string &operator=(char c) { assign_raw(&c, 1); return *this; }
+
+    basic_string &operator=(const CharT *s) {
+        assign_raw(s, s ? Traits::length(s) : 0);
+        return *this;
+    }
+    basic_string &operator=(CharT c) {
+        assign_raw(&c, 1);
+        return *this;
+    }
 
     /* --- element access -------------------------------------------------- */
     reference       operator[](size_type i)       { return data_[i]; }
     const_reference operator[](size_type i) const { return c_str()[i]; }
     reference       at(size_type i)       { if (i >= size_) __builtin_trap(); return data_[i]; }
     const_reference at(size_type i) const { if (i >= size_) __builtin_trap(); return c_str()[i]; }
-    char  front() const { return c_str()[0]; }
-    char  back()  const { return c_str()[size_ - 1]; }
+    reference       front()       { return data()[0]; }
+    const_reference front() const { return c_str()[0]; }
+    reference       back()        { return data()[size_ - 1]; }
+    const_reference back()  const { return c_str()[size_ - 1]; }
 
-    const char *c_str() const noexcept { return data_ ? data_ : ""; }
-    const char *data()  const noexcept { return c_str(); }
-    char       *data()  noexcept       { return data_ ? data_ : empty_writable(); }
+    const CharT *c_str() const noexcept { return data_ ? data_ : empty_string(); }
+    const CharT *data()  const noexcept { return c_str(); }
+    CharT       *data()  noexcept       { ensure(0); return data_; }
 
     /* --- iterators ------------------------------------------------------- */
-    iterator       begin() noexcept       { return data_; }
+    iterator       begin() noexcept       { return data(); }
     const_iterator begin() const noexcept { return c_str(); }
-    iterator       end() noexcept         { return data_ + size_; }
+    const_iterator cbegin() const noexcept { return c_str(); }
+    iterator       end() noexcept         { return data() + size_; }
     const_iterator end() const noexcept   { return c_str() + size_; }
+    const_iterator cend() const noexcept  { return c_str() + size_; }
 
     /* --- capacity -------------------------------------------------------- */
     bool      empty() const noexcept    { return size_ == 0; }
@@ -91,138 +115,189 @@ public:
     size_type length() const noexcept   { return size_; }
     size_type capacity() const noexcept { return cap_; }
     void      reserve(size_type n)      { if (n > cap_) reallocate(n); }
-    void      clear() noexcept          { size_ = 0; if (data_) data_[0] = '\0'; }
+    void      clear() noexcept          { size_ = 0; if (data_) terminate(); }
 
-    void resize(size_type n, char c = '\0') {
-        if (n > size_) { ensure(n); for (size_type i = size_; i < n; ++i) data_[i] = c; }
+    void resize(size_type n, CharT c = CharT()) {
+        if (n > size_) {
+            ensure(n);
+            for (size_type i = size_; i < n; ++i) Traits::assign(data_[i], c);
+        }
         size_ = n;
-        if (data_) data_[size_] = '\0';
+        terminate();
     }
 
     /* --- modifiers ------------------------------------------------------- */
-    string &append(const char *s, size_type n) {
+    basic_string &append(const CharT *s, size_type n) {
+        if (n == 0) return *this;
         ensure(size_ + n);
-        memcpy(data_ + size_, s, n);
+        copy_chars(data_ + size_, s, n);
         size_ += n;
-        data_[size_] = '\0';
+        terminate();
         return *this;
     }
-    string &append(const char *s) { return append(s, s ? strlen(s) : 0); }
-    string &append(const string &o) { return append(o.c_str(), o.size_); }
-    string &append(size_type n, char c) {
+    basic_string &append(const CharT *s) {
+        return append(s, s ? Traits::length(s) : 0);
+    }
+    basic_string &append(const basic_string &o) {
+        return append(o.c_str(), o.size_);
+    }
+    basic_string &append(size_type n, CharT c) {
         ensure(size_ + n);
-        for (size_type i = 0; i < n; ++i) data_[size_ + i] = c;
-        size_ += n; data_[size_] = '\0';
+        for (size_type i = 0; i < n; ++i) Traits::assign(data_[size_ + i], c);
+        size_ += n;
+        terminate();
         return *this;
     }
 
-    void push_back(char c) {
+    void push_back(CharT c) {
         ensure(size_ + 1);
-        data_[size_++] = c;
-        data_[size_] = '\0';
+        Traits::assign(data_[size_++], c);
+        terminate();
     }
-    void pop_back() { if (size_) { --size_; data_[size_] = '\0'; } }
+    void pop_back() {
+        if (size_) {
+            --size_;
+            terminate();
+        }
+    }
 
-    string &operator+=(const string &o) { return append(o); }
-    string &operator+=(const char *s)   { return append(s); }
-    string &operator+=(char c)          { push_back(c); return *this; }
+    basic_string &operator+=(const basic_string &o) { return append(o); }
+    basic_string &operator+=(const CharT *s)        { return append(s); }
+    basic_string &operator+=(CharT c)               { push_back(c); return *this; }
 
-    string &assign(const char *s, size_type n) { assign_raw(s, n); return *this; }
-    string &assign(const string &o) { assign_raw(o.c_str(), o.size_); return *this; }
+    basic_string &assign(const CharT *s, size_type n) {
+        assign_raw(s, n);
+        return *this;
+    }
+    basic_string &assign(const basic_string &o) {
+        assign_raw(o.c_str(), o.size_);
+        return *this;
+    }
 
     /* --- operations ------------------------------------------------------ */
-    string substr(size_type pos = 0, size_type n = npos) const {
+    basic_string substr(size_type pos = 0, size_type n = npos) const {
         if (pos > size_) __builtin_trap();
         size_type avail = size_ - pos;
         if (n > avail) n = avail;
-        return string(c_str() + pos, n);
+        return basic_string(c_str() + pos, n);
     }
 
-    int compare(const string &o) const noexcept {
+    int compare(const basic_string &o) const noexcept {
         size_type m = size_ < o.size_ ? size_ : o.size_;
-        int r = memcmp(c_str(), o.c_str(), m);
+        int r = Traits::compare(c_str(), o.c_str(), m);
         if (r) return r;
         return (size_ < o.size_) ? -1 : (size_ > o.size_ ? 1 : 0);
     }
 
-    size_type find(char c, size_type pos = 0) const noexcept {
-        for (size_type i = pos; i < size_; ++i) if (data_[i] == c) return i;
+    size_type find(CharT c, size_type pos = 0) const noexcept {
+        for (size_type i = pos; i < size_; ++i) if (Traits::eq(c_str()[i], c)) return i;
         return npos;
     }
 
-    size_type find(const char *s, size_type pos = 0) const noexcept {
-        size_type n = strlen(s);
+    size_type find(const CharT *s, size_type pos = 0) const noexcept {
+        size_type n = Traits::length(s);
         if (n == 0) return pos <= size_ ? pos : npos;
         if (n > size_) return npos;
         for (size_type i = pos; i + n <= size_; ++i)
-            if (memcmp(data_ + i, s, n) == 0) return i;
+            if (Traits::compare(c_str() + i, s, n) == 0) return i;
         return npos;
     }
 
-    void swap(string &o) noexcept {
-        char *d = data_; data_ = o.data_; o.data_ = d;
+    void swap(basic_string &o) noexcept {
+        CharT *d = data_; data_ = o.data_; o.data_ = d;
         size_type s = size_; size_ = o.size_; o.size_ = s;
         size_type c = cap_;  cap_  = o.cap_;  o.cap_  = c;
     }
 
 private:
+    static const CharT *empty_string() noexcept {
+        static const CharT zero = CharT();
+        return &zero;
+    }
+
+    void terminate() {
+        if (data_) Traits::assign(data_[size_], CharT());
+    }
+
     /* Ensure room for `need` chars plus the NUL terminator. */
     void ensure(size_type need) {
-        if (need <= cap_) return;
+        if (data_ && need <= cap_) return;
         size_type ncap = cap_ ? cap_ * 2 : 16;
         if (ncap < need) ncap = need;
         reallocate(ncap);
     }
 
     void reallocate(size_type ncap) {
-        char *nd = static_cast<char *>(::operator new(ncap + 1));
+        CharT *nd = static_cast<CharT *>(::operator new(sizeof(CharT) * (ncap + 1)));
         if (!nd) __builtin_trap();
-        if (size_) memcpy(nd, data_, size_);
-        nd[size_] = '\0';
+        for (size_type i = 0; i < size_; ++i) Traits::assign(nd[i], data_[i]);
+        Traits::assign(nd[size_], CharT());
         ::operator delete(data_);
         data_ = nd;
         cap_  = ncap;
     }
 
-    void assign_raw(const char *s, size_type n) {
+    void assign_raw(const CharT *s, size_type n) {
         ensure(n);
-        if (n) memcpy(data_, s, n);
+        if (n) copy_chars(data_, s, n);
         size_ = n;
-        if (data_) data_[size_] = '\0';
+        terminate();
     }
 
-    char *empty_writable() { ensure(0); return data_; }
+    static void copy_chars(CharT *dst, const CharT *src, size_type n) {
+        for (size_type i = 0; i < n; ++i) Traits::assign(dst[i], src[i]);
+    }
 
-    char     *data_;
+    CharT    *data_;
     size_type size_;
     size_type cap_;
 };
 
+using string = basic_string<char>;
+
 /* --- non-member operators ------------------------------------------------ */
-inline string operator+(const string &a, const string &b) {
-    string r(a); r.append(b); return r;
+template <typename C, typename T>
+basic_string<C, T> operator+(const basic_string<C, T> &a, const basic_string<C, T> &b) {
+    basic_string<C, T> r(a); r.append(b); return r;
 }
-inline string operator+(const string &a, const char *b) {
-    string r(a); r.append(b); return r;
+template <typename C, typename T>
+basic_string<C, T> operator+(const basic_string<C, T> &a, const C *b) {
+    basic_string<C, T> r(a); r.append(b); return r;
 }
-inline string operator+(const char *a, const string &b) {
-    string r(a); r.append(b); return r;
+template <typename C, typename T>
+basic_string<C, T> operator+(const C *a, const basic_string<C, T> &b) {
+    basic_string<C, T> r(a); r.append(b); return r;
 }
-inline string operator+(const string &a, char b) {
-    string r(a); r.push_back(b); return r;
+template <typename C, typename T>
+basic_string<C, T> operator+(const basic_string<C, T> &a, C b) {
+    basic_string<C, T> r(a); r.push_back(b); return r;
 }
 
-inline bool operator==(const string &a, const string &b) noexcept { return a.compare(b) == 0; }
-inline bool operator!=(const string &a, const string &b) noexcept { return a.compare(b) != 0; }
-inline bool operator< (const string &a, const string &b) noexcept { return a.compare(b) <  0; }
-inline bool operator> (const string &a, const string &b) noexcept { return a.compare(b) >  0; }
-inline bool operator<=(const string &a, const string &b) noexcept { return a.compare(b) <= 0; }
-inline bool operator>=(const string &a, const string &b) noexcept { return a.compare(b) >= 0; }
+template <typename C, typename T>
+bool operator==(const basic_string<C, T> &a, const basic_string<C, T> &b) noexcept { return a.compare(b) == 0; }
+template <typename C, typename T>
+bool operator!=(const basic_string<C, T> &a, const basic_string<C, T> &b) noexcept { return a.compare(b) != 0; }
+template <typename C, typename T>
+bool operator< (const basic_string<C, T> &a, const basic_string<C, T> &b) noexcept { return a.compare(b) <  0; }
+template <typename C, typename T>
+bool operator> (const basic_string<C, T> &a, const basic_string<C, T> &b) noexcept { return a.compare(b) >  0; }
+template <typename C, typename T>
+bool operator<=(const basic_string<C, T> &a, const basic_string<C, T> &b) noexcept { return a.compare(b) <= 0; }
+template <typename C, typename T>
+bool operator>=(const basic_string<C, T> &a, const basic_string<C, T> &b) noexcept { return a.compare(b) >= 0; }
 
-inline bool operator==(const string &a, const char *b) noexcept { return strcmp(a.c_str(), b) == 0; }
-inline bool operator==(const char *a, const string &b) noexcept { return strcmp(a, b.c_str()) == 0; }
-inline bool operator!=(const string &a, const char *b) noexcept { return strcmp(a.c_str(), b) != 0; }
-inline bool operator!=(const char *a, const string &b) noexcept { return strcmp(a, b.c_str()) != 0; }
+template <typename C, typename T>
+bool operator==(const basic_string<C, T> &a, const C *b) noexcept {
+    return a.compare(basic_string<C, T>(b)) == 0;
+}
+template <typename C, typename T>
+bool operator==(const C *a, const basic_string<C, T> &b) noexcept {
+    return basic_string<C, T>(a).compare(b) == 0;
+}
+template <typename C, typename T>
+bool operator!=(const basic_string<C, T> &a, const C *b) noexcept { return !(a == b); }
+template <typename C, typename T>
+bool operator!=(const C *a, const basic_string<C, T> &b) noexcept { return !(a == b); }
 
 } /* namespace std */
 

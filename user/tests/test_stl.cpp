@@ -89,6 +89,11 @@ int main(void) {
     std::string big(100, 'x');
     CHECK(big.size() == 100);
     CHECK(big[99] == 'x');
+    std::basic_string<char> bs("abc");
+    bs.push_back('d');
+    CHECK(bs == "abcd");
+    CHECK(bs.substr(1, 2) == "bc");
+    CHECK(bs.find("cd") == 2);
 
     /* ---- vector<string> ---- */
     std::vector<std::string> names;
