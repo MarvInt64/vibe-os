@@ -13,6 +13,8 @@
 
 namespace std {
 
+template <typename CharT> class basic_string;
+
 class string {
 public:
     using size_type      = size_t;

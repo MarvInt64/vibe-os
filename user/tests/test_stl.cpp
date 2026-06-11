@@ -9,6 +9,11 @@
 #include <optional>
 #include <functional>
 #include <map>
+#include <set>
+#include <numeric>
+#include <queue>
+#include <algorithm>
+#include <iterator>
 #include <stdio.h>
 
 static int g_fail = 0;
@@ -28,6 +33,14 @@ struct Counted {
     ~Counted() { --live; }
 };
 int Counted::live = 0;
+
+static void num_to_str_dummy(int n, std::string &out) {
+    if (n == 0) { out.push_back('0'); return; }
+    if (n < 0)  { out.push_back('-'); n = -n; }
+    char tmp[16]; int i = 0;
+    while (n > 0) { tmp[i++] = (char)('0' + n % 10); n /= 10; }
+    while (i > 0) out.push_back(tmp[--i]);
+}
 
 int main(void) {
     /* ---- vector basics ---- */
@@ -156,6 +169,61 @@ int main(void) {
     CHECK(im.size() == 3);
     CHECK(im.begin()->first == 1);     /* sorted */
     CHECK(im[2] == "two");
+
+    /* ---- set ---- */
+    std::set<int> si = { 5, 1, 3, 1, 5 };   /* duplicates collapse */
+    CHECK(si.size() == 3);
+    CHECK(si.contains(3));
+    CHECK(!si.contains(9));
+    CHECK(*si.begin() == 1);                /* sorted */
+    auto ins = si.insert(4);
+    CHECK(ins.second);
+    CHECK(!si.insert(4).second);            /* already present */
+    CHECK(si.erase(1) == 1);
+    CHECK(si.size() == 3);
+    std::string sorder;
+    for (int x : si) { num_to_str_dummy(x, sorder); sorder += ' '; }
+    CHECK(sorder == "3 4 5 ");
+
+    std::set<std::string> ss;
+    ss.insert("pear"); ss.insert("apple"); ss.insert("banana");
+    CHECK(*ss.begin() == "apple");
+    CHECK(ss.count("banana") == 1);
+
+    /* ---- numeric ---- */
+    std::vector<int> nv = { 1, 2, 3, 4, 5 };
+    CHECK(std::accumulate(nv.begin(), nv.end(), 0) == 15);
+    CHECK(std::accumulate(nv.begin(), nv.end(), 1,
+                          [](int a, int b){ return a * b; }) == 120);
+    std::vector<int> seq(5);
+    std::iota(seq.begin(), seq.end(), 10);
+    CHECK(seq[0] == 10 && seq[4] == 14);
+    CHECK(std::gcd(48, 36) == 12);
+    CHECK(std::lcm(4, 6) == 12);
+
+    /* ---- STLExtras algorithm support ---- */
+    std::vector<int> evens;
+    std::copy_if(nv.begin(), nv.end(), std::back_inserter(evens),
+                 [](int x){ return (x % 2) == 0; });
+    CHECK(evens.size() == 2 && evens[0] == 2 && evens[1] == 4);
+    std::replace(seq.begin(), seq.end(), 12, 99);
+    CHECK(seq[2] == 99);
+    std::vector<int> repl(5);
+    std::replace_copy_if(nv.begin(), nv.end(), repl.begin(),
+                         [](int x){ return x > 3; }, 0);
+    CHECK(repl[0] == 1 && repl[3] == 0 && repl[4] == 0);
+    auto part = std::partition(nv.begin(), nv.end(), [](int x){ return x < 4; });
+    CHECK(part - nv.begin() == 3);
+    CHECK(std::partition_point(nv.begin(), nv.end(), [](int x){ return x < 4; }) == part);
+    auto mm = std::mismatch(nv.begin(), nv.end(), repl.begin());
+    CHECK(mm.first == nv.begin() + 3);
+    CHECK(std::multiplies<int>{}(6, 7) == 42);
+
+    std::priority_queue<int> pq;
+    pq.push(3); pq.push(9); pq.push(1);
+    CHECK(pq.top() == 9);
+    pq.pop();
+    CHECK(pq.top() == 3);
 
     printf(g_fail == 0 ? "ALL OK\n" : "FAILURES: %d\n", g_fail);
     return g_fail;

@@ -48,14 +48,12 @@ public:
 };
 
 /* --- tuple_size ---------------------------------------------------------- */
-template <typename T> struct tuple_size;
 template <typename... Ts>
 struct tuple_size<tuple<Ts...>> : integral_constant<size_t, sizeof...(Ts)> {};
 template <typename T> struct tuple_size<const T> : tuple_size<T> {};
 template <typename T> inline constexpr size_t tuple_size_v = tuple_size<T>::value;
 
 /* --- tuple_element ------------------------------------------------------- */
-template <size_t I, typename T> struct tuple_element;
 template <size_t I, typename Head, typename... Tail>
 struct tuple_element<I, tuple<Head, Tail...>>
     : tuple_element<I - 1, tuple<Tail...>> {};

@@ -55,6 +55,15 @@ Out copy(In first, In last, Out d) {
     return d;
 }
 
+template <typename In, typename Out, typename Pred>
+Out copy_if(In first, In last, Out d, Pred p) {
+    while (first != last) {
+        if (p(*first)) { *d = *first; ++d; }
+        ++first;
+    }
+    return d;
+}
+
 template <typename In, typename Size, typename Out>
 Out copy_n(In first, Size n, Out d) {
     while (n-- > 0) { *d = *first; ++d; ++first; }
@@ -238,6 +247,29 @@ It remove_if(It first, It last, Pred p) {
     return out;
 }
 
+/* --- replace ------------------------------------------------------------- */
+template <typename It, typename T>
+void replace(It first, It last, const T &old_value, const T &new_value) {
+    for (; first != last; ++first) if (*first == old_value) *first = new_value;
+}
+
+template <typename It, typename Pred, typename T>
+void replace_if(It first, It last, Pred p, const T &new_value) {
+    for (; first != last; ++first) if (p(*first)) *first = new_value;
+}
+
+template <typename In, typename Out, typename T>
+Out replace_copy(In first, In last, Out d, const T &old_value, const T &new_value) {
+    for (; first != last; ++first, ++d) *d = (*first == old_value) ? new_value : *first;
+    return d;
+}
+
+template <typename In, typename Out, typename Pred, typename T>
+Out replace_copy_if(In first, In last, Out d, Pred p, const T &new_value) {
+    for (; first != last; ++first, ++d) *d = p(*first) ? new_value : *first;
+    return d;
+}
+
 /* --- transform ----------------------------------------------------------- */
 template <typename In, typename Out, typename F>
 Out transform(In first, In last, Out d, F f) {
@@ -264,6 +296,11 @@ It2 swap_ranges(It1 first, It1 last, It2 d) {
     return d;
 }
 
+template <typename It1, typename It2>
+void iter_swap(It1 a, It2 b) {
+    std::swap(*a, *b);
+}
+
 /* --- min_element / max_element ------------------------------------------- */
 template <typename It>
 It min_element(It first, It last) {
@@ -280,6 +317,169 @@ It max_element(It first, It last) {
     return best;
 }
 
+/* --- partition ---------------------------------------------------------- */
+template <typename It, typename Pred>
+It partition(It first, It last, Pred p) {
+    while (true) {
+        while (first != last && p(*first)) ++first;
+        if (first == last) return first;
+        do {
+            --last;
+            if (first == last) return first;
+        } while (!p(*last));
+        iter_swap(first, last);
+        ++first;
+    }
+}
+
+template <typename It, typename Pred>
+It partition_point(It first, It last, Pred p) {
+    auto len = last - first;
+    while (len > 0) {
+        auto half = len / 2;
+        It mid = first + half;
+        if (p(*mid)) { first = mid + 1; len -= half + 1; }
+        else         { len = half; }
+    }
+    return first;
+}
+
+/* --- heap algorithms ----------------------------------------------------- */
+template <typename It, typename Cmp>
+void push_heap(It first, It last, Cmp cmp) {
+    auto len = last - first;
+    if (len < 2) return;
+    auto child = len - 1;
+    while (child > 0) {
+        auto parent = (child - 1) / 2;
+        if (!cmp(*(first + parent), *(first + child))) break;
+        std::swap(*(first + parent), *(first + child));
+        child = parent;
+    }
+}
+template <typename It>
+void push_heap(It first, It last) {
+    push_heap(first, last, [](const auto &a, const auto &b) { return a < b; });
+}
+
+template <typename It, typename Cmp>
+void make_heap(It first, It last, Cmp cmp) {
+    auto len = last - first;
+    if (len < 2) return;
+    for (auto start = (len - 2) / 2 + 1; start > 0; ) {
+        --start;
+        auto root = start;
+        while (true) {
+            auto child = root * 2 + 1;
+            if (child >= len) break;
+            if (child + 1 < len && cmp(*(first + child), *(first + child + 1))) ++child;
+            if (!cmp(*(first + root), *(first + child))) break;
+            std::swap(*(first + root), *(first + child));
+            root = child;
+        }
+    }
+}
+template <typename It>
+void make_heap(It first, It last) {
+    make_heap(first, last, [](const auto &a, const auto &b) { return a < b; });
+}
+
+template <typename It, typename Cmp>
+void pop_heap(It first, It last, Cmp cmp) {
+    auto len = last - first;
+    if (len < 2) return;
+    --last;
+    std::swap(*first, *last);
+    make_heap(first, last, cmp);
+}
+template <typename It>
+void pop_heap(It first, It last) {
+    pop_heap(first, last, [](const auto &a, const auto &b) { return a < b; });
+}
+
+/* --- stable_sort (same insertion sort — already stable) ------------------ */
+template <typename It, typename Cmp>
+void stable_sort(It first, It last, Cmp cmp) { sort(first, last, cmp); }
+template <typename It>
+void stable_sort(It first, It last) { sort(first, last); }
+
+/* --- binary_search ------------------------------------------------------- */
+template <typename It, typename T, typename Cmp>
+bool binary_search(It first, It last, const T &v, Cmp cmp) {
+    It lo = lower_bound(first, last, v, cmp);
+    return lo != last && !cmp(v, *lo);
+}
+template <typename It, typename T>
+bool binary_search(It first, It last, const T &v) {
+    return binary_search(first, last, v,
+                         [](const auto &a, const auto &b) { return a < b; });
+}
+
+/* --- is_sorted ----------------------------------------------------------- */
+template <typename It, typename Cmp>
+bool is_sorted(It first, It last, Cmp cmp) {
+    if (first == last) return true;
+    It next = first;
+    for (++next; next != last; ++first, ++next) if (cmp(*next, *first)) return false;
+    return true;
+}
+template <typename It>
+bool is_sorted(It first, It last) {
+    return is_sorted(first, last, [](const auto &a, const auto &b) { return a < b; });
+}
+
+/* --- adjacent_find ------------------------------------------------------- */
+template <typename It>
+It adjacent_find(It first, It last) {
+    if (first == last) return last;
+    It next = first;
+    for (++next; next != last; ++first, ++next) if (*first == *next) return first;
+    return last;
+}
+
+/* --- unique (collapse consecutive equal elements) ------------------------ */
+template <typename It>
+It unique(It first, It last) {
+    if (first == last) return last;
+    It result = first;
+    while (++first != last) {
+        if (!(*result == *first) && ++result != first) *result = std::move(*first);
+    }
+    return ++result;
+}
+template <typename It, typename Pred>
+It unique(It first, It last, Pred eq) {
+    if (first == last) return last;
+    It result = first;
+    while (++first != last) {
+        if (!eq(*result, *first) && ++result != first) *result = std::move(*first);
+    }
+    return ++result;
+}
+
+/* --- search (find subrange) ---------------------------------------------- */
+template <typename It1, typename It2>
+It1 search(It1 first, It1 last, It2 s_first, It2 s_last) {
+    for (;; ++first) {
+        It1 it = first;
+        for (It2 s = s_first;; ++it, ++s) {
+            if (s == s_last) return first;
+            if (it == last)  return last;
+            if (!(*it == *s)) break;
+        }
+    }
+}
+
+/* --- includes (both ranges sorted) --------------------------------------- */
+template <typename It1, typename It2>
+bool includes(It1 f1, It1 l1, It2 f2, It2 l2) {
+    for (; f2 != l2; ++f1) {
+        if (f1 == l1 || *f2 < *f1) return false;
+        if (!(*f1 < *f2)) ++f2;
+    }
+    return true;
+}
+
 /* --- lexicographical_compare --------------------------------------------- */
 template <typename It1, typename It2>
 bool lexicographical_compare(It1 f1, It1 l1, It2 f2, It2 l2) {
@@ -288,6 +488,18 @@ bool lexicographical_compare(It1 f1, It1 l1, It2 f2, It2 l2) {
         if (*f2 < *f1) return false;
     }
     return (f1 == l1) && (f2 != l2);
+}
+
+/* --- mismatch ------------------------------------------------------------ */
+template <typename It1, typename It2>
+pair<It1, It2> mismatch(It1 f1, It1 l1, It2 f2) {
+    while (f1 != l1 && *f1 == *f2) { ++f1; ++f2; }
+    return { f1, f2 };
+}
+template <typename It1, typename It2, typename Pred>
+pair<It1, It2> mismatch(It1 f1, It1 l1, It2 f2, Pred p) {
+    while (f1 != l1 && p(*f1, *f2)) { ++f1; ++f2; }
+    return { f1, f2 };
 }
 template <typename It1, typename It2, typename Comp>
 bool lexicographical_compare(It1 f1, It1 l1, It2 f2, It2 l2, Comp comp) {

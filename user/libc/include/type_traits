@@ -18,6 +18,8 @@ struct integral_constant {
 using true_type  = integral_constant<bool, true>;
 using false_type = integral_constant<bool, false>;
 
+template <bool B> using bool_constant = integral_constant<bool, B>;
+
 /* --- remove_reference ---------------------------------------------------- */
 template <typename T> struct remove_reference      { using type = T; };
 template <typename T> struct remove_reference<T&>  { using type = T; };
@@ -28,10 +30,14 @@ template <typename T> using remove_reference_t = typename remove_reference<T>::t
 template <typename T> struct remove_const          { using type = T; };
 template <typename T> struct remove_const<const T> { using type = T; };
 template <typename T> using remove_const_t = typename remove_const<T>::type;
+template <typename T> struct add_const             { using type = const T; };
+template <typename T> using add_const_t = typename add_const<T>::type;
 
 template <typename T> struct remove_volatile             { using type = T; };
 template <typename T> struct remove_volatile<volatile T> { using type = T; };
 template <typename T> using remove_volatile_t = typename remove_volatile<T>::type;
+template <typename T> struct add_volatile                { using type = volatile T; };
+template <typename T> using add_volatile_t = typename add_volatile<T>::type;
 
 template <typename T> struct remove_cv { using type = remove_volatile_t<remove_const_t<T>>; };
 template <typename T> using remove_cv_t = typename remove_cv<T>::type;
@@ -151,6 +157,13 @@ struct is_base_of
 /* --- void_t -------------------------------------------------------------- */
 template <typename...> using void_t = void;
 
+/* tuple protocol primary templates live here so LLVM headers can specialize
+ * them without including <tuple> first.  <tuple> provides the tuple<> special
+ * cases and get/apply helpers. */
+template <typename T> struct tuple_size;
+template <size_t I, typename T> struct tuple_element;
+template <typename T> struct hash;
+
 /* --- reference aliases --------------------------------------------------- */
 template <typename T> using add_lvalue_reference_t = typename add_lvalue_reference<T>::type;
 template <typename T> using add_rvalue_reference_t = typename add_rvalue_reference<T>::type;
@@ -236,6 +249,33 @@ template <typename F, typename... Args>
 struct invoke_result { using type = decltype(detail::_declval<F>()(detail::_declval<Args>()...)); };
 template <typename F, typename... Args>
 using invoke_result_t = typename invoke_result<F, Args...>::type;
+
+/* --- is_invocable -------------------------------------------------------- */
+namespace detail {
+template <typename, typename F, typename... A> struct _is_invocable : false_type {};
+template <typename F, typename... A>
+struct _is_invocable<void_t<decltype(_declval<F>()(_declval<A>()...))>, F, A...> : true_type {};
+}
+template <typename F, typename... A>
+struct is_invocable : detail::_is_invocable<void, F, A...> {};
+template <typename F, typename... A>
+inline constexpr bool is_invocable_v = is_invocable<F, A...>::value;
+
+/* --- conjunction / disjunction / negation -------------------------------- */
+template <typename...> struct conjunction : true_type {};
+template <typename B1> struct conjunction<B1> : B1 {};
+template <typename B1, typename... Bn>
+struct conjunction<B1, Bn...> : conditional_t<bool(B1::value), conjunction<Bn...>, B1> {};
+template <typename... B> inline constexpr bool conjunction_v = conjunction<B...>::value;
+
+template <typename...> struct disjunction : false_type {};
+template <typename B1> struct disjunction<B1> : B1 {};
+template <typename B1, typename... Bn>
+struct disjunction<B1, Bn...> : conditional_t<bool(B1::value), B1, disjunction<Bn...>> {};
+template <typename... B> inline constexpr bool disjunction_v = disjunction<B...>::value;
+
+template <typename B> struct negation : bool_constant<!bool(B::value)> {};
+template <typename B> inline constexpr bool negation_v = negation<B>::value;
 
 /* --- trivially copy/move constructible (built-ins) ----------------------- */
 template <typename T> struct is_trivially_copy_constructible

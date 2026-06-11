@@ -1,0 +1,96 @@
+#ifndef VIBEOS_NUMERIC
+#define VIBEOS_NUMERIC
+
+/* Freestanding <numeric> subset for VibeOS userspace: accumulate, reduce,
+ * inner_product, partial_sum, adjacent_difference, iota, and gcd/lcm. */
+
+#include <cstddef>
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+/* --- accumulate ---------------------------------------------------------- */
+template <typename It, typename T>
+T accumulate(It first, It last, T init) {
+    for (; first != last; ++first) init = move(init) + *first;
+    return init;
+}
+template <typename It, typename T, typename BinOp>
+T accumulate(It first, It last, T init, BinOp op) {
+    for (; first != last; ++first) init = op(move(init), *first);
+    return init;
+}
+
+/* --- reduce (no parallelism — same as accumulate) ------------------------ */
+template <typename It, typename T>
+T reduce(It first, It last, T init) {
+    for (; first != last; ++first) init = move(init) + *first;
+    return init;
+}
+template <typename It, typename T, typename BinOp>
+T reduce(It first, It last, T init, BinOp op) {
+    for (; first != last; ++first) init = op(move(init), *first);
+    return init;
+}
+
+/* --- inner_product ------------------------------------------------------- */
+template <typename It1, typename It2, typename T>
+T inner_product(It1 f1, It1 l1, It2 f2, T init) {
+    for (; f1 != l1; ++f1, ++f2) init = move(init) + (*f1) * (*f2);
+    return init;
+}
+template <typename It1, typename It2, typename T, typename Sum, typename Prod>
+T inner_product(It1 f1, It1 l1, It2 f2, T init, Sum sum, Prod prod) {
+    for (; f1 != l1; ++f1, ++f2) init = sum(move(init), prod(*f1, *f2));
+    return init;
+}
+
+/* --- partial_sum --------------------------------------------------------- */
+template <typename It, typename Out>
+Out partial_sum(It first, It last, Out d) {
+    if (first == last) return d;
+    auto acc = *first;
+    *d = acc; ++d;
+    for (++first; first != last; ++first) { acc = move(acc) + *first; *d = acc; ++d; }
+    return d;
+}
+
+/* --- adjacent_difference ------------------------------------------------- */
+template <typename It, typename Out>
+Out adjacent_difference(It first, It last, Out d) {
+    if (first == last) return d;
+    auto prev = *first;
+    *d = prev; ++d;
+    for (++first; first != last; ++first) { auto cur = *first; *d = cur - prev; prev = move(cur); ++d; }
+    return d;
+}
+
+/* --- iota ---------------------------------------------------------------- */
+template <typename It, typename T>
+void iota(It first, It last, T value) {
+    for (; first != last; ++first, ++value) *first = value;
+}
+
+/* --- gcd / lcm ----------------------------------------------------------- */
+template <typename M, typename N>
+constexpr common_type_t<M, N> gcd(M m, N n) {
+    using C = common_type_t<M, N>;
+    C a = m < 0 ? (C)-m : (C)m;
+    C b = n < 0 ? (C)-n : (C)n;
+    while (b != 0) { C t = a % b; a = b; b = t; }
+    return a;
+}
+template <typename M, typename N>
+constexpr common_type_t<M, N> lcm(M m, N n) {
+    using C = common_type_t<M, N>;
+    if (m == 0 || n == 0) return 0;
+    C g = gcd(m, n);
+    C a = m < 0 ? (C)-m : (C)m;
+    C b = n < 0 ? (C)-n : (C)n;
+    return (a / g) * b;
+}
+
+} /* namespace std */
+
+#endif
