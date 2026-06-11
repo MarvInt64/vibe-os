@@ -1,0 +1,14 @@
+#ifndef VIBEOS_CTIME
+#define VIBEOS_CTIME
+
+#include <time.h>
+
+namespace std {
+using ::time_t;
+using ::tm;
+using ::time;
+using ::localtime;
+using ::localtime_r;
+}
+
+#endif

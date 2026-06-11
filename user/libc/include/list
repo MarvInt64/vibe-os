@@ -1,0 +1,72 @@
+#ifndef VIBEOS_LIST
+#define VIBEOS_LIST
+
+/* Freestanding std::list subset.  Backed by vector; iterator stability and
+ * splice semantics are not provided, but the common sequence API is present. */
+
+#include <cstddef>
+#include <initializer_list>
+#include <utility>
+#include <vector>
+
+namespace std {
+
+template <typename T>
+class list {
+public:
+    using value_type      = T;
+    using size_type       = size_t;
+    using difference_type = ptrdiff_t;
+    using reference       = T &;
+    using const_reference = const T &;
+    using iterator        = typename vector<T>::iterator;
+    using const_iterator  = typename vector<T>::const_iterator;
+
+    list() = default;
+    list(const list &) = default;
+    list(list &&) noexcept = default;
+    list &operator=(const list &) = default;
+    list &operator=(list &&) noexcept = default;
+
+    list(initializer_list<T> il) : data_(il) {}
+
+    bool empty() const noexcept { return data_.empty(); }
+    size_type size() const noexcept { return data_.size(); }
+
+    iterator begin() noexcept { return data_.begin(); }
+    const_iterator begin() const noexcept { return data_.begin(); }
+    const_iterator cbegin() const noexcept { return data_.cbegin(); }
+    iterator end() noexcept { return data_.end(); }
+    const_iterator end() const noexcept { return data_.end(); }
+    const_iterator cend() const noexcept { return data_.cend(); }
+
+    reference front() { return data_.front(); }
+    const_reference front() const { return data_.front(); }
+    reference back() { return data_.back(); }
+    const_reference back() const { return data_.back(); }
+
+    void clear() noexcept { data_.clear(); }
+    void push_back(const T &v) { data_.push_back(v); }
+    void push_back(T &&v) { data_.push_back(move(v)); }
+    void push_front(const T &v) { data_.insert(data_.begin(), v); }
+    void push_front(T &&v) { data_.insert(data_.begin(), move(v)); }
+
+    template <typename... Args>
+    reference emplace_back(Args &&...args) { return data_.emplace_back(forward<Args>(args)...); }
+
+    void pop_back() { data_.pop_back(); }
+    void pop_front() { data_.erase(data_.begin()); }
+
+    iterator insert(const_iterator pos, const T &v) { return data_.insert(pos, v); }
+    iterator insert(const_iterator pos, T &&v) { return data_.insert(pos, move(v)); }
+    iterator erase(const_iterator pos) { return data_.erase(pos); }
+
+    void swap(list &o) noexcept { data_.swap(o.data_); }
+
+private:
+    vector<T> data_;
+};
+
+} /* namespace std */
+
+#endif

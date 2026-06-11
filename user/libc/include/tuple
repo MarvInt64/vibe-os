@@ -41,6 +41,36 @@ public:
     tuple &operator=(const tuple &) = default;
     tuple &operator=(tuple &&)      = default;
 
+    template <typename UH, typename... UT>
+    tuple &operator=(const tuple<UH, UT...> &o) {
+        head_ = o.head_;
+        tail_ = o.tail_;
+        return *this;
+    }
+
+    template <typename UH, typename... UT>
+    tuple &operator=(tuple<UH, UT...> &&o) {
+        head_ = forward<UH>(o.head_);
+        tail_ = forward<tuple<UT...>>(o.tail_);
+        return *this;
+    }
+
+    template <typename A, typename B>
+    tuple &operator=(const pair<A, B> &p) {
+        static_assert(sizeof...(Tail) == 1, "pair assignment requires a 2-tuple");
+        head_ = p.first;
+        tail_.head_ = p.second;
+        return *this;
+    }
+
+    template <typename A, typename B>
+    tuple &operator=(pair<A, B> &&p) {
+        static_assert(sizeof...(Tail) == 1, "pair assignment requires a 2-tuple");
+        head_ = forward<A>(p.first);
+        tail_.head_ = forward<B>(p.second);
+        return *this;
+    }
+
     void swap(tuple &o) noexcept {
         std::swap(head_, o.head_);
         tail_.swap(o.tail_);
@@ -98,6 +128,9 @@ template <typename... Ts>
 constexpr tuple<decay_t<Ts>...> make_tuple(Ts &&...args) {
     return tuple<decay_t<Ts>...>(forward<Ts>(args)...);
 }
+
+template <typename... Ts>
+tuple(Ts...) -> tuple<Ts...>;
 
 template <typename... Ts>
 constexpr tuple<Ts &...> tie(Ts &...args) noexcept {

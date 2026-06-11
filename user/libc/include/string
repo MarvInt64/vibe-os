@@ -39,6 +39,18 @@ public:
         assign_raw(s, n);
     }
 
+    basic_string(basic_string_view<CharT, Traits> sv) : basic_string() {
+        assign_raw(sv.data(), sv.size());
+    }
+
+    template <typename StringLike>
+    explicit basic_string(const StringLike &s) : basic_string(s.data(), s.size()) {}
+
+    template <typename It>
+    basic_string(It first, It last) : basic_string() {
+        for (; first != last; ++first) push_back(*first);
+    }
+
     basic_string(size_type n, CharT c) : basic_string() {
         ensure(n);
         for (size_type i = 0; i < n; ++i) Traits::assign(data_[i], c);
@@ -86,6 +98,11 @@ public:
         assign_raw(&c, 1);
         return *this;
     }
+    template <typename StringLike>
+    basic_string &operator=(const StringLike &s) {
+        assign_raw(s.data(), s.size());
+        return *this;
+    }
 
     /* --- element access -------------------------------------------------- */
     reference       operator[](size_type i)       { return data_[i]; }
@@ -100,6 +117,10 @@ public:
     const CharT *c_str() const noexcept { return data_ ? data_ : empty_string(); }
     const CharT *data()  const noexcept { return c_str(); }
     CharT       *data()  noexcept       { ensure(0); return data_; }
+
+    operator basic_string_view<CharT, Traits>() const noexcept {
+        return basic_string_view<CharT, Traits>(c_str(), size_);
+    }
 
     /* --- iterators ------------------------------------------------------- */
     iterator       begin() noexcept       { return data(); }
@@ -254,6 +275,30 @@ private:
 };
 
 using string = basic_string<char>;
+
+inline string to_string(long long v) {
+    bool neg = v < 0;
+    unsigned long long n = neg ? (unsigned long long)(-v) : (unsigned long long)v;
+    char tmp[32];
+    size_t i = 0;
+    do { tmp[i++] = (char)('0' + (n % 10)); n /= 10; } while (n);
+    string out;
+    if (neg) out.push_back('-');
+    while (i) out.push_back(tmp[--i]);
+    return out;
+}
+inline string to_string(unsigned long long v) {
+    char tmp[32];
+    size_t i = 0;
+    do { tmp[i++] = (char)('0' + (v % 10)); v /= 10; } while (v);
+    string out;
+    while (i) out.push_back(tmp[--i]);
+    return out;
+}
+inline string to_string(int v) { return to_string((long long)v); }
+inline string to_string(unsigned v) { return to_string((unsigned long long)v); }
+inline string to_string(long v) { return to_string((long long)v); }
+inline string to_string(unsigned long v) { return to_string((unsigned long long)v); }
 
 /* --- non-member operators ------------------------------------------------ */
 template <typename C, typename T>

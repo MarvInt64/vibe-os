@@ -28,6 +28,11 @@ typedef __SIZE_TYPE__ size_t;
 typedef __WCHAR_TYPE__ wchar_t;
 #endif
 
+typedef struct {
+    long long __ll;
+    long double __ld;
+} max_align_t;
+
 /* NULL pointer constant. */
 #undef NULL
 #if defined(__cplusplus) && __cplusplus >= 201103L

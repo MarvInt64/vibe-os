@@ -1,0 +1,201 @@
+#ifndef VIBEOS_SYSTEM_ERROR
+#define VIBEOS_SYSTEM_ERROR
+
+/* Freestanding <system_error> subset for LLVM/Clang support headers. */
+
+#include <string>
+#include <type_traits>
+#include <errno.h>
+
+namespace std {
+
+template <typename T> struct is_error_code_enum : false_type {};
+template <typename T> struct is_error_condition_enum : false_type {};
+
+enum class errc {
+    argument_list_too_long = 7,
+    argument_out_of_domain = 33,
+    bad_address = 14,
+    bad_file_descriptor = 9,
+    broken_pipe = 32,
+    device_or_resource_busy = 16,
+    directory_not_empty = 66,
+    executable_format_error = 8,
+    file_exists = 17,
+    file_too_large = 27,
+    filename_too_long = 63,
+    function_not_supported = 78,
+    illegal_byte_sequence = 92,
+    inappropriate_io_control_operation = 25,
+    interrupted = 4,
+    invalid_argument = 22,
+    invalid_seek = 29,
+    io_error = 5,
+    is_a_directory = 21,
+    no_child_process = 10,
+    no_lock_available = 77,
+    no_space_on_device = 28,
+    no_such_device = 19,
+    no_such_device_or_address = 6,
+    no_such_file_or_directory = 2,
+    no_such_process = 3,
+    not_a_directory = 20,
+    not_enough_memory = 12,
+    not_supported = 95,
+    operation_not_permitted = 1,
+    permission_denied = 13,
+    read_only_file_system = 30,
+    resource_deadlock_would_occur = 35,
+    resource_unavailable_try_again = 11,
+    result_out_of_range = 34,
+    too_many_files_open = 24,
+    too_many_files_open_in_system = 23,
+    too_many_links = 31
+};
+
+class error_condition;
+
+class error_category {
+public:
+    constexpr error_category() noexcept = default;
+    error_category(const error_category &) = delete;
+    error_category &operator=(const error_category &) = delete;
+    virtual ~error_category() = default;
+
+    virtual const char *name() const noexcept = 0;
+    virtual string message(int ev) const { return to_string(ev); }
+    virtual error_condition default_error_condition(int ev) const noexcept;
+    virtual bool equivalent(int code, const error_condition &condition) const noexcept;
+    virtual bool equivalent(const class error_code &code, int condition) const noexcept;
+
+    bool operator==(const error_category &o) const noexcept { return this == &o; }
+    bool operator!=(const error_category &o) const noexcept { return this != &o; }
+    bool operator<(const error_category &o) const noexcept { return this < &o; }
+};
+
+const error_category &generic_category() noexcept;
+const error_category &system_category() noexcept;
+
+class error_code {
+public:
+    error_code() noexcept : value_(0), category_(&system_category()) {}
+    error_code(int val, const error_category &cat) noexcept : value_(val), category_(&cat) {}
+
+    template <typename E, typename = enable_if_t<is_error_code_enum<E>::value>>
+    error_code(E e) noexcept : error_code(make_error_code(e)) {}
+
+    void assign(int val, const error_category &cat) noexcept { value_ = val; category_ = &cat; }
+    void clear() noexcept { value_ = 0; category_ = &system_category(); }
+
+    int value() const noexcept { return value_; }
+    const error_category &category() const noexcept { return *category_; }
+    error_condition default_error_condition() const noexcept;
+    string message() const { return category().message(value_); }
+    explicit operator bool() const noexcept { return value_ != 0; }
+
+private:
+    int value_;
+    const error_category *category_;
+};
+
+class error_condition {
+public:
+    error_condition() noexcept : value_(0), category_(&generic_category()) {}
+    error_condition(int val, const error_category &cat) noexcept : value_(val), category_(&cat) {}
+
+    template <typename E, typename = enable_if_t<is_error_condition_enum<E>::value>>
+    error_condition(E e) noexcept : error_condition(make_error_condition(e)) {}
+
+    void assign(int val, const error_category &cat) noexcept { value_ = val; category_ = &cat; }
+    void clear() noexcept { value_ = 0; category_ = &generic_category(); }
+
+    int value() const noexcept { return value_; }
+    const error_category &category() const noexcept { return *category_; }
+    string message() const { return category().message(value_); }
+    explicit operator bool() const noexcept { return value_ != 0; }
+
+private:
+    int value_;
+    const error_category *category_;
+};
+
+inline error_condition error_category::default_error_condition(int ev) const noexcept {
+    return error_condition(ev, *this);
+}
+inline bool error_category::equivalent(int code, const error_condition &condition) const noexcept {
+    error_condition dc = default_error_condition(code);
+    return dc.value() == condition.value() && dc.category() == condition.category();
+}
+inline bool error_category::equivalent(const error_code &code, int condition) const noexcept {
+    return *this == code.category() && code.value() == condition;
+}
+
+class generic_error_category final : public error_category {
+public:
+    const char *name() const noexcept override { return "generic"; }
+};
+class system_error_category final : public error_category {
+public:
+    const char *name() const noexcept override { return "system"; }
+    error_condition default_error_condition(int ev) const noexcept override {
+        return error_condition(ev, generic_category());
+    }
+};
+
+inline const error_category &generic_category() noexcept {
+    static generic_error_category cat;
+    return cat;
+}
+inline const error_category &system_category() noexcept {
+    static system_error_category cat;
+    return cat;
+}
+
+inline error_condition error_code::default_error_condition() const noexcept {
+    return category().default_error_condition(value_);
+}
+
+inline error_code make_error_code(errc e) noexcept {
+    return error_code(static_cast<int>(e), generic_category());
+}
+inline error_condition make_error_condition(errc e) noexcept {
+    return error_condition(static_cast<int>(e), generic_category());
+}
+
+template <> struct is_error_condition_enum<errc> : true_type {};
+
+inline bool operator==(const error_code &a, const error_code &b) noexcept {
+    return a.value() == b.value() && a.category() == b.category();
+}
+inline bool operator!=(const error_code &a, const error_code &b) noexcept { return !(a == b); }
+inline bool operator==(const error_condition &a, const error_condition &b) noexcept {
+    return a.value() == b.value() && a.category() == b.category();
+}
+inline bool operator!=(const error_condition &a, const error_condition &b) noexcept { return !(a == b); }
+inline bool operator==(const error_code &code, const error_condition &cond) noexcept {
+    return code.category().equivalent(code.value(), cond) ||
+           cond.category().equivalent(code, cond.value());
+}
+inline bool operator==(const error_condition &cond, const error_code &code) noexcept {
+    return code == cond;
+}
+inline bool operator!=(const error_code &code, const error_condition &cond) noexcept {
+    return !(code == cond);
+}
+inline bool operator!=(const error_condition &cond, const error_code &code) noexcept {
+    return !(code == cond);
+}
+
+class system_error {
+public:
+    system_error(error_code ec) : code_(ec) {}
+    const error_code &code() const noexcept { return code_; }
+    const char *what() const noexcept { return "system_error"; }
+
+private:
+    error_code code_;
+};
+
+} /* namespace std */
+
+#endif

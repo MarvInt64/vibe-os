@@ -1,0 +1,21 @@
+#ifndef VIBEOS_RATIO
+#define VIBEOS_RATIO
+
+#include <cstdint>
+
+namespace std {
+
+template <intmax_t Num, intmax_t Den = 1>
+struct ratio {
+    static constexpr intmax_t num = Num;
+    static constexpr intmax_t den = Den;
+    using type = ratio<num, den>;
+};
+
+using nano  = ratio<1, 1000000000>;
+using micro = ratio<1, 1000000>;
+using milli = ratio<1, 1000>;
+
+} /* namespace std */
+
+#endif

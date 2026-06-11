@@ -1,0 +1,306 @@
+#ifndef VIBEOS_VARIANT
+#define VIBEOS_VARIANT
+
+/* Freestanding <variant> subset for VibeOS userspace.  No exceptions and no
+ * valueless_by_exception state; failed get<T>/get<I> is undefined behavior. */
+
+#include <cstddef>
+#include <type_traits>
+#include <utility>
+
+namespace std {
+
+struct monostate {};
+constexpr bool operator==(monostate, monostate) noexcept { return true; }
+constexpr bool operator!=(monostate, monostate) noexcept { return false; }
+constexpr bool operator<(monostate, monostate) noexcept { return false; }
+constexpr bool operator>(monostate, monostate) noexcept { return false; }
+constexpr bool operator<=(monostate, monostate) noexcept { return true; }
+constexpr bool operator>=(monostate, monostate) noexcept { return true; }
+
+template <typename... Ts> class variant;
+
+namespace detail {
+
+template <typename T, typename... Ts> struct _variant_index;
+template <typename T, typename U, typename... Ts>
+struct _variant_index<T, U, Ts...>
+    : integral_constant<size_t, is_same<T, U>::value ? 0 : 1 + _variant_index<T, Ts...>::value> {};
+template <typename T> struct _variant_index<T> : integral_constant<size_t, (size_t)-1> {};
+
+template <size_t I, typename... Ts> struct _variant_type;
+template <typename T, typename... Ts>
+struct _variant_type<0, T, Ts...> { using type = T; };
+template <size_t I, typename T, typename... Ts>
+struct _variant_type<I, T, Ts...> { using type = typename _variant_type<I - 1, Ts...>::type; };
+
+template <size_t A, size_t B> struct _static_max : integral_constant<size_t, (A > B ? A : B)> {};
+template <typename... Ts> struct _max_size;
+template <typename T> struct _max_size<T> : integral_constant<size_t, sizeof(T)> {};
+template <typename T, typename... Ts>
+struct _max_size<T, Ts...> : _static_max<sizeof(T), _max_size<Ts...>::value> {};
+template <> struct _max_size<> : integral_constant<size_t, 1> {};
+
+template <typename... Ts> struct _max_align;
+template <typename T> struct _max_align<T> : integral_constant<size_t, alignof(T)> {};
+template <typename T, typename... Ts>
+struct _max_align<T, Ts...> : _static_max<alignof(T), _max_align<Ts...>::value> {};
+template <> struct _max_align<> : integral_constant<size_t, alignof(max_align_t)> {};
+
+template <size_t I, typename... Ts>
+void _variant_destroy(size_t idx, void *storage) {
+    if constexpr (I < sizeof...(Ts)) {
+        if (idx == I) {
+            using T = typename _variant_type<I, Ts...>::type;
+            reinterpret_cast<T *>(storage)->~T();
+        } else {
+            _variant_destroy<I + 1, Ts...>(idx, storage);
+        }
+    }
+}
+
+template <size_t I, typename... Ts>
+void _variant_copy(size_t idx, void *dst, const void *src) {
+    if constexpr (I < sizeof...(Ts)) {
+        if (idx == I) {
+            using T = typename _variant_type<I, Ts...>::type;
+            ::new (dst) T(*reinterpret_cast<const T *>(src));
+        } else {
+            _variant_copy<I + 1, Ts...>(idx, dst, src);
+        }
+    }
+}
+
+template <size_t I, typename... Ts>
+void _variant_move(size_t idx, void *dst, void *src) {
+    if constexpr (I < sizeof...(Ts)) {
+        if (idx == I) {
+            using T = typename _variant_type<I, Ts...>::type;
+            ::new (dst) T(std::move(*reinterpret_cast<T *>(src)));
+        } else {
+            _variant_move<I + 1, Ts...>(idx, dst, src);
+        }
+    }
+}
+
+template <typename T>
+using _not_variant = bool_constant<!is_same<remove_cvref_t<T>, variant<>>::value>;
+
+} /* namespace detail */
+
+template <typename... Ts>
+class variant {
+public:
+    static constexpr size_t variant_npos = (size_t)-1;
+
+    constexpr variant() : index_(variant_npos) {
+        if constexpr (sizeof...(Ts) > 0) emplace<0>();
+    }
+
+    variant(const variant &o) : index_(variant_npos) {
+        if (o.index_ != variant_npos) {
+            detail::_variant_copy<0, Ts...>(o.index_, data(), o.data());
+            index_ = o.index_;
+        }
+    }
+
+    variant(variant &&o) : index_(variant_npos) {
+        if (o.index_ != variant_npos) {
+            detail::_variant_move<0, Ts...>(o.index_, data(), o.data());
+            index_ = o.index_;
+        }
+    }
+
+    template <typename T,
+              typename U = decay_t<T>,
+              typename = enable_if_t<!is_same<U, variant>::value &&
+                                     (detail::_variant_index<U, Ts...>::value != (size_t)-1)>>
+    variant(T &&v) : index_(variant_npos) {
+        emplace<U>(forward<T>(v));
+    }
+
+    ~variant() { reset(); }
+
+    variant &operator=(const variant &o) {
+        if (this != &o) {
+            reset();
+            if (o.index_ != variant_npos) {
+                detail::_variant_copy<0, Ts...>(o.index_, data(), o.data());
+                index_ = o.index_;
+            }
+        }
+        return *this;
+    }
+
+    variant &operator=(variant &&o) {
+        if (this != &o) {
+            reset();
+            if (o.index_ != variant_npos) {
+                detail::_variant_move<0, Ts...>(o.index_, data(), o.data());
+                index_ = o.index_;
+            }
+        }
+        return *this;
+    }
+
+    template <typename T,
+              typename U = decay_t<T>,
+              typename = enable_if_t<(detail::_variant_index<U, Ts...>::value != (size_t)-1)>>
+    variant &operator=(T &&v) {
+        emplace<U>(forward<T>(v));
+        return *this;
+    }
+
+    template <size_t I, typename... Args>
+    typename detail::_variant_type<I, Ts...>::type &emplace(Args &&...args) {
+        using T = typename detail::_variant_type<I, Ts...>::type;
+        reset();
+        ::new (data()) T(forward<Args>(args)...);
+        index_ = I;
+        return *reinterpret_cast<T *>(data());
+    }
+
+    template <typename T, typename... Args>
+    T &emplace(Args &&...args) {
+        return emplace<detail::_variant_index<T, Ts...>::value>(forward<Args>(args)...);
+    }
+
+    constexpr size_t index() const noexcept { return index_; }
+    constexpr bool valueless_by_exception() const noexcept { return false; }
+
+private:
+    void reset() {
+        if (index_ != variant_npos) {
+            detail::_variant_destroy<0, Ts...>(index_, data());
+            index_ = variant_npos;
+        }
+    }
+
+    void *data() noexcept { return storage_; }
+    const void *data() const noexcept { return storage_; }
+
+    alignas(detail::_max_align<Ts...>::value) unsigned char storage_[detail::_max_size<Ts...>::value];
+    size_t index_;
+
+    template <size_t I, typename... Us> friend typename detail::_variant_type<I, Us...>::type &get(variant<Us...> &);
+    template <size_t I, typename... Us> friend const typename detail::_variant_type<I, Us...>::type &get(const variant<Us...> &);
+    template <size_t I, typename... Us> friend typename detail::_variant_type<I, Us...>::type &&get(variant<Us...> &&);
+};
+
+template <typename T> struct variant_size;
+template <typename... Ts> struct variant_size<variant<Ts...>> : integral_constant<size_t, sizeof...(Ts)> {};
+template <typename T> struct variant_size<const T> : variant_size<T> {};
+template <typename T> struct variant_size<volatile T> : variant_size<T> {};
+template <typename T> struct variant_size<const volatile T> : variant_size<T> {};
+template <typename T> inline constexpr size_t variant_size_v = variant_size<T>::value;
+
+template <size_t I, typename T> struct variant_alternative;
+template <size_t I, typename... Ts>
+struct variant_alternative<I, variant<Ts...>> { using type = typename detail::_variant_type<I, Ts...>::type; };
+template <size_t I, typename T>
+struct variant_alternative<I, const T> { using type = const typename variant_alternative<I, T>::type; };
+template <size_t I, typename T>
+using variant_alternative_t = typename variant_alternative<I, T>::type;
+
+template <size_t I, typename... Ts>
+typename detail::_variant_type<I, Ts...>::type &get(variant<Ts...> &v) {
+    using T = typename detail::_variant_type<I, Ts...>::type;
+    return *reinterpret_cast<T *>(v.data());
+}
+template <size_t I, typename... Ts>
+const typename detail::_variant_type<I, Ts...>::type &get(const variant<Ts...> &v) {
+    using T = typename detail::_variant_type<I, Ts...>::type;
+    return *reinterpret_cast<const T *>(v.data());
+}
+template <size_t I, typename... Ts>
+typename detail::_variant_type<I, Ts...>::type &&get(variant<Ts...> &&v) {
+    using T = typename detail::_variant_type<I, Ts...>::type;
+    return std::move(*reinterpret_cast<T *>(v.data()));
+}
+
+template <typename T, typename... Ts>
+T &get(variant<Ts...> &v) { return get<detail::_variant_index<T, Ts...>::value>(v); }
+template <typename T, typename... Ts>
+const T &get(const variant<Ts...> &v) { return get<detail::_variant_index<T, Ts...>::value>(v); }
+template <typename T, typename... Ts>
+T &&get(variant<Ts...> &&v) { return get<detail::_variant_index<T, Ts...>::value>(std::move(v)); }
+
+template <typename T, typename... Ts>
+bool holds_alternative(const variant<Ts...> &v) noexcept {
+    return v.index() == detail::_variant_index<T, Ts...>::value;
+}
+
+template <size_t I, typename... Ts>
+typename detail::_variant_type<I, Ts...>::type *get_if(variant<Ts...> *v) noexcept {
+    return (v && v->index() == I) ? &get<I>(*v) : nullptr;
+}
+template <size_t I, typename... Ts>
+const typename detail::_variant_type<I, Ts...>::type *get_if(const variant<Ts...> *v) noexcept {
+    return (v && v->index() == I) ? &get<I>(*v) : nullptr;
+}
+template <typename T, typename... Ts>
+T *get_if(variant<Ts...> *v) noexcept {
+    return get_if<detail::_variant_index<T, Ts...>::value>(v);
+}
+template <typename T, typename... Ts>
+const T *get_if(const variant<Ts...> *v) noexcept {
+    return get_if<detail::_variant_index<T, Ts...>::value>(v);
+}
+
+namespace detail {
+template <size_t I, typename Visitor, typename Variant>
+auto _visit_one(Visitor &&vis, Variant &&var)
+    -> decltype(forward<Visitor>(vis)(get<0>(forward<Variant>(var)))) {
+    using V = remove_cvref_t<Variant>;
+    if constexpr (I >= variant_size_v<V>) {
+        __builtin_unreachable();
+    } else {
+        if (var.index() == I) return forward<Visitor>(vis)(get<I>(forward<Variant>(var)));
+        return _visit_one<I + 1>(forward<Visitor>(vis), forward<Variant>(var));
+    }
+}
+
+template <size_t I, typename Visitor, typename V1, typename V2>
+auto _visit_two_outer(Visitor &&vis, V1 &&v1, V2 &&v2)
+    -> decltype(forward<Visitor>(vis)(get<0>(forward<V1>(v1)), get<0>(forward<V2>(v2))));
+
+template <size_t I, size_t J, typename Visitor, typename V1, typename V2>
+auto _visit_two_inner(Visitor &&vis, V1 &&v1, V2 &&v2)
+    -> decltype(forward<Visitor>(vis)(get<0>(forward<V1>(v1)), get<0>(forward<V2>(v2)))) {
+    using RV2 = remove_cvref_t<V2>;
+    if constexpr (J >= variant_size_v<RV2>) {
+        __builtin_unreachable();
+    } else {
+        if (v2.index() == J)
+            return forward<Visitor>(vis)(get<I>(forward<V1>(v1)), get<J>(forward<V2>(v2)));
+        return _visit_two_inner<I, J + 1>(forward<Visitor>(vis), forward<V1>(v1), forward<V2>(v2));
+    }
+}
+
+template <size_t I, typename Visitor, typename V1, typename V2>
+auto _visit_two_outer(Visitor &&vis, V1 &&v1, V2 &&v2)
+    -> decltype(forward<Visitor>(vis)(get<0>(forward<V1>(v1)), get<0>(forward<V2>(v2)))) {
+    using RV1 = remove_cvref_t<V1>;
+    if constexpr (I >= variant_size_v<RV1>) {
+        __builtin_unreachable();
+    } else {
+        if (v1.index() == I)
+            return _visit_two_inner<I, 0>(forward<Visitor>(vis), forward<V1>(v1), forward<V2>(v2));
+        return _visit_two_outer<I + 1>(forward<Visitor>(vis), forward<V1>(v1), forward<V2>(v2));
+    }
+}
+} /* namespace detail */
+
+template <typename Visitor, typename Variant>
+decltype(auto) visit(Visitor &&vis, Variant &&var) {
+    return detail::_visit_one<0>(forward<Visitor>(vis), forward<Variant>(var));
+}
+
+template <typename Visitor, typename V1, typename V2>
+decltype(auto) visit(Visitor &&vis, V1 &&v1, V2 &&v2) {
+    return detail::_visit_two_outer<0>(forward<Visitor>(vis), forward<V1>(v1), forward<V2>(v2));
+}
+
+} /* namespace std */
+
+#endif

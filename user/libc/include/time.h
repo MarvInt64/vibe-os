@@ -1,11 +1,11 @@
 #ifndef VIBEOS_TIME_H
 #define VIBEOS_TIME_H
 
+#include <sys/types.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef long time_t;
 
 struct tm {
     int tm_sec;    /* Seconds (0-60) */

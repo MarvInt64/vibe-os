@@ -20,6 +20,92 @@ T *addressof(T &arg) noexcept {
 template <typename T>
 const T *addressof(const T &&) = delete;
 
+/* --- shared_ptr (small reference-counted subset) ------------------------- */
+template <typename T>
+class shared_ptr {
+public:
+    using element_type = T;
+
+    constexpr shared_ptr() noexcept : ptr_(nullptr), count_(nullptr) {}
+    constexpr shared_ptr(nullptr_t) noexcept : ptr_(nullptr), count_(nullptr) {}
+    explicit shared_ptr(T *p) : ptr_(p), count_(p ? new size_t(1) : nullptr) {}
+
+    shared_ptr(const shared_ptr &o) noexcept : ptr_(o.ptr_), count_(o.count_) {
+        if (count_) ++*count_;
+    }
+    template <typename U>
+    shared_ptr(const shared_ptr<U> &o) noexcept : ptr_(o.get()), count_(o.count_) {
+        if (count_) ++*count_;
+    }
+    shared_ptr(shared_ptr &&o) noexcept : ptr_(o.ptr_), count_(o.count_) {
+        o.ptr_ = nullptr; o.count_ = nullptr;
+    }
+
+    ~shared_ptr() { release_current(); }
+
+    shared_ptr &operator=(const shared_ptr &o) noexcept {
+        if (this != &o) {
+            release_current();
+            ptr_ = o.ptr_; count_ = o.count_;
+            if (count_) ++*count_;
+        }
+        return *this;
+    }
+    shared_ptr &operator=(shared_ptr &&o) noexcept {
+        if (this != &o) {
+            release_current();
+            ptr_ = o.ptr_; count_ = o.count_;
+            o.ptr_ = nullptr; o.count_ = nullptr;
+        }
+        return *this;
+    }
+
+    void reset() noexcept { release_current(); ptr_ = nullptr; count_ = nullptr; }
+    void reset(T *p) {
+        release_current();
+        ptr_ = p;
+        count_ = p ? new size_t(1) : nullptr;
+    }
+
+    T *get() const noexcept { return ptr_; }
+    T &operator*() const noexcept { return *ptr_; }
+    T *operator->() const noexcept { return ptr_; }
+    explicit operator bool() const noexcept { return ptr_ != nullptr; }
+
+    long use_count() const noexcept { return count_ ? (long)*count_ : 0; }
+
+private:
+    template <typename U> friend class shared_ptr;
+
+    void release_current() {
+        if (count_ && --*count_ == 0) {
+            delete ptr_;
+            delete count_;
+        }
+    }
+
+    T *ptr_;
+    size_t *count_;
+};
+
+template <typename T, typename... Args>
+shared_ptr<T> make_shared(Args &&...args) {
+    return shared_ptr<T>(new T(forward<Args>(args)...));
+}
+
+template <typename T, typename U>
+bool operator==(const shared_ptr<T> &a, const shared_ptr<U> &b) noexcept { return a.get() == b.get(); }
+template <typename T>
+bool operator==(const shared_ptr<T> &a, nullptr_t) noexcept { return !a; }
+template <typename T>
+bool operator==(nullptr_t, const shared_ptr<T> &a) noexcept { return !a; }
+template <typename T, typename U>
+bool operator!=(const shared_ptr<T> &a, const shared_ptr<U> &b) noexcept { return !(a == b); }
+template <typename T>
+bool operator!=(const shared_ptr<T> &a, nullptr_t) noexcept { return (bool)a; }
+template <typename T>
+bool operator!=(nullptr_t, const shared_ptr<T> &a) noexcept { return (bool)a; }
+
 /* --- default_delete ------------------------------------------------------ */
 template <typename T>
 struct default_delete {
@@ -194,6 +280,13 @@ void destroy(It first, It last) { for (; first != last; ++first) destroy_at(addr
 
 template <typename It, typename Size>
 It destroy_n(It first, Size n) { for (; n > 0; --n, ++first) destroy_at(addressof(*first)); return first; }
+
+template <typename Out, typename Size>
+Out uninitialized_value_construct_n(Out first, Size n) {
+    using T = remove_reference_t<decltype(*first)>;
+    for (; n > 0; --n, ++first) ::new (static_cast<void *>(addressof(*first))) T();
+    return first;
+}
 
 template <typename In, typename Out>
 Out uninitialized_copy(In first, In last, Out d) {

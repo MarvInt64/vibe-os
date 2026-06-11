@@ -14,6 +14,10 @@
 #include <queue>
 #include <algorithm>
 #include <iterator>
+#include <list>
+#include <chrono>
+#include <system_error>
+#include <variant>
 #include <stdio.h>
 
 static int g_fail = 0;
@@ -229,6 +233,41 @@ int main(void) {
     CHECK(pq.top() == 9);
     pq.pop();
     CHECK(pq.top() == 3);
+
+    /* ---- Clang support header primitives ---- */
+    std::list<int> li;
+    li.push_back(2);
+    li.push_front(1);
+    li.emplace_back(3);
+    CHECK(li.size() == 3 && li.front() == 1 && li.back() == 3);
+
+    auto sec = std::chrono::seconds(2);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(sec);
+    CHECK(ms.count() == 2000);
+    auto tp = std::chrono::system_clock::from_time_t(7);
+    CHECK(std::chrono::system_clock::to_time_t(tp) == 7);
+
+    std::error_code ec = std::make_error_code(std::errc::invalid_argument);
+    CHECK(ec);
+    CHECK(ec.value() == (int)std::errc::invalid_argument);
+
+    auto sp = std::make_shared<int>(44);
+    std::shared_ptr<int> sp2 = sp;
+    CHECK(*sp2 == 44 && sp.use_count() == 2);
+
+    std::variant<std::monostate, int, std::string> vv;
+    CHECK(std::holds_alternative<std::monostate>(vv));
+    vv = 17;
+    CHECK(std::get<int>(vv) == 17);
+    vv.emplace<std::string>("variant");
+    CHECK(std::get<std::string>(vv) == "variant");
+    int vlen = std::visit([](auto &x) -> int {
+        using T = std::decay_t<decltype(x)>;
+        if constexpr (std::is_same_v<T, std::string>) return (int)x.size();
+        else if constexpr (std::is_same_v<T, int>) return x;
+        else return 0;
+    }, vv);
+    CHECK(vlen == 7);
 
     printf(g_fail == 0 ? "ALL OK\n" : "FAILURES: %d\n", g_fail);
     return g_fail;

@@ -6,9 +6,12 @@
 namespace std {
 using ::size_t;
 using ::ptrdiff_t;
+using ::max_align_t;
 #if defined(__clang__)
 using nullptr_t = decltype(nullptr);
 #endif
+
+enum class byte : unsigned char {};
 }
 
 #endif

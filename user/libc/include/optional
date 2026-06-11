@@ -26,18 +26,18 @@ public:
     constexpr optional() noexcept : has_(false) {}
     constexpr optional(nullopt_t) noexcept : has_(false) {}
 
-    optional(const T &v) : has_(true) { ::new (storage()) T(v); }
-    optional(T &&v) : has_(true) { ::new (storage()) T(move(v)); }
+    constexpr optional(const T &v) : has_(true) { ::new (storage()) T(v); }
+    constexpr optional(T &&v) : has_(true) { ::new (storage()) T(move(v)); }
 
     template <typename... Args>
-    explicit optional(in_place_t, Args &&...args) : has_(true) {
+    constexpr explicit optional(in_place_t, Args &&...args) : has_(true) {
         ::new (storage()) T(forward<Args>(args)...);
     }
 
-    optional(const optional &o) : has_(o.has_) {
+    constexpr optional(const optional &o) : has_(o.has_) {
         if (has_) ::new (storage()) T(*o.storage());
     }
-    optional(optional &&o) noexcept : has_(o.has_) {
+    constexpr optional(optional &&o) noexcept : has_(o.has_) {
         if (has_) ::new (storage()) T(move(*o.storage()));
     }
 
@@ -63,7 +63,7 @@ public:
     optional &operator=(U &&v) { emplace_move(forward<U>(v)); return *this; }
 
     template <typename... Args>
-    T &emplace(Args &&...args) {
+    constexpr T &emplace(Args &&...args) {
         reset();
         ::new (storage()) T(forward<Args>(args)...);
         has_ = true;

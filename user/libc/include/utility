@@ -64,6 +64,12 @@ struct pair {
     pair(const pair &) = default;
     pair(pair &&)      = default;
 
+    template <typename U1, typename U2>
+    constexpr pair(const pair<U1, U2> &o) : first(o.first), second(o.second) {}
+    template <typename U1, typename U2>
+    constexpr pair(pair<U1, U2> &&o)
+        : first(forward<U1>(o.first)), second(forward<U2>(o.second)) {}
+
     pair &operator=(const pair &) = default;
     pair &operator=(pair &&)      = default;
 

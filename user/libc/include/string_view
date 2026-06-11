@@ -49,6 +49,8 @@ public:
     constexpr basic_string_view() noexcept : data_(nullptr), size_(0) {}
     constexpr basic_string_view(const CharT *s, size_type n) : data_(s), size_(n) {}
     basic_string_view(const CharT *s) : data_(s), size_(Traits::length(s)) {}
+    template <typename StringLike>
+    basic_string_view(const StringLike &s) : data_(s.data()), size_(s.size()) {}
 
     basic_string_view(const basic_string_view &) noexcept = default;
     basic_string_view &operator=(const basic_string_view &) noexcept = default;

@@ -15,6 +15,32 @@
 
 namespace std {
 
+/* --- reference_wrapper --------------------------------------------------- */
+template <typename T>
+class reference_wrapper {
+public:
+    using type = T;
+
+    reference_wrapper(T &ref) noexcept : ptr_(__builtin_addressof(ref)) {}
+    reference_wrapper(T &&) = delete;
+
+    operator T &() const noexcept { return *ptr_; }
+    T &get() const noexcept { return *ptr_; }
+
+    template <typename... Args>
+    decltype(auto) operator()(Args &&...args) const {
+        return get()(forward<Args>(args)...);
+    }
+
+private:
+    T *ptr_;
+};
+
+template <typename T>
+reference_wrapper<T> ref(T &t) noexcept { return reference_wrapper<T>(t); }
+template <typename T>
+reference_wrapper<const T> cref(const T &t) noexcept { return reference_wrapper<const T>(t); }
+
 /* --- function objects ---------------------------------------------------- */
 template <typename T = void> struct less {
     constexpr bool operator()(const T &a, const T &b) const { return a < b; }
