@@ -8,6 +8,7 @@
  * for when VibeOS gains multiple CPUs. */
 
 #include <cstddef>
+#include <stdint.h>
 
 namespace std {
 
@@ -42,6 +43,18 @@ struct atomic {
                                  memory_order o = memory_order_seq_cst) noexcept {
         return __atomic_compare_exchange_n(&value, &expected, desired, false, o, o);
     }
+    bool compare_exchange_strong(T &expected, T desired,
+                                 memory_order success, memory_order failure) noexcept {
+        return __atomic_compare_exchange_n(&value, &expected, desired, false, success, failure);
+    }
+    bool compare_exchange_weak(T &expected, T desired,
+                               memory_order o = memory_order_seq_cst) noexcept {
+        return __atomic_compare_exchange_n(&value, &expected, desired, true, o, o);
+    }
+    bool compare_exchange_weak(T &expected, T desired,
+                               memory_order success, memory_order failure) noexcept {
+        return __atomic_compare_exchange_n(&value, &expected, desired, true, success, failure);
+    }
     T fetch_add(T arg, memory_order o = memory_order_seq_cst) noexcept {
         return __atomic_fetch_add(&value, arg, o);
     }
@@ -60,6 +73,7 @@ struct atomic {
 using atomic_int  = atomic<int>;
 using atomic_bool = atomic<bool>;
 using atomic_uint = atomic<unsigned int>;
+using atomic_uintptr_t = atomic<uintptr_t>;
 
 /* atomic_flag — the one lock-free type the standard guarantees. */
 struct atomic_flag {

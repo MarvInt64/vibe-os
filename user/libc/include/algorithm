@@ -143,6 +143,32 @@ bool equal(It1 f1, It1 l1, It2 f2) {
     return true;
 }
 
+/* --- is_permutation ----------------------------------------------------- */
+template <typename It1, typename It2>
+bool is_permutation(It1 f1, It1 l1, It2 f2) {
+    for (; f1 != l1; ++f1, ++f2) {
+        if (!(*f1 == *f2)) break;
+    }
+    if (f1 == l1) return true;
+
+    for (It1 scan = f1; scan != l1; ++scan) {
+        bool seen = false;
+        for (It1 prev = f1; prev != scan; ++prev) {
+            if (*prev == *scan) { seen = true; break; }
+        }
+        if (seen) continue;
+
+        long c1 = 0;
+        for (It1 it = scan; it != l1; ++it) if (*it == *scan) ++c1;
+
+        long c2 = 0;
+        It2 it2 = f2;
+        for (It1 it = f1; it != l1; ++it, ++it2) if (*it2 == *scan) ++c2;
+        if (c1 != c2) return false;
+    }
+    return true;
+}
+
 /* --- reverse ------------------------------------------------------------- */
 template <typename It>
 void reverse(It first, It last) {

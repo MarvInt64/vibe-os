@@ -13,14 +13,16 @@ template <typename T> class shared_future;
 template <typename T>
 class future {
 public:
-    future() : ready_(false), value_() {}
-    explicit future(T v) : ready_(true), value_(move(v)) {}
+    future() : ready_(false), value_(), ref_(&value_) {}
+    explicit future(T v) : ready_(true), value_(move(v)), ref_(&value_) {}
+    explicit future(T *ref) : ready_(false), value_(), ref_(ref) {}
     void wait() const {}
-    T get() { return value_; }
-    shared_future<T> share() { return shared_future<T>(value_); }
+    T get() { ready_ = true; return move(*ref_); }
+    shared_future<T> share() { return shared_future<T>(*ref_); }
 private:
     bool ready_;
     T value_;
+    T *ref_;
 };
 
 template <>
@@ -51,6 +53,33 @@ public:
 };
 
 inline shared_future<void> future<void>::share() { return shared_future<void>(); }
+
+template <typename T>
+class promise {
+public:
+    promise() : value_() {}
+    promise(const promise &) = delete;
+    promise &operator=(const promise &) = delete;
+
+    future<T> get_future() { return future<T>(&value_); }
+
+    template <typename U>
+    void set_value(U &&v) { value_ = forward<U>(v); }
+
+private:
+    T value_;
+};
+
+template <>
+class promise<void> {
+public:
+    promise() = default;
+    promise(const promise &) = delete;
+    promise &operator=(const promise &) = delete;
+
+    future<void> get_future() { return future<void>(); }
+    void set_value() {}
+};
 
 template <typename F>
 auto async(launch, F &&f) -> future<decltype(f())> {

@@ -63,6 +63,23 @@ public:
     size_type count(const Key &k) const { return find(k) == end() ? 0 : 1; }
     bool contains(const Key &k) const { return find(k) != end(); }
 
+    template <typename K>
+    iterator lower_bound(const K &k) { return data_.begin() + lower(k); }
+    template <typename K>
+    const_iterator lower_bound(const K &k) const { return data_.begin() + lower(k); }
+    template <typename K>
+    iterator upper_bound(const K &k) {
+        size_type lo = lower(k);
+        if (lo < data_.size() && key_eq(data_[lo].first, k)) ++lo;
+        return data_.begin() + lo;
+    }
+    template <typename K>
+    const_iterator upper_bound(const K &k) const {
+        size_type lo = lower(k);
+        if (lo < data_.size() && key_eq(data_[lo].first, k)) ++lo;
+        return data_.begin() + lo;
+    }
+
     T &at(const Key &k) {
         size_type lo = lower(k);
         if (lo >= data_.size() || !key_eq(data_[lo].first, k)) __builtin_trap();
@@ -88,6 +105,10 @@ public:
             return { data_.begin() + lo, false };
         data_.insert(data_.begin() + lo, kv);
         return { data_.begin() + lo, true };
+    }
+
+    iterator insert(const_iterator, const value_type &kv) {
+        return insert(kv).first;
     }
 
     template <typename... Args>

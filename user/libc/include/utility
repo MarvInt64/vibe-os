@@ -121,6 +121,29 @@ constexpr pair<decay_t<T1>, decay_t<T2>> make_pair(T1 &&a, T2 &&b) {
     return {forward<T1>(a), forward<T2>(b)};
 }
 
+template <typename T1, typename T2>
+struct tuple_size<pair<T1, T2>> : integral_constant<size_t, 2> {};
+template <typename T1, typename T2>
+struct tuple_element<0, pair<T1, T2>> { using type = T1; };
+template <typename T1, typename T2>
+struct tuple_element<1, pair<T1, T2>> { using type = T2; };
+
+template <size_t I, typename T1, typename T2>
+constexpr tuple_element_t<I, pair<T1, T2>> &get(pair<T1, T2> &p) noexcept {
+    if constexpr (I == 0) return p.first;
+    else return p.second;
+}
+template <size_t I, typename T1, typename T2>
+constexpr const tuple_element_t<I, pair<T1, T2>> &get(const pair<T1, T2> &p) noexcept {
+    if constexpr (I == 0) return p.first;
+    else return p.second;
+}
+template <size_t I, typename T1, typename T2>
+constexpr tuple_element_t<I, pair<T1, T2>> &&get(pair<T1, T2> &&p) noexcept {
+    if constexpr (I == 0) return forward<T1>(p.first);
+    else return forward<T2>(p.second);
+}
+
 template <typename T1, typename T2, typename U1, typename U2>
 constexpr bool operator==(const pair<T1,T2> &a, const pair<U1,U2> &b) {
     return a.first == b.first && a.second == b.second;

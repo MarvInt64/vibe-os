@@ -134,6 +134,18 @@ bool operator==(const optional<T> &a, nullopt_t) noexcept { return !a.has_value(
 template <typename T>
 bool operator==(nullopt_t, const optional<T> &a) noexcept { return !a.has_value(); }
 template <typename T, typename U>
+bool operator<(const optional<T> &a, const optional<U> &b) {
+    if (!b.has_value()) return false;
+    if (!a.has_value()) return true;
+    return *a < *b;
+}
+template <typename T, typename U>
+bool operator>(const optional<T> &a, const optional<U> &b) { return b < a; }
+template <typename T, typename U>
+bool operator<=(const optional<T> &a, const optional<U> &b) { return !(b < a); }
+template <typename T, typename U>
+bool operator>=(const optional<T> &a, const optional<U> &b) { return !(a < b); }
+template <typename T, typename U>
 bool operator==(const optional<T> &a, const U &b) { return a.has_value() && *a == b; }
 template <typename T, typename U>
 bool operator==(const U &b, const optional<T> &a) { return a == b; }
@@ -141,6 +153,23 @@ template <typename T, typename U>
 bool operator!=(const optional<T> &a, const U &b) { return !(a == b); }
 template <typename T, typename U>
 bool operator!=(const U &b, const optional<T> &a) { return !(a == b); }
+
+template <typename T, typename U>
+bool operator<(const optional<T> &a, const U &b) { return !a.has_value() || *a < b; }
+template <typename T, typename U>
+bool operator<(const U &b, const optional<T> &a) { return a.has_value() && b < *a; }
+template <typename T, typename U>
+bool operator>(const optional<T> &a, const U &b) { return a.has_value() && *a > b; }
+template <typename T, typename U>
+bool operator>(const U &b, const optional<T> &a) { return !a.has_value() || b > *a; }
+template <typename T, typename U>
+bool operator<=(const optional<T> &a, const U &b) { return !(a > b); }
+template <typename T, typename U>
+bool operator<=(const U &b, const optional<T> &a) { return !(b > a); }
+template <typename T, typename U>
+bool operator>=(const optional<T> &a, const U &b) { return !(a < b); }
+template <typename T, typename U>
+bool operator>=(const U &b, const optional<T> &a) { return !(b < a); }
 
 } /* namespace std */
 

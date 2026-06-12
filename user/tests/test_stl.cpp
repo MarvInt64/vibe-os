@@ -25,6 +25,7 @@
 #include <deque>
 #include <stack>
 #include <future>
+#include <atomic>
 #include <sstream>
 #include <stdio.h>
 
@@ -120,9 +121,12 @@ int main(void) {
         auto p = std::make_unique<Counted>(42);
         CHECK(p->v == 42);
         CHECK(Counted::live == 1);
-        auto q = std::move(p);
-        CHECK(!p);
-        CHECK(q->v == 42);
+    auto q = std::move(p);
+    CHECK(!p);
+    CHECK(q->v == 42);
+    std::shared_ptr<Counted> rsp(std::move(q));
+    CHECK(!q);
+    CHECK(rsp->v == 42);
     }
     CHECK(Counted::live == 0);
 
@@ -135,6 +139,7 @@ int main(void) {
     CHECK(pr.first == 1);
     CHECK(pr.second == "one");
     CHECK(std::make_pair(1, 2) < std::make_pair(1, 3));
+    CHECK(std::get<0>(pr) == 1);
 
     /* ---- optional ---- */
     std::optional<int> oi;
@@ -143,6 +148,8 @@ int main(void) {
     oi = 7;
     CHECK(oi.has_value());
     CHECK(*oi == 7);
+    CHECK(oi > std::optional<int>(3));
+    CHECK(std::optional<int>() < oi);
     oi.reset();
     CHECK(!oi);
     {
@@ -187,6 +194,7 @@ int main(void) {
     CHECK(im.size() == 3);
     CHECK(im.begin()->first == 1);     /* sorted */
     CHECK(im[2] == "two");
+    CHECK(im.upper_bound(2)->first == 3);
 
     /* ---- set ---- */
     std::set<int> si = { 5, 1, 3, 1, 5 };   /* duplicates collapse */
@@ -219,6 +227,7 @@ int main(void) {
     std::vector<int> seq(5);
     std::iota(seq.begin(), seq.end(), 10);
     CHECK(seq[0] == 10 && seq[4] == 14);
+    CHECK(*seq.rbegin() == 14);
     CHECK(std::gcd(48, 36) == 12);
     CHECK(std::lcm(4, 6) == 12);
 
@@ -238,6 +247,8 @@ int main(void) {
     CHECK(std::partition_point(nv.begin(), nv.end(), [](int x){ return x < 4; }) == part);
     auto mm = std::mismatch(nv.begin(), nv.end(), repl.begin());
     CHECK(mm.first == nv.begin() + 3);
+    std::vector<int> perm = { 3, 1, 2, 5, 4 };
+    CHECK(std::is_permutation(nv.begin(), nv.end(), perm.begin()));
     CHECK(std::multiplies<int>{}(6, 7) == 42);
 
     std::priority_queue<int> pq;
@@ -266,6 +277,8 @@ int main(void) {
     auto sp = std::make_shared<int>(44);
     std::shared_ptr<int> sp2 = sp;
     CHECK(*sp2 == 44 && sp.use_count() == 2);
+    std::weak_ptr<int> wp = sp;
+    CHECK(!wp.expired() && *wp.lock() == 44);
 
     std::variant<std::monostate, int, std::string> vv;
     CHECK(std::holds_alternative<std::monostate>(vv));
@@ -316,6 +329,13 @@ int main(void) {
 
     auto fut = std::async(std::launch::deferred, [] { return 12; });
     CHECK(fut.share().get() == 12);
+    std::promise<int> prom;
+    auto prom_fut = prom.get_future();
+    prom.set_value(33);
+    CHECK(prom_fut.get() == 33);
+    std::atomic_uintptr_t ap((uintptr_t)1);
+    uintptr_t expected = 1;
+    CHECK(ap.compare_exchange_weak(expected, (uintptr_t)2));
     std::stringstream ss2;
     ss2 << "n=" << 3;
     CHECK(ss2.str() == "n=3");

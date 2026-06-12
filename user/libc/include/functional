@@ -133,7 +133,7 @@ class function<R(Args...)> {
         F f;
         explicit callable(const F &x) : f(x) {}
         explicit callable(F &&x) : f(move(x)) {}
-        R invoke(Args... a) override { return f(static_cast<Args>(a)...); }
+        R invoke(Args... a) override { return f(forward<Args>(a)...); }
         callable_base *clone() const override { return new callable(f); }
     };
 
@@ -176,7 +176,7 @@ public:
 
     R operator()(Args... a) const {
         if (!c_) __builtin_trap();
-        return c_->invoke(static_cast<Args>(a)...);
+        return c_->invoke(forward<Args>(a)...);
     }
 };
 

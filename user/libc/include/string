@@ -281,6 +281,7 @@ private:
 };
 
 using string = basic_string<char>;
+using wstring = basic_string<wchar_t>;
 
 inline string to_string(long long v) {
     bool neg = v < 0;
