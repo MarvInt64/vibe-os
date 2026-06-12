@@ -18,20 +18,32 @@ struct char_traits<char> {
     using char_type = char;
     using int_type  = int;
 
-    static size_t length(const char *s) { return strlen(s); }
-    static int    compare(const char *a, const char *b, size_t n) { return memcmp(a, b, n); }
+    static constexpr size_t length(const char *s) {
+        size_t n = 0;
+        while (s[n]) ++n;
+        return n;
+    }
+    static constexpr int compare(const char *a, const char *b, size_t n) {
+        for (size_t i = 0; i < n; ++i) {
+            unsigned char ac = (unsigned char)a[i];
+            unsigned char bc = (unsigned char)b[i];
+            if (ac < bc) return -1;
+            if (ac > bc) return 1;
+        }
+        return 0;
+    }
     static const char *find(const char *s, size_t n, char c) {
         return (const char *)memchr(s, (unsigned char)c, n);
     }
-    static bool eq(char a, char b) { return a == b; }
-    static bool lt(char a, char b) { return (unsigned char)a < (unsigned char)b; }
+    static constexpr bool eq(char a, char b) { return a == b; }
+    static constexpr bool lt(char a, char b) { return (unsigned char)a < (unsigned char)b; }
     static void assign(char &a, char b) { a = b; }
     static char *assign(char *s, size_t n, char c) {
         for (size_t i = 0; i < n; ++i) s[i] = c; return s;
     }
-    static char to_char_type(int_type c) { return (char)c; }
-    static int_type to_int_type(char c) { return (unsigned char)c; }
-    static int_type eof() { return -1; }
+    static constexpr char to_char_type(int_type c) { return (char)c; }
+    static constexpr int_type to_int_type(char c) { return (unsigned char)c; }
+    static constexpr int_type eof() { return -1; }
 };
 
 template <typename CharT, typename Traits = char_traits<CharT>>
@@ -48,9 +60,9 @@ public:
 
     constexpr basic_string_view() noexcept : data_(nullptr), size_(0) {}
     constexpr basic_string_view(const CharT *s, size_type n) : data_(s), size_(n) {}
-    basic_string_view(const CharT *s) : data_(s), size_(Traits::length(s)) {}
+    constexpr basic_string_view(const CharT *s) : data_(s), size_(Traits::length(s)) {}
     template <typename StringLike>
-    basic_string_view(const StringLike &s) : data_(s.data()), size_(s.size()) {}
+    explicit basic_string_view(const StringLike &s) : data_(s.data()), size_(s.size()) {}
 
     basic_string_view(const basic_string_view &) noexcept = default;
     basic_string_view &operator=(const basic_string_view &) noexcept = default;
@@ -73,22 +85,30 @@ public:
     void remove_prefix(size_type n) { data_ += n; size_ -= n; }
     void remove_suffix(size_type n) { size_ -= n; }
 
-    basic_string_view substr(size_type pos = 0, size_type n = npos) const {
+    constexpr basic_string_view substr(size_type pos = 0, size_type n = npos) const {
         if (pos > size_) __builtin_trap();
         size_type avail = size_ - pos;
         if (n > avail) n = avail;
         return basic_string_view(data_ + pos, n);
     }
 
-    int compare(basic_string_view o) const {
+    constexpr int compare(basic_string_view o) const {
         size_type m = size_ < o.size_ ? size_ : o.size_;
         int r = Traits::compare(data_, o.data_, m);
         if (r) return r;
         return size_ < o.size_ ? -1 : (size_ > o.size_ ? 1 : 0);
     }
 
-    size_type find(CharT c, size_type pos = 0) const {
+    constexpr size_type find(CharT c, size_type pos = 0) const {
         for (size_type i = pos; i < size_; ++i) if (data_[i] == c) return i;
+        return npos;
+    }
+
+    constexpr size_type find(basic_string_view needle, size_type pos = 0) const {
+        if (needle.size_ == 0) return pos <= size_ ? pos : npos;
+        if (needle.size_ > size_) return npos;
+        for (size_type i = pos; i + needle.size_ <= size_; ++i)
+            if (Traits::compare(data_ + i, needle.data_, needle.size_) == 0) return i;
         return npos;
     }
 

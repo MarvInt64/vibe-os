@@ -45,6 +45,8 @@ public:
         const Key *p_;
     };
     using iterator = const_iterator;
+    using const_reverse_iterator = reverse_iterator<const_iterator>;
+    using reverse_iterator = const_reverse_iterator;
 
     set() = default;
     set(const set &) = default;
@@ -60,6 +62,8 @@ public:
     const_iterator end()   const noexcept { return const_iterator(data_.end()); }
     const_iterator cbegin() const noexcept { return begin(); }
     const_iterator cend()   const noexcept { return end(); }
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
 
     bool      empty() const noexcept { return data_.empty(); }
     size_type size() const noexcept  { return data_.size(); }
@@ -134,6 +138,27 @@ private:
     vector<Key> data_;
     Compare     comp_{};
 };
+
+template <typename K, typename C>
+bool operator==(const set<K, C> &a, const set<K, C> &b) {
+    if (a.size() != b.size()) return false;
+    auto ia = a.begin();
+    auto ib = b.begin();
+    for (; ia != a.end(); ++ia, ++ib) if (!(*ia == *ib)) return false;
+    return true;
+}
+template <typename K, typename C>
+bool operator!=(const set<K, C> &a, const set<K, C> &b) { return !(a == b); }
+template <typename K, typename C>
+bool operator<(const set<K, C> &a, const set<K, C> &b) {
+    auto ia = a.begin();
+    auto ib = b.begin();
+    for (; ia != a.end() && ib != b.end(); ++ia, ++ib) {
+        if (*ia < *ib) return true;
+        if (*ib < *ia) return false;
+    }
+    return ia == a.end() && ib != b.end();
+}
 
 template <typename Key, typename Compare = less<Key>>
 class multiset : public set<Key, Compare> {

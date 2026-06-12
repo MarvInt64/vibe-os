@@ -1,0 +1,19 @@
+#ifndef VIBEOS_CINTTYPES
+#define VIBEOS_CINTTYPES
+
+#include <stdint.h>
+
+#ifndef PRIu64
+#define PRIu64 "llu"
+#endif
+#ifndef PRIx64
+#define PRIx64 "llx"
+#endif
+#ifndef PRIxPTR
+#define PRIxPTR "lx"
+#endif
+#ifndef PRId64
+#define PRId64 "lld"
+#endif
+
+#endif

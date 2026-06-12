@@ -194,6 +194,12 @@ public:
         assign_raw(o.c_str(), o.size_);
         return *this;
     }
+    template <typename It>
+    basic_string &assign(It first, It last) {
+        clear();
+        for (; first != last; ++first) push_back(*first);
+        return *this;
+    }
 
     /* --- operations ------------------------------------------------------ */
     basic_string substr(size_type pos = 0, size_type n = npos) const {

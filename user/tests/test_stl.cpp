@@ -134,6 +134,7 @@ int main(void) {
     auto pr = std::make_pair(1, std::string("one"));
     CHECK(pr.first == 1);
     CHECK(pr.second == "one");
+    CHECK(std::make_pair(1, 2) < std::make_pair(1, 3));
 
     /* ---- optional ---- */
     std::optional<int> oi;
@@ -206,6 +207,9 @@ int main(void) {
     ss.insert("pear"); ss.insert("apple"); ss.insert("banana");
     CHECK(*ss.begin() == "apple");
     CHECK(ss.count("banana") == 1);
+    CHECK(*ss.rbegin() == "pear");
+    std::set<int> si2 = { 3, 4, 5 };
+    CHECK(si == si2);
 
     /* ---- numeric ---- */
     std::vector<int> nv = { 1, 2, 3, 4, 5 };

@@ -48,12 +48,14 @@ public:
     void      clear() noexcept       { data_.clear(); }
 
     /* --- lookup ---------------------------------------------------------- */
-    iterator find(const Key &k) {
+    template <typename K>
+    iterator find(const K &k) {
         size_type lo = lower(k);
         if (lo < data_.size() && key_eq(data_[lo].first, k)) return data_.begin() + lo;
         return data_.end();
     }
-    const_iterator find(const Key &k) const {
+    template <typename K>
+    const_iterator find(const K &k) const {
         size_type lo = lower(k);
         if (lo < data_.size() && key_eq(data_[lo].first, k)) return data_.begin() + lo;
         return data_.end();
@@ -125,7 +127,8 @@ public:
 
 private:
     /* First index i with !comp(data_[i].first, k)  (binary search). */
-    size_type lower(const Key &k) const {
+    template <typename K>
+    size_type lower(const K &k) const {
         size_type lo = 0, hi = data_.size();
         while (lo < hi) {
             size_type mid = lo + (hi - lo) / 2;
@@ -134,7 +137,8 @@ private:
         }
         return lo;
     }
-    bool key_eq(const Key &a, const Key &b) const {
+    template <typename A, typename B>
+    bool key_eq(const A &a, const B &b) const {
         return !comp_(a, b) && !comp_(b, a);
     }
 
@@ -142,10 +146,41 @@ private:
     Compare            comp_{};
 };
 
+template <typename K, typename T, typename C>
+bool operator==(const map<K, T, C> &a, const map<K, T, C> &b) {
+    if (a.size() != b.size()) return false;
+    auto ia = a.begin();
+    auto ib = b.begin();
+    for (; ia != a.end(); ++ia, ++ib) if (!(*ia == *ib)) return false;
+    return true;
+}
+template <typename K, typename T, typename C>
+bool operator!=(const map<K, T, C> &a, const map<K, T, C> &b) { return !(a == b); }
+template <typename K, typename T, typename C>
+bool operator<(const map<K, T, C> &a, const map<K, T, C> &b) {
+    auto ia = a.begin();
+    auto ib = b.begin();
+    for (; ia != a.end() && ib != b.end(); ++ia, ++ib) {
+        if (*ia < *ib) return true;
+        if (*ib < *ia) return false;
+    }
+    return ia == a.end() && ib != b.end();
+}
+
 template <typename Key, typename T, typename Compare = less<Key>>
 class multimap : public map<Key, T, Compare> {
 public:
     using map<Key, T, Compare>::map;
+    using typename map<Key, T, Compare>::iterator;
+    using typename map<Key, T, Compare>::const_iterator;
+    pair<iterator, iterator> equal_range(const Key &k) {
+        auto it = this->find(k);
+        return {it, it == this->end() ? it : it + 1};
+    }
+    pair<const_iterator, const_iterator> equal_range(const Key &k) const {
+        auto it = this->find(k);
+        return {it, it == this->end() ? it : it + 1};
+    }
 };
 
 } /* namespace std */
